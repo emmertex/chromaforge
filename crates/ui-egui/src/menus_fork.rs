@@ -19,6 +19,7 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::creations_ui::COMMANDS)
         .chain(PLUGIN_COMMANDS)
         .chain(crate::timelapse_ui::COMMANDS)
+        .chain(crate::run_presets_ui::COMMANDS)
         .chain(crate::email_photo::COMMANDS)
         .chain(crate::panels::filterbar::COMMANDS)
         .chain(crate::import_report::COMMANDS)
@@ -29,6 +30,7 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::modern_library::COMMANDS)
         .chain(crate::modern_sheets::COMMANDS)
         .chain(GRADING_COMMANDS)
+        .chain(WINDOW_COMMANDS)
         .chain(crate::tool_profiles::COMMANDS)
         .chain(crate::quick_bar::COMMANDS)
         .chain(crate::help_link::COMMANDS)
@@ -41,16 +43,23 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
 /// takes `{mode: eboda|witchcraft}`; the Edit panel's header shows the same choice.
 const GRADING_COMMANDS: &[UiCommand] = &[("view.gradingMode", "Grading Mode", Some("Cmd+Shift+G"), "Window>Grading Mode")];
 
+/// Settings ▸ Interface ▸ Click through (macOS): `app.backgroundClicks` takes
+/// `{accept: bool}` (false: a click only brings the window forward) and answers `{accept}`; without
+/// `accept` it answers the current choice.
+const WINDOW_COMMANDS: &[UiCommand] = &[("app.backgroundClicks", "Click Through", None, "")];
+
 /// The Edit panel's sections the fork adds: Transform (Upright and the transform sliders, upstream's Geometry in the
 /// Crop tool), as Lightroom Classic's Transform panel, and Plug-in Filters (the photo's pixel-filter stack). Opened and
 /// closed like the others (`section.*`).
 const EDIT_SECTIONS: &[UiCommand] = &[
     ("section.levels", "Levels", None, "Window>Edit Sections"),
+    ("section.toneEq", "Tone Equalizer", None, "Window>Edit Sections"),
     ("section.curve", "Tone Curve", Some("Cmd+2"), "Window>Edit Sections"),
     ("section.mixer", "Color Mixer", Some("Cmd+3"), "Window>Edit Sections"),
     ("section.grading", "Color Grading", Some("Cmd+4"), "Window>Edit Sections"),
     ("section.primaries", "Primaries", None, "Window>Edit Sections"),
     ("section.hsl", "HSL Curves", None, "Window>Edit Sections"),
+    ("section.lensBlur", "Lens Blur", None, "Window>Edit Sections"),
     ("section.geometry", "Transform", Some("Cmd+7"), "Window>Edit Sections"),
     ("section.pluginFilters", "Plug-in Filters", None, "Window>Edit Sections"),
 ];
@@ -110,6 +119,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
     if let Some(r) = crate::timelapse_ui::run(app, id, p) {
         return Some(r);
     }
+    if let Some(r) = crate::run_presets_ui::run(app, id, p) {
+        return Some(r);
+    }
     if let Some(r) = crate::email_photo::run(app, id, p) {
         return Some(r);
     }
@@ -147,6 +159,8 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
     Some(match id {
         // the fork's Edit sections, opened and closed as upstream's are (⌥-click: just this one)
         "section.levels"
+        | "section.toneEq"
+        | "section.lensBlur"
         | "section.curve"
         | "section.mixer"
         | "section.grading"
@@ -162,6 +176,17 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                 app.ui.toggle_section(sec);
             }
             Ok(Value::Null)
+        }
+        "app.backgroundClicks" => {
+            if !cfg!(target_os = "macos") {
+                return Some(Err("app.backgroundClicks: the choice is only on macOS; other systems always pass the click on".into()));
+            }
+            match p.get("accept") {
+                None | Some(Value::Null) => {}
+                Some(Value::Bool(accept)) => app.ui.settings.accept_background_clicks = *accept,
+                Some(v) => return Some(Err(format!("app.backgroundClicks: accept must be true or false, not {v}"))),
+            }
+            Ok(json!({"accept": app.ui.settings.accept_background_clicks}))
         }
         "view.gradingMode" => {
             // {mode?: eboda|witchcraft}; without one, cycles Eboda → Witchcraft → Eboda
@@ -304,9 +329,12 @@ pub(super) fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     crate::module::enabled(app, id)
         .or_else(|| crate::catalog_ui::enabled(app, id))
         .or_else(|| crate::timelapse_ui::enabled(app, id))
+        .or_else(|| crate::run_presets_ui::enabled(app, id))
         .or_else(|| crate::email_photo::enabled(app, id))
         .or_else(|| crate::import_report::enabled(app, id))
         .or_else(|| crate::duplicates_ui::enabled(app, id))
         .or_else(|| crate::comments_ui::enabled(app, id))
         .or_else(|| crate::face_menu::enabled(app, id))
+        // the choice exists only on macOS
+        .or_else(|| (id == "app.backgroundClicks").then_some(cfg!(target_os = "macos")))
 }

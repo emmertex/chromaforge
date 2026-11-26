@@ -707,6 +707,10 @@ fn the_recent_menu_takes_its_answers_from_a_worker() {
 /// found them has none of its own).
 #[test]
 fn the_reasons_are_in_the_interface_language() {
+    if lcc_engine::fonts::BUILD_LANGUAGE.is_some() {
+        lcc_testkit::skip!(Fonts, "a single-language build offers only its language and English");
+        return;
+    }
     let dir = temp("lang");
     let gone = dir.join("Gone").to_string_lossy().into_owned();
     let mut app = LccApp::new(lcc_engine::Session::new().with_fs(), Services::default());
@@ -864,7 +868,7 @@ fn photos_dropped_on_the_launch_list_go_into_the_library_chosen() {
     assert!(crate::panels::library_problem::holds_drops(&h.app));
     assert_eq!(crate::panels::library_problem::hold_dropped(&mut h.app, &ctx, photos.clone()), None, "held while no library is open");
     assert_eq!(h.app.library_problem.as_ref().map(|p| p.pending_import.clone()), Some(photos.clone()));
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("once a catalog is open")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("once a catalog is open")), "{:?}", h.app.ui.toasts);
     assert_eq!(h.app.session.catalog.len(), 0, "nothing goes into the session the library replaces");
     assert_eq!(h.request("ui.clickWidget", json!({"id": "button:libraryOpen"}), T)["ok"], true);
     settle(&mut h);

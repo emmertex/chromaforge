@@ -125,9 +125,8 @@ pub fn show_bar(app: &mut LccApp, ui: &mut Ui, rect: Rect, id: PhotoId) -> Optio
     let state = state_of(app, id)?;
     let out = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| control_bar(ui, &state)).inner;
     for (cmd, params) in out.requests {
-        if let Err(e) = app.run(cmd, params) {
-            app.toast(ui.ctx(), e);
-        }
+        let result = app.run(cmd, params);
+        app.report(ui.ctx(), result);
     }
     state_of(app, id)
 }
@@ -282,9 +281,8 @@ pub fn handle_keys(app: &mut LccApp, ctx: &egui::Context) {
         (space, left, right)
     });
     let mut run = |cmd: &str, params: Value| {
-        if let Err(e) = app.run(cmd, params) {
-            app.toast(ctx, e);
-        }
+        let result = app.run(cmd, params);
+        app.report(ctx, result);
     };
     if space {
         run("video.togglePlay", json!({}));
@@ -328,17 +326,18 @@ pub fn spoken_suffix(p: &Photo) -> String {
     }
 }
 
-/// Edit panel sections video can take (global grading only; plan §7). The others are greyed out.
+/// Edit panel sections video can take (global grading, lens corrections and Transform; plan §7).
+/// The others are greyed out.
 pub fn section_allowed(section: &str) -> bool {
     // (the fork's Lightroom Classic panels split Color into Tone Curve, Color Mixer and Color Grading)
-    matches!(section, "light" | "color" | "curve" | "mixer" | "grading")
+    matches!(section, "light" | "color" | "curve" | "mixer" | "grading" | "optics" | "geometry")
 }
 
-/// Develop controls (by spec id, or a panel row key) that video can't take: everything outside
-/// the global Light and Color controls, plus HDR editing and Point Color.
+/// Develop controls (by spec id, or a panel row key) that video can take: the global Light and
+/// Color controls, lens corrections and Transform (HDR editing and Point Color stay photo-only).
 pub fn control_allowed(id: &str) -> bool {
     let section = id.split('.').next().unwrap_or(id);
-    matches!(section, "light" | "wb" | "color" | "curve" | "mixer" | "hsl" | "grading" | "profile")
+    matches!(section, "light" | "wb" | "color" | "curve" | "mixer" | "hsl" | "grading" | "profile" | "optics" | "geometry")
 }
 
 /// UI and engine commands that a clip can't take: the Remove, Masking and Red Eye panels,

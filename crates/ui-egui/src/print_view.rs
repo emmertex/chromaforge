@@ -61,7 +61,7 @@ fn run(app: &mut LccApp, ctx: &egui::Context, id: &str, params: Value) -> Option
     match app.run(id, params) {
         Ok(v) => Some(v),
         Err(e) => {
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
             None
         }
     }

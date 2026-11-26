@@ -874,7 +874,7 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
             && let [c] = out.candidates.as_slice()
             && let Some(e) = &c.error
         {
-            app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
+            app.toast_error(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
             return;
         }
         let mut lap = crate::now_ms();
@@ -1187,7 +1187,7 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     };
     if let Err(e) = r {
         log::warn!("drop: {e}");
-        app.toast(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
+        app.toast_error(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
     }
 }
 
@@ -1208,7 +1208,16 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         let started = lcc_engine::cmd::library::import_params(&app.session, &p)
             .and_then(|req| Ok((lcc_engine::import::ImportJob::new(&mut app.session, req.opts)?, req.album, req.album_name)))
             .map_err(|e| e.to_string())
-            .and_then(|(job, album, name)| ImportRun::start(job, std::mem::take(&mut task.queue), album, name, ctx));
+            .and_then(|(mut job, album, name)| {
+                // the beforeImport hook is asked on the worker that prepares the files (the
+                // session's thread answers its catalog requests in the poll): an Auto Import, a
+                // camera roll or a browse is unattended, so its hook may not start programs
+                if job.opts.plugin_hooks && !task.auto && !task.camera_roll && !task.browse {
+                    let source = lcc_engine::cmd::plugins::import_source(&app.session);
+                    job.before_import = lcc_engine::cmd::plugins::before_import_hook(&app.session, source, true);
+                }
+                ImportRun::start(job, std::mem::take(&mut task.queue), album, name, ctx)
+            });
         if task.auto {
             task.keep_selection = Some(app.session.selection.clone());
         }
@@ -1227,7 +1236,7 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
                 if task.auto {
                     app.session.auto_import_retry(&task.auto_paths);
                 }
-                app.toast(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
+                app.toast_error(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
                 return;
             }
         }
@@ -1336,10 +1345,9 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.auto {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
-            app.toast_for(
+            app.toast_error(
                 ctx,
                 format!("{} {line} · {}", crate::i18n::tr("Auto Import:"), crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")),
-                8.0,
             );
         } else if task.imported > 0 {
             let msg = if task.camera_roll {
@@ -1354,7 +1362,7 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.browse {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
-            app.toast_for(ctx, format!("{line} · {}", crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")), 8.0);
+            app.toast_error(ctx, format!("{line} · {}", crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")));
         } else if task.failed > 0 {
             app.toast(ctx, crate::i18n::tr_format!("{} photo{} not readable", task.failed, if task.failed == 1 { "" } else { "s" }));
         }
@@ -1447,7 +1455,7 @@ fn show_existing(app: &mut LccApp, ctx: &egui::Context, existing: &[u64]) -> boo
             plural
         )
     };
-    app.toast_for(ctx, msg, 6.0);
+    app.toast(ctx, msg);
     true
 }
 
@@ -2522,7 +2530,7 @@ pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut 
         }
     });
     if manage && let Err(e) = app.run("dialog.presetsManager", serde_json::json!({})) {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     if let Some(pid) = added {
         d.presets.push(pid);

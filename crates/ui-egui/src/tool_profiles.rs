@@ -37,6 +37,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("primaries", "Primaries"),
     ("hsl", "HSL Curves"),
     ("levels", "Levels"),
+    ("toneEq", "Tone Equalizer"),
     ("curve", "Tone Curve"),
     ("mixer", "Color Mixer"),
     ("grading", "Color Grading"),
@@ -58,6 +59,7 @@ pub const OPTIONS: &[(&str, &str, &str)] = &[
     ("option:hotPixels", "detail", "Remove Hot Pixels"),
     ("option:newPhotoDefault", "optics", "New photos start from"),
     ("option:vignetteStyle", "effects", "Vignette Style"),
+    ("option:glowComposite", "effects", "Glow Composite"),
 ];
 
 /// The group of the Edit panel a develop control's slider sits in (`None`: not a slider of the
@@ -71,6 +73,7 @@ pub fn group_of(control: &str) -> Option<&'static str> {
     Some(match prefix {
         "profile" | "wb" | "light" | "hdr" | "color" | "effects" => "light",
         "levels" => "levels",
+        "toneEq" => "toneEq",
         "curve" => "curve",
         "mixer" | "bw" => "mixer",
         "grading" => "grading",
@@ -79,7 +82,7 @@ pub fn group_of(control: &str) -> Option<&'static str> {
         "detail" | "enhance" => "detail",
         "optics" => "optics",
         "geometry" => "geometry",
-        "vignette" | "grain" => "effects",
+        "vignette" | "glow" | "grain" => "effects",
         "calibration" => "calibration",
         _ => return None,
     })

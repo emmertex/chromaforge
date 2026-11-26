@@ -292,6 +292,72 @@
   ]
  },
  {
+  "name": "glow-section",
+  "steps": [
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -100000
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": 420
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "modern:group:optics"
+    },
+    "only": [
+     "modern"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -400
+    },
+    "only": [
+     "modern"
+    ]
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "modern:group:effects"
+    },
+    "only": [
+     "modern"
+    ]
+   }
+  ]
+ },
+ {
   "name": "calibration-section",
   "steps": [
    {
@@ -584,6 +650,27 @@
     "only": [
      "modern"
     ]
+   }
+  ]
+ },
+ {
+  "name": "soft-proof",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.develop"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.softProof",
+     "params": {
+      "on": true,
+      "destWarning": true
+     }
+    }
    }
   ]
  }

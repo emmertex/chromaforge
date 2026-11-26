@@ -57,11 +57,12 @@ pub struct WheelK {
 }
 
 /// Number of `f32`s per Point Color sample in [`PointK::words`] (the GPU parameter layout).
-pub const POINT_WORDS: usize = 10;
+pub const POINT_WORDS: usize = 12;
 
 /// A Point Color sample resolved for the per-pixel stage: the sample (OkLab lightness, chroma, hue
-/// in radians), the adjustment (hue rotation in radians, chroma scale − 1, lightness shift,
-/// variance factor − 1) and the half-widths of the range box (hue radians, chroma, lightness).
+/// in radians), the adjustment (hue rotation in radians, chroma scale − 1, lightness shift, and
+/// per axis the pull on the colour's distance from the sample: the variance factor − 1 less that
+/// axis's uniformity, at least −1) and the half-widths of the range box (hue radians, chroma, lightness).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointK {
     pub l: f32,
@@ -70,7 +71,9 @@ pub struct PointK {
     pub dh: f32,
     pub sat: f32,
     pub dl: f32,
-    pub var: f32,
+    pub var_h: f32,
+    pub var_c: f32,
+    pub var_l: f32,
     pub wh: f32,
     pub wc: f32,
     pub wl: f32,
@@ -80,6 +83,9 @@ impl PointK {
     pub fn new(p: &PointColor) -> PointK {
         let k = (p.range.clamp(0.0, 100.0) / 50.0).max(0.05) as f32;
         let f = |v: f64| (v.clamp(0.0, 100.0) / 100.0) as f32;
+        let var = (p.variance.clamp(-100.0, 100.0) / 100.0) as f32 * 0.8;
+        // uniformity 100 takes the whole distance from the sample away (NaN counts as 0)
+        let pull = |u: f64| (var - if u.is_finite() { f(u) } else { 0.0 }).max(-1.0);
         PointK {
             l: p.lum as f32,
             c: p.chroma.max(0.0) as f32,
@@ -87,7 +93,9 @@ impl PointK {
             dh: (p.hue_shift.clamp(-100.0, 100.0) / 100.0) as f32 * 0.5,
             sat: (p.sat_shift.clamp(-100.0, 100.0) / 100.0) as f32,
             dl: (p.lum_shift.clamp(-100.0, 100.0) / 100.0) as f32 * 0.2,
-            var: (p.variance.clamp(-100.0, 100.0) / 100.0) as f32 * 0.8,
+            var_h: pull(p.hue_uniformity),
+            var_c: pull(p.sat_uniformity),
+            var_l: pull(p.lum_uniformity),
             wh: (0.1 + 0.6 * f(p.hue_range)) * k,
             wc: (0.02 + 0.12 * f(p.sat_range)) * k,
             wl: (0.05 + 0.4 * f(p.lum_range)) * k,
@@ -95,7 +103,7 @@ impl PointK {
     }
 
     pub fn words(&self) -> [f32; POINT_WORDS] {
-        [self.l, self.c, self.h, self.dh, self.sat, self.dl, self.var, self.wh, self.wc, self.wl]
+        [self.l, self.c, self.h, self.dh, self.sat, self.dl, self.var_h, self.var_c, self.var_l, self.wh, self.wc, self.wl]
     }
 
     /// How much an OkLCh colour belongs to this sample's range (0..1, soft edges).
@@ -126,10 +134,10 @@ impl PointK {
         if w <= 0.0 {
             return lch;
         }
-        h += w * (self.var * wrap(h - self.h) + self.dh);
-        c += w * self.var * (c - self.c);
+        h += w * (self.var_h * wrap(h - self.h) + self.dh);
+        c += w * self.var_c * (c - self.c);
         c = (c * (1.0 + w * self.sat)).max(0.0);
-        l += w * (self.var * (l - self.l) + self.dl);
+        l += w * (self.var_l * (l - self.l) + self.dl);
         [l, c, h]
     }
 }
@@ -870,6 +878,46 @@ mod tests {
         let k = PointK::new(&PointColor { variance: 100.0, ..p });
         let o = k.apply([0.62, 0.11, near]);
         assert!(o[2] - h0 > 0.1, "{o:?}");
+    }
+
+    #[test]
+    fn point_color_uniformity_evens_out_each_axis_on_its_own() {
+        let p = PointColor { lum: 0.6, chroma: 0.1, hue: 40.0, range: 100.0, ..Default::default() };
+        let h0 = 40f32.to_radians();
+        let near = [0.64, 0.12, h0 + 0.12];
+        let spread = |k: &PointK| {
+            let o = k.apply(near);
+            [(o[0] - 0.6).abs(), (o[1] - 0.1).abs(), wrap(o[2] - h0).abs()]
+        };
+        let base = spread(&PointK::new(&p));
+        // hue uniformity pulls the hue towards the sample and leaves chroma and lightness alone
+        let hue = spread(&PointK::new(&PointColor { hue_uniformity: 100.0, ..p }));
+        assert!(hue[2] < 0.5 * base[2] && (hue[0] - base[0]).abs() < 1e-6 && (hue[1] - base[1]).abs() < 1e-6, "{hue:?} vs {base:?}");
+        let sat = spread(&PointK::new(&PointColor { sat_uniformity: 100.0, ..p }));
+        assert!(sat[1] < 0.5 * base[1] && (sat[2] - base[2]).abs() < 1e-6, "{sat:?} vs {base:?}");
+        let lum = spread(&PointK::new(&PointColor { lum_uniformity: 100.0, ..p }));
+        assert!(lum[0] < 0.5 * base[0] && (lum[1] - base[1]).abs() < 1e-6, "{lum:?} vs {base:?}");
+        // more uniformity, more even; at the sample itself nothing moves
+        let half = spread(&PointK::new(&PointColor { hue_uniformity: 50.0, ..p }));
+        assert!(hue[2] < half[2] && half[2] < base[2]);
+        let all = PointK::new(&PointColor { hue_uniformity: 100.0, sat_uniformity: 100.0, lum_uniformity: 100.0, ..p });
+        let at = all.apply([0.6, 0.1, h0]);
+        assert!((at[0] - 0.6).abs() < 1e-6 && (at[1] - 0.1).abs() < 1e-6 && wrap(at[2] - h0).abs() < 1e-6, "{at:?}");
+        // colours outside the range are untouched
+        assert_eq!(all.apply([0.2, 0.02, h0 + 2.5]), [0.2, 0.02, h0 + 2.5]);
+        // a uniformity alone makes the sample active
+        assert!(!PointColor { lum_uniformity: 1.0, ..p }.is_neutral());
+    }
+
+    #[test]
+    fn point_color_uniformity_is_safe_on_hostile_values() {
+        for u in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e300, 1e300] {
+            let p = PointColor { hue_uniformity: u, sat_uniformity: u, lum_uniformity: u, variance: u, ..Default::default() };
+            let k = PointK::new(&p);
+            assert!(k.words().iter().all(|w| w.is_finite()), "{u}: {:?}", k.words());
+            let o = k.apply([0.5, 0.1, 0.1]);
+            assert!(o.iter().all(|v| v.is_finite()) && o[1] >= 0.0, "{u}: {o:?}");
+        }
     }
 
     #[test]

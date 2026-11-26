@@ -684,3 +684,77 @@ fn the_stamp_tool_makes_a_key_signs_and_checks_the_signature() {
     assert!(out.status.success() && text(&out).contains("sign it again"), "{}", text(&out));
     assert!(text(&run(&[Path::new("--check"), &signed])).contains("not signed"));
 }
+
+/// The import-tools example: its beforeImport hook replaces and skips by rule (the host checks a
+/// replacement), its afterImport hook tags each imported photo in its namespace, and its command
+/// moves the selection to Recently Deleted with `library.remove`.
+#[test]
+fn import_tools_example_end_to_end() {
+    use lcc_plugins::PendingCall;
+    let Some(wasm) = build_sdk_example("import-tools") else { return };
+    let dir = temp("import-tools");
+    let mut m = Manager::open(&dir).unwrap();
+    let id = "org.example.import-tools";
+    let grant = Permissions { library_remove: true, metadata_write: true, ..Default::default() };
+    let info = m.install_bytes_by_user(&wasm, Some(grant), false).unwrap().info();
+    assert_eq!(info["granted"]["libraryRemove"], true);
+    assert_eq!(info["granted"]["metadataWrite"], true);
+    let mut host = RemoveLog::default();
+    let ask = |m: &mut Manager, path: &str, size: u64, host: &mut RemoveLog| -> Value {
+        let mut call: PendingCall = m.before_import_call(path, size, &json!({"kind": "allPhotos"})).unwrap().unwrap();
+        let outcome = call.run(host);
+        m.end(call, Some(outcome)).unwrap()
+    };
+
+    // no rules: as is
+    assert_eq!(ask(&mut m, "/x/IMG_0001.CR2", 100, &mut host), json!({}));
+    // the skip rule wins; the transcode rule answers the twin, which the host checks
+    m.set_settings(id, &json!({"transcodeExt": "jxl", "skipExt": ".CR2"}), &mut host).unwrap();
+    assert_eq!(ask(&mut m, "/x/IMG_0001.CR2", 100, &mut host), json!({"skip": true}));
+    assert_eq!(ask(&mut m, "/x/IMG_0002.NEF", 200, &mut host), json!({"replace": "/x/IMG_0002.jxl"}));
+    assert!(m.get(id).unwrap().log.iter().any(|l| l.contains("IMG_0002.NEF")));
+    // a bad rule (not an extension) is ignored; junk replies are the host's to refuse
+    m.set_settings(id, &json!({"transcodeExt": "not an ext!", "skipExt": ""}), &mut host).unwrap();
+    assert_eq!(ask(&mut m, "/x/IMG_0003.CR2", 0, &mut host), json!({}));
+
+    // afterImport: the namespace holds the import date per photo
+    let calls = m.after_import_calls(
+        &[json!({"id": "7", "imported": "2026-11-25T10:00:00"}), json!({"id": "8", "imported": "2026-11-25T10:00:00"})],
+        &json!({"kind": "allPhotos"}),
+    );
+    assert_eq!(calls.len(), 1);
+    let (pid, call) = calls.into_iter().next().unwrap();
+    assert_eq!(pid, id);
+    let mut call = call.unwrap();
+    let outcome = call.run(&mut host);
+    let r = m.end(call, Some(outcome)).unwrap();
+    assert!(r["message"].as_str().unwrap().contains("Tagged 2"), "{r}");
+    let data: Value = serde_json::from_slice(&std::fs::read(dir.join("data").join(format!("{id}.json"))).unwrap()).unwrap();
+    assert_eq!(data["libraries"][""]["7"]["imported"], "2026-11-25T10:00:00");
+
+    // library.remove through the command
+    let r = m.run_command(id, "remove", &json!({}), &["7".into(), "8".into(), "9".into()], &mut host).unwrap();
+    assert_eq!(host.removes, vec![json!({"ids": ["7", "8", "9"]})]);
+    assert!(r["message"].as_str().unwrap().contains("3 photo(s)"), "{r}");
+    // no selection explains instead of calling
+    let r = m.run_command(id, "remove", &json!({}), &[], &mut host).unwrap();
+    assert!(host.removes.len() == 1 && r["message"].as_str().unwrap().contains("Select"), "{r}");
+    // revoking the permission is the next call's error
+    m.set_grant(id, Permissions::default()).unwrap();
+    let e = m.run_command(id, "remove", &json!({}), &["7".into()], &mut host).unwrap_err();
+    assert!(e.to_string().contains("needs `libraryRemove`"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Answers `library.remove` and records the calls.
+#[derive(Default)]
+struct RemoveLog {
+    removes: Vec<Value>,
+}
+
+impl HostApi for RemoveLog {
+    fn library_remove(&mut self, p: &Value) -> Result<Value, String> {
+        self.removes.push(p.clone());
+        Ok(json!({"removed": p["ids"].as_array().map_or(0, Vec::len), "skipped": 0}))
+    }
+}

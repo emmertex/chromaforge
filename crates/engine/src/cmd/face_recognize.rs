@@ -213,18 +213,16 @@ fn today() -> String {
 fn confirm_suggestions(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "faces.confirmSuggestions";
     let chosen = unnamed_faces_param(s, C, p)?;
-    // what the named faces suggest for these faces now (never a stale name from the list the user looked at)
-    let mut current: Vec<(u64, usize, lcc_geom::Rect)> = chosen.iter().map(|(photo, index, rect)| (*photo, *index, *rect)).collect();
-    // the length is taken first: `&mut current` and `current.len()` in one call would borrow it both ways
-    let n = current.len();
-    let arranged = imp::arrange_unnamed(s, &mut current, n);
+    // what the named faces suggest for these faces now (never a stale name from the list the user looked at, nor one
+    // the library-wide scan has not judged again since)
+    let suggestions = imp::suggest_for(s, &chosen);
     let mut by_photo: std::collections::BTreeMap<u64, Vec<(usize, String)>> = std::collections::BTreeMap::new();
     let mut decisions: Vec<(u64, usize, lcc_geom::Rect, String)> = Vec::new();
     {
         // a face the user rejected as this person is not suggested as them, so it is not confirmed as them either
         let store = s.people_store();
         for (photo, index, rect) in &chosen {
-            let Some((name, _)) = arranged.suggestions.get(&(*photo, *index)) else { continue };
+            let Some((name, _)) = suggestions.get(&(*photo, *index)) else { continue };
             let name = name.trim();
             if name.is_empty() || store.rejected_as(*photo, *index, *rect, name) {
                 continue;
@@ -276,11 +274,8 @@ fn confirm_suggestions(s: &mut Session, p: &Value) -> Result<Value> {
 fn reject_suggestions(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "faces.rejectSuggestions";
     let chosen = unnamed_faces_param(s, C, p)?;
-    // a rejected face is not suggested again, so the groups are worked out here exactly as the Suggested category does
-    let mut current: Vec<(u64, usize, lcc_geom::Rect)> = chosen.iter().map(|(photo, index, rect)| (*photo, *index, *rect)).collect();
-    // the length is taken first: `&mut current` and `current.len()` in one call would borrow it both ways
-    let n = current.len();
-    let arranged = imp::arrange_unnamed(s, &mut current, n);
+    // a rejected face is not suggested again, so what is suggested for these faces now is worked out here
+    let suggestions = imp::suggest_for(s, &chosen);
     let day = today();
     // a face already rejected as the person it is suggested as is not suggested as them: there is nothing to reject
     let decisions: Vec<(u64, usize, lcc_geom::Rect, String)> = {
@@ -288,7 +283,7 @@ fn reject_suggestions(s: &mut Session, p: &Value) -> Result<Value> {
         chosen
             .iter()
             .filter_map(|(photo, index, rect)| {
-                let name = arranged.suggestions.get(&(*photo, *index))?.0.clone();
+                let name = suggestions.get(&(*photo, *index))?.0.clone();
                 (!store.rejected_as(*photo, *index, *rect, &name)).then_some((*photo, *index, *rect, name))
             })
             .collect()
@@ -490,6 +485,24 @@ fn in_scope(scope: &Scope, photo: u64) -> bool {
 /// Most faces `faces.unnamed` lists.
 const MAX_UNNAMED: usize = 3000;
 
+/// How the library-wide look for suggestions is going ([`imp::scan_suggestions`]): a suggestion is the library's whole
+/// answer only once `complete`, and the Suggested category says so while it is not (issue #1365).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Progress {
+    /// Unnamed faces with an embedding in the library.
+    total: usize,
+    /// How many of them have been judged against the named faces.
+    judged: usize,
+    /// Every one of them was judged, so nothing is left to find.
+    complete: bool,
+}
+
+impl Progress {
+    fn json(&self) -> Value {
+        json!({"total": self.total, "judged": self.judged, "complete": self.complete})
+    }
+}
+
 /// How the unnamed faces were laid out.
 struct Arranged {
     /// Faces that look alike are next to each other (only the ones already embedded can be).
@@ -498,44 +511,80 @@ struct Arranged {
     ready: bool,
     /// A name for some faces, when the faces already named say so with confidence: `(photo, index)` to `(name, score)`.
     suggestions: std::collections::HashMap<(u64, usize), (String, f32)>,
+    /// Best similarity to any named person for each embedded, listed face, including faces below the suggestion bars.
+    similarities: std::collections::HashMap<(u64, usize), (String, f32)>,
     /// Look-alike groups (#259): faces next to each other in the order that are as alike as a match needs share a
     /// group number, so a frontend can select (and name or ignore) a group at once. `(photo, index)` to the group.
     groups: std::collections::HashMap<(u64, usize), usize>,
 }
 
-/// The unnamed faces `shown` that the named ones recognise, grouped by the name they suggest (issue #1050): one entry
-/// per person suggested, the people with the most suggested faces first (then by name), and within a group the faces
-/// that look most like them first (then in photo order). Each face is in one group, the best name it was given.
+/// The unnamed faces the named ones recognise, grouped by the name they suggest (issue #1050): one entry per person
+/// suggested, the people with the most suggested faces first (then by name), and within a group the faces that look
+/// most like them first (then in photo order). Each face is in one group, the best name it was given.
 ///
-/// Only the faces listed are in a group, so a group says how many of the listed faces it holds; `total` of
-/// `faces.unnamed` says how many unnamed faces the library has.
+/// Every suggested face the scope holds is in a group, not only those of the page `faces.unnamed` lists (issue
+/// #1365): which page a face falls on is no reason to hide the person it looks like, and a group says how many faces
+/// the library has for that person rather than how many happened to be listed. A face whose suggestion the user
+/// rejected as that person is left out, and so is a key that is no longer an unnamed face (named, ignored or removed
+/// since the scan judged it).
+#[cfg(not(target_arch = "wasm32"))]
 fn suggestion_groups(
-    s: &Session,
-    shown: &[(u64, usize, lcc_geom::Rect)],
+    s: &mut Session,
     suggestions: &std::collections::HashMap<(u64, usize), (String, f32)>,
+    scope: &Scope,
+    people: &std::collections::HashSet<String>,
 ) -> Value {
+    /// One suggested face that is still unnamed.
+    struct Suggested {
+        key: (u64, usize),
+        name: String,
+        score: f32,
+        rect: lcc_geom::Rect,
+        view: lcc_geom::Rect,
+    }
+    let mut found: Vec<Suggested> = Vec::new();
+    for ((photo, index), (name, score)) in suggestions {
+        if !in_scope(scope, *photo) || !people.contains(&name.trim().to_lowercase()) {
+            continue;
+        }
+        let id = lcc_catalog::PhotoId(*photo);
+        let Some(ph) = s.catalog.photo(id).filter(|ph| ph.in_library()) else { continue };
+        let Some(region) = ph.meta.regions.get(*index) else { continue };
+        if region.kind != lcc_meta::RegionKind::Face || region.name.is_some() {
+            continue;
+        }
+        found.push(Suggested { key: (*photo, *index), name: name.clone(), score: *score, rect: region.rect, view: s.face_view(id, region.rect) });
+    }
+    // what the user rejected as the person suggested is not put under them again (issue #1050)
+    let rejected: std::collections::HashSet<(u64, usize)> = {
+        let store = s.people_store();
+        found.iter().filter(|f| store.rejected_as(f.key.0, f.key.1, f.rect, &f.name)).map(|f| f.key).collect()
+    };
     // the name each suggested person was first shown as, by lower-cased name (`Ann` and `ann` are one person)
     let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut groups: std::collections::HashMap<String, Vec<(u64, usize, lcc_geom::Rect, f32)>> = std::collections::HashMap::new();
-    for (photo, index, rect) in shown {
-        let Some((name, score)) = suggestions.get(&(*photo, *index)) else { continue };
-        let key = name.trim().to_lowercase();
+    let mut groups: std::collections::HashMap<String, Vec<Suggested>> = std::collections::HashMap::new();
+    for face in found {
+        if rejected.contains(&face.key) {
+            continue;
+        }
+        let key = face.name.trim().to_lowercase();
         if key.is_empty() {
             continue;
         }
-        names.entry(key.clone()).or_insert_with(|| name.trim().to_string());
-        groups.entry(key).or_default().push((*photo, *index, *rect, *score));
+        names.entry(key.clone()).or_insert_with(|| face.name.trim().to_string());
+        groups.entry(key).or_default().push(face);
     }
     let mut out: Vec<Value> = groups
         .into_iter()
         .filter_map(|(key, mut faces)| {
             let name = names.get(&key)?.clone();
-            faces.sort_by(|a, b| b.3.total_cmp(&a.3).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+            faces.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.key.0.cmp(&b.key.0)).then(a.key.1.cmp(&b.key.1)));
             let list: Vec<Value> = faces
                 .iter()
-                .map(|(photo, index, rect, score)| {
-                    let view = s.face_view(lcc_catalog::PhotoId(*photo), *rect);
-                    json!({"photo": photo, "index": index, "rect": rect_json(rect), "view": rect_json(&view), "score": score})
+                .map(|f| {
+                    json!({
+                        "photo": f.key.0, "index": f.key.1, "rect": rect_json(&f.rect), "view": rect_json(&f.view), "score": f.score
+                    })
                 })
                 .collect();
             Some(json!({"name": name, "total": faces.len(), "faces": list}))
@@ -550,10 +599,14 @@ fn suggestion_groups(
     Value::Array(out)
 }
 
-/// `faces.unnamed {limit?: 600, bySuggestion?: false}`: the faces nobody has named, to be named a group at a time. With
-/// a recognition model chosen, faces that look alike are next to each other, and a face the named faces recognise
-/// carries the name they suggest. With `bySuggestion: true`, `groups` holds those suggested faces under the person
-/// suggested (issue #1050), so one person's suggestions are reviewed together.
+/// `faces.unnamed {limit?: 600, bySuggestion?: false, budgetMs?: 15}`: the faces nobody has named, to be named a
+/// group at a time. With a recognition model chosen, faces that look alike are next to each other, and a face the
+/// named faces recognise carries the name they suggest. With `bySuggestion: true`, `groups` holds those suggested
+/// faces under the person suggested (issue #1050), so one person's suggestions are reviewed together.
+///
+/// The page is not where suggestions are found: every unnamed face with an embedding is judged against the named ones,
+/// a slice of the work per call (`budgetMs`, so a big library does not stall a frame), and `scan` says how far that is
+/// (issue #1365). `groups` therefore holds the library's suggestions within the scope, not only the page's.
 fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "faces.unnamed";
     let limit = p.get("limit").and_then(Value::as_u64).map_or(600, |n| usize::try_from(n).unwrap_or(600)).clamp(1, MAX_UNNAMED);
@@ -561,6 +614,8 @@ fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
         None => false,
         Some(v) => v.as_bool().ok_or_else(|| bad(C, "`bySuggestion` must be true or false"))?,
     };
+    // how long this call may spend judging faces; zero only asks how far the judging is
+    let budget = std::time::Duration::from_millis(p.get("budgetMs").and_then(Value::as_u64).unwrap_or(15).min(250));
     let scope = scope_of(s, C, p)?;
     let mut all: Vec<(u64, usize, lcc_geom::Rect)> = Vec::new();
     for ph in s.catalog.photos().filter(|ph| ph.in_library() && in_scope(&scope, ph.id.0)) {
@@ -572,15 +627,20 @@ fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
     }
     all.sort_by_key(|(photo, index, _)| (*photo, *index));
     let total = all.len();
-    let arranged = imp::arrange_unnamed(s, &mut all, limit);
+    // the library is judged a slice at a time, this page's faces first, so that a suggestion never depends on which
+    // page a face falls on (issue #1365)
+    let people = current_people(s);
+    let progress = imp::scan_suggestions(s, budget, &all);
+    let arranged = imp::arrange_unnamed(s, &mut all, limit, &people);
     all.truncate(limit);
     let faces: Vec<Value> = all
         .iter()
         .map(|(photo, index, rect)| {
             let view = s.face_view(lcc_catalog::PhotoId(*photo), *rect);
             let suggestion = arranged.suggestions.get(&(*photo, *index)).map(|(name, score)| json!({"name": name, "score": score}));
+            let similarity = arranged.similarities.get(&(*photo, *index)).map(|(name, score)| json!({"name": name, "score": score}));
             let alike = arranged.groups.get(&(*photo, *index));
-            json!({"photo": photo, "index": index, "rect": rect_json(rect), "view": rect_json(&view), "suggestion": suggestion, "group": alike})
+            json!({"photo": photo, "index": index, "rect": rect_json(rect), "view": rect_json(&view), "suggestion": suggestion, "similarity": similarity, "group": alike})
         })
         .collect();
     // what the user said about a face's suggestion holds: a face rejected as the person it was suggested as is not put
@@ -604,11 +664,27 @@ fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
             map.insert("suggestion".into(), Value::Null);
         }
     }
-    let mut out = json!({"total": total, "faces": faces, "ordered": arranged.ordered, "ready": arranged.ready, "rejected": rejected});
+    let mut out =
+        json!({"total": total, "faces": faces, "ordered": arranged.ordered, "ready": arranged.ready, "rejected": rejected, "scan": progress.json()});
     if by_suggestion && let Value::Object(map) = &mut out {
-        map.insert("groups".into(), suggestion_groups(s, &all, &suggestions));
+        // every suggestion the library holds within the scope, not only those of the faces this page lists (#1365)
+        map.insert("groups".into(), imp::suggestion_groups(s, &scope, &people));
     }
     Ok(out)
+}
+
+/// The people the library knows: the lower-cased names of its named faces. A suggestion naming anyone else was made
+/// before that person was renamed or removed, and is not shown (the judging has still to reach that face again).
+fn current_people(s: &Session) -> std::collections::HashSet<String> {
+    s.catalog
+        .photos()
+        .filter(|ph| ph.in_library())
+        .flat_map(|ph| ph.meta.regions.iter())
+        .filter(|r| r.kind == lcc_meta::RegionKind::Face)
+        .filter_map(|r| r.name.as_deref())
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 /// What looking for faces that resemble a person found.
@@ -663,7 +739,7 @@ mod imp {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use lcc_catalog::{Op, Photo, PhotoId};
+    use lcc_catalog::{AlbumId, Op, Photo, PhotoId, Source};
     use lcc_develop::DevelopSettings;
     use lcc_faces::matching;
     use lcc_faces::runtime::Embedder;
@@ -676,6 +752,7 @@ mod imp {
     use super::super::face_detect::{LABEL, MARK};
     use super::super::face_models::{finish_downloads, installed_models, read_settings, set_paused, switches, top_faces_value};
     use super::Similar;
+    use crate::faces_index::{FaceScanItem, FaceScanMode, FaceScanRun, FaceScanStatus};
     use crate::faces_worker::{Done, EDGE, PREFETCH, Pace, Prepared, Worker, max_workers, process, target_workers};
     use crate::{Result, Session};
 
@@ -687,6 +764,19 @@ mod imp {
     /// How often the background pump writes new embeddings to the cache file (appending is cheap; this keeps it to a few
     /// writes a minute, and a session that ends writes the rest).
     const SAVE_EVERY: Duration = Duration::from_secs(3);
+
+    /// Stop an active scoped scan before changing the library, model or index out from under its queued photos.
+    fn abort_maintenance(s: &mut Session) {
+        if let Some(mut run) = s.faces.maintenance.take() {
+            run.queue.clear();
+            run.in_flight.clear();
+            run.cancelled = true;
+            if let Some(cancel) = run.task.cancel_flag() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            s.faces.last_maintenance = Some(run.status("cancelled"));
+        }
+    }
 
     /// The chosen recognition model's manifest, with the face index reset to it when it changed, without loading the
     /// ONNX network. `fresh` looks at the models folder again; otherwise a look made in the last second is trusted.
@@ -728,6 +818,9 @@ mod imp {
         }
         let cache = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join(format!("face-embeddings-{id}.bin")));
         if s.faces.index.tag != tag || s.faces.index.path != cache {
+            if s.faces.maintenance.is_some() {
+                abort_maintenance(s);
+            }
             s.faces.index.reset(&tag, dim, cache);
             s.faces.queue.clear();
             s.faces.queue_stamp = None;
@@ -770,39 +863,79 @@ mod imp {
 
     /// The photo's faces that still need embedding (and, with `search`, the faces to find in it first), with the render job
     /// for its picture. `None` when there is nothing to do.
-    fn prepare(s: &mut Session, id: PhotoId, search: bool) -> Option<Prepared> {
+    fn prepare(
+        s: &mut Session,
+        id: PhotoId,
+        search: bool,
+        redetect: bool,
+        replace_detections: bool,
+        min_score: f32,
+        named_only: bool,
+    ) -> Option<Prepared> {
         let tag = s.faces.index.tag.clone();
         let photo = s.catalog.photo(id)?.clone();
-        let todo: Vec<Rect> =
-            photo.meta.regions.iter().filter(|r| r.kind == RegionKind::Face && s.faces.index.needs(id.0, &r.rect)).map(|r| r.rect).collect();
-        // finding faces needs the detector the user may not have downloaded: such a photo is left unsearched, not marked as searched
-        let detector = crate::cmd::face_detect::detector(s).ok();
-        let detect = search && detector.is_some() && needs_search(s, &photo);
+        let todo: Vec<Rect> = photo
+            .meta
+            .regions
+            .iter()
+            .filter(|r| {
+                r.kind == RegionKind::Face
+                    && (!named_only || r.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                    && s.faces.index.needs(id.0, &r.rect)
+            })
+            .map(|r| r.rect)
+            .collect();
+        // Finding faces needs the detector the user may not have downloaded: without it a photo is left unsearched.
+        let detector = (search || redetect).then(|| crate::cmd::face_detect::detector(s).ok()).flatten();
+        let detect = detector.is_some() && (redetect || (search && needs_search(s, &photo)));
         if todo.is_empty() && !detect {
             return None;
         }
         let job = s.preview_job(id, EDGE, EDGE, false, &DevelopSettings::default())?;
         let preview = s.scan_preview_of(&photo);
-        Some(Prepared { tag, epoch: s.faces.epoch, id, content: crate::media::content_key(&photo), job, preview, todo, detect, detector })
+        Some(Prepared {
+            tag,
+            epoch: s.faces.epoch,
+            id,
+            content: crate::media::content_key(&photo),
+            job,
+            preview,
+            todo,
+            detect,
+            redetect,
+            replace_detections,
+            min_score,
+            detector,
+        })
     }
 
-    /// The faces the detector found in a photo that had none become its face regions: unnamed, marked as detected (so a
-    /// manual Detect Faces replaces them), and not an undo step, since the user did not do this.
-    fn add_found(s: &mut Session, id: PhotoId, found: &[Rect]) {
-        if found.is_empty() {
-            return;
-        }
+    /// Faces found in a photo with no boxes become unnamed regions. A requested rescan may remove only earlier automatic
+    /// detections, or keep and merge them; named, ignored and manually drawn regions are never replaced.
+    fn add_found(s: &mut Session, id: PhotoId, found: &[Rect], replace_detections: bool) {
         let Some(photo) = s.catalog.photo(id) else { return };
-        // the user (or an import) got there first: leave their faces alone
-        if photo.meta.regions.iter().any(|r| matches!(r.kind, RegionKind::Face | RegionKind::IgnoredFace)) {
-            return;
-        }
+        let old_regions = photo.meta.regions.clone();
         let mut meta = photo.meta.clone();
+        if replace_detections {
+            for region in meta.regions.iter().filter(|r| crate::cmd::face_detect::is_detected(r)) {
+                s.faces.index.forget_region(id.0, &region.rect);
+            }
+            meta.regions.retain(|r| !crate::cmd::face_detect::is_detected(r));
+        }
         for rect in found {
+            let face = lcc_faces::yunet::Face {
+                x0: rect.x0 as f32,
+                y0: rect.y0 as f32,
+                x1: rect.x1 as f32,
+                y1: rect.y1 as f32,
+                score: 1.0,
+                landmarks: [(0.0, 0.0); 5],
+            };
+            if crate::cmd::face_detect::overlaps_existing(&face, &meta.regions) {
+                continue;
+            }
             meta.regions.push(Region { rect: *rect, kind: RegionKind::Face, name: None, description: Some(format!("{MARK}{LABEL}")) });
         }
-        if s.apply_system(Op::SetMeta { id, meta: Box::new(meta) }).is_ok() {
-            // regions are not written to XMP, so no sidecar may be rewritten for this
+        if meta.regions != old_regions && s.apply_system(Op::SetMeta { id, meta: Box::new(meta) }).is_ok() {
             s.skip_auto_write = true;
         }
     }
@@ -818,18 +951,34 @@ mod imp {
             return (0, 0);
         }
         if d.detect_wanted {
+            // A user or another import may have added regions while this background scan was in flight.
+            // Never apply its stale detections to a photo that no longer qualifies for the initial search.
+            let still_needs_search = s.catalog.photo(d.id).is_some_and(|photo| needs_search(s, photo));
             match &d.found {
                 Some(found) => {
                     s.faces.scanned.insert(d.id.0);
-                    add_found(s, d.id, found);
+                    if d.redetect || still_needs_search {
+                        add_found(s, d.id, found, d.redetect && d.replace_detections);
+                    }
                 }
                 None => {
                     s.faces.scan_failed.insert(d.id.0);
                 }
             }
         }
+        let current: std::collections::HashSet<[i32; 4]> = s
+            .catalog
+            .photo(d.id)
+            .into_iter()
+            .flat_map(|photo| photo.meta.regions.iter().filter(|r| r.kind == RegionKind::Face).map(|r| crate::faces_index::region_key(&r.rect)))
+            .collect();
         let (mut embedded, mut failed) = (0, 0);
         for (rect, v, view) in d.results {
+            // A rescan can replace automatic boxes while a worker is embedding them. Do not retain an embedding whose
+            // region was removed or changed by the new detector result.
+            if !current.contains(&crate::faces_index::region_key(&rect)) {
+                continue;
+            }
             match v {
                 Some(v) if v.len() == s.faces.index.dim => {
                     s.faces.index.insert_with_view(d.id.0, &rect, v, &view);
@@ -844,18 +993,59 @@ mod imp {
         (embedded, failed)
     }
 
-    /// Take in whatever the worker has finished.
+    /// Take in whatever the worker has finished, advancing a scoped maintenance task when its photos return.
     fn collect(s: &mut Session) -> (usize, usize) {
         let finished = s.faces.worker.as_ref().map(Worker::finished).unwrap_or_default();
-        finished.into_iter().fold((0, 0), |(e, f), d| {
-            let (de, df) = ingest(s, d);
-            (e + de, f + df)
-        })
+        let (mut embedded, mut failed) = (0usize, 0usize);
+        for d in finished {
+            let id = d.id;
+            let photo_failed = (d.detect_wanted && d.found.is_none()) || d.results.iter().any(|(_, e, _)| e.is_none());
+            let follow_detection = d.detect_wanted && d.found.is_some();
+            let current_job = d.epoch == s.faces.epoch && d.tag == s.faces.index.tag;
+            let maintenance = s.faces.maintenance.as_mut().is_some_and(|run| run.in_flight.remove(&id));
+            let (done_embeddings, failed_embeddings) = ingest(s, d);
+            embedded += done_embeddings;
+            failed += failed_embeddings;
+            if !maintenance {
+                continue;
+            }
+
+            let cancelled = s.faces.maintenance.as_ref().is_some_and(|run| run.task.is_cancelled());
+            let named_only = s.faces.maintenance.as_ref().is_some_and(|run| run.named_only);
+            let needs_follow_up = follow_detection
+                && current_job
+                && !cancelled
+                && s.catalog.photo(id).is_some_and(|photo| {
+                    photo.meta.regions.iter().any(|r| {
+                        r.kind == RegionKind::Face
+                            && (!named_only || r.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                            && s.faces.index.needs(id.0, &r.rect)
+                    })
+                });
+            if let Some(run) = s.faces.maintenance.as_mut() {
+                if run.task.is_cancelled() {
+                    run.cancelled = true;
+                    run.queue.clear();
+                }
+                if needs_follow_up {
+                    run.queue.push_back(crate::faces_index::FaceScanItem { photo: id, search: false, redetect: false, replace_detections: false });
+                    continue;
+                }
+                run.done = run.done.saturating_add(1).min(run.total);
+                if photo_failed || failed_embeddings > 0 || !current_job {
+                    run.failed = run.failed.saturating_add(1);
+                    run.task.item_failed(&format!("photo {}: face data could not be read", id.0));
+                } else {
+                    run.task.item_done();
+                }
+            }
+        }
+        (embedded, failed)
     }
 
     /// Embed every face region of `id` the index does not have yet, here and now. Returns (embedded, failed).
     fn embed_photo(s: &mut Session, id: PhotoId, e: &Embedder) -> Result<(usize, usize)> {
-        let Some(job) = prepare(s, id, false) else { return Ok((0, 0)) };
+        let Some(job) = prepare(s, id, false, false, false, crate::faces_worker::REGION_SCORE, false) else { return Ok((0, 0)) };
         Ok(ingest(s, process(job, e)))
     }
 
@@ -882,6 +1072,406 @@ mod imp {
         }
         out.sort_by_key(|(rank, id)| (*rank, id.0));
         out.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn parse_scan_mode(p: &Value) -> Result<FaceScanMode> {
+        const C: &str = "faces.maintain";
+        let raw = match p.get("mode") {
+            None => "detect",
+            Some(value) => value.as_str().ok_or_else(|| bad(C, "`mode` must be text"))?,
+        }
+        .trim();
+        match raw.to_ascii_lowercase().as_str() {
+            "detect" | "detection" => Ok(FaceScanMode::Detect),
+            "recognize" | "recognition" => Ok(FaceScanMode::Recognize),
+            "new" | "newitems" | "new-only" => Ok(FaceScanMode::New),
+            "rebuild" | "all" => Ok(FaceScanMode::Rebuild),
+            "rebuildnamed" | "named" | "confirmed" => Ok(FaceScanMode::RebuildNamed),
+            "rescan" | "redetect" | "re-detect" => Ok(FaceScanMode::Rescan),
+            _ => Err(bad(C, "`mode` is `detect`, `recognize`, `new`, `rebuild`, `rebuildNamed`, or `rescan`")),
+        }
+    }
+
+    fn selector_texts(p: &Value, singular: &str, plural: &str, cmd: &str) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        if let Some(value) = p.get(singular) {
+            let text = value.as_str().ok_or_else(|| bad(cmd, format!("`{singular}` must be text")))?.trim();
+            if text.is_empty() || text.chars().any(char::is_control) || text.len() > 4096 {
+                return Err(bad(cmd, format!("`{singular}` must be a non-empty path of at most 4096 bytes")));
+            }
+            out.push(text.to_string());
+        }
+        if let Some(value) = p.get(plural) {
+            let values = value.as_array().ok_or_else(|| bad(cmd, format!("`{plural}` must be a list of paths")))?;
+            if values.len() > 64 {
+                return Err(bad(cmd, format!("at most 64 `{plural}` may be selected")));
+            }
+            for value in values {
+                let text = value.as_str().ok_or_else(|| bad(cmd, format!("every `{plural}` entry must be text")))?.trim();
+                if text.is_empty() || text.chars().any(char::is_control) || text.len() > 4096 {
+                    return Err(bad(cmd, format!("every `{plural}` entry must be a non-empty path of at most 4096 bytes")));
+                }
+                out.push(text.to_string());
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    fn selected_album_photos(
+        s: &Session,
+        id: AlbumId,
+        seen_albums: &mut std::collections::HashSet<AlbumId>,
+        photos: &mut std::collections::HashSet<PhotoId>,
+    ) -> Result<()> {
+        const C: &str = "faces.maintain";
+        if !seen_albums.insert(id) {
+            return Ok(());
+        }
+        let album = s.catalog.album(id).ok_or_else(|| bad(C, format!("album {} no longer exists", id.0)))?;
+        if album.folder {
+            // A selected collection set always means its complete nested collection tree. The
+            // `includeSubfolders` option applies only to filesystem folder selectors.
+            for child in s.catalog.album_children(Some(id)) {
+                selected_album_photos(s, child.id, seen_albums, photos)?;
+            }
+        } else {
+            photos.extend(s.catalog.album_photos(id));
+        }
+        Ok(())
+    }
+
+    /// Resolve explicit ids, visible/selected photos, folder paths and regular, smart or folder albums into one
+    /// deduplicated in-library photo list. Selectors are unioned; absent any selector the scope is the whole catalog.
+    fn maintenance_scope(s: &mut Session, p: &Value) -> Result<(Vec<PhotoId>, String)> {
+        const C: &str = "faces.maintain";
+        let scope = match p.get("scope") {
+            None => "all",
+            Some(value) => value.as_str().ok_or_else(|| bad(C, "`scope` must be text"))?,
+        }
+        .trim();
+        if !matches!(scope, "all" | "visible" | "selected") {
+            return Err(bad(C, "`scope` is `all`, `visible`, or `selected`"));
+        }
+        let include_subfolders = match p.get("includeSubfolders") {
+            None => true,
+            Some(value) => value.as_bool().ok_or_else(|| bad(C, "`includeSubfolders` must be true or false"))?,
+        };
+        let folders = selector_texts(p, "folder", "folders", C)?;
+        let mut albums = Vec::new();
+        if let Some(value) = p.get("album") {
+            let id = value.as_u64().ok_or_else(|| bad(C, "`album` must be a non-negative album id"))?;
+            albums.push(AlbumId(id));
+        }
+        if let Some(value) = p.get("albums") {
+            let values = value.as_array().ok_or_else(|| bad(C, "`albums` must be a list of album ids"))?;
+            if values.len() > 256 {
+                return Err(bad(C, "at most 256 albums may be selected"));
+            }
+            for value in values {
+                albums.push(AlbumId(value.as_u64().ok_or_else(|| bad(C, "every `albums` entry must be a non-negative id"))?));
+            }
+        }
+        albums.sort_by_key(|a| a.0);
+        albums.dedup();
+
+        let explicit_ids = super::super::photo_ids(p, C)?;
+        let has_ids_selector = explicit_ids.is_some();
+        let has_explicit = has_ids_selector || !folders.is_empty() || !albums.is_empty();
+        let mut photos = std::collections::HashSet::new();
+        if let Some(ids) = explicit_ids {
+            for id in ids {
+                if !s.catalog.photo(id).is_some_and(|photo| photo.in_library()) {
+                    return Err(bad(C, format!("photo {} is no longer in the library", id.0)));
+                }
+                photos.insert(id);
+            }
+        }
+        for root in &folders {
+            for photo in s.catalog.photos().filter(|photo| photo.in_library()) {
+                let Source::File { path } = &photo.source else { continue };
+                let within = if include_subfolders {
+                    lcc_catalog::query::folder_within(path, root)
+                } else {
+                    lcc_catalog::folder_of(photo)
+                        .is_some_and(|folder| lcc_catalog::query::folder_key(&folder) == lcc_catalog::query::folder_key(root))
+                };
+                if within {
+                    photos.insert(photo.id);
+                }
+            }
+        }
+        let mut seen_albums = std::collections::HashSet::new();
+        for album in &albums {
+            selected_album_photos(s, *album, &mut seen_albums, &mut photos)?;
+        }
+        match scope {
+            "visible" => {
+                let visible = s.visible_cloned();
+                photos.extend(visible.into_iter().filter(|id| s.catalog.photo(*id).is_some_and(|photo| photo.in_library())));
+            }
+            "selected" => {
+                let selected = s.selected();
+                photos.extend(selected.into_iter().filter(|id| s.catalog.photo(*id).is_some_and(|photo| photo.in_library())));
+            }
+            "all" if !has_explicit => photos.extend(s.catalog.photos().filter(|photo| photo.in_library()).map(|photo| photo.id)),
+            _ => {}
+        }
+        let mut ids: Vec<PhotoId> = photos.into_iter().collect();
+        ids.sort_by_key(|id| id.0);
+        let description = if has_explicit {
+            let mut parts = Vec::new();
+            if has_ids_selector {
+                parts.push("photo ids".to_string());
+            }
+            if !folders.is_empty() {
+                parts.push(format!("{} folder(s)", folders.len()));
+            }
+            if !albums.is_empty() {
+                parts.push(format!("{} album(s)", albums.len()));
+            }
+            if scope != "all" {
+                parts.push(scope.to_string());
+            }
+            parts.join(" + ")
+        } else {
+            scope.to_string()
+        };
+        Ok((ids, description))
+    }
+
+    fn mode_needs_photo(s: &Session, mode: FaceScanMode, id: PhotoId) -> bool {
+        let Some(photo) = s.catalog.photo(id).filter(|photo| photo.in_library()) else { return false };
+        let has_face = photo.meta.regions.iter().any(|region| region.kind == RegionKind::Face);
+        let has_named_face = photo
+            .meta
+            .regions
+            .iter()
+            .any(|region| region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty()));
+        let needs_embedding = photo.meta.regions.iter().any(|region| region.kind == RegionKind::Face && s.faces.index.needs(id.0, &region.rect));
+        match mode {
+            FaceScanMode::Detect => needs_embedding || needs_search(s, photo),
+            FaceScanMode::Recognize => needs_embedding,
+            FaceScanMode::New => !s.faces.scanned.contains(id.0) && (needs_embedding || needs_search(s, photo)),
+            FaceScanMode::Rebuild => has_face,
+            FaceScanMode::RebuildNamed => has_named_face,
+            FaceScanMode::Rescan => true,
+        }
+    }
+
+    /// Start a scoped, cancellable maintenance pass. It uses the existing recognition worker and detector; the ordinary
+    /// library-wide indexer remains responsible for continuous background discovery and the existing suggestion judge.
+    pub fn maintain(s: &mut Session, p: &Value) -> Result<Value> {
+        const C: &str = "faces.maintain";
+        if s.faces.maintenance.is_some() {
+            return Err(bad(C, "a face maintenance scan is already running"));
+        }
+        let mode = parse_scan_mode(p)?;
+        current_with(s, C, true)?;
+        if mode.detects() {
+            super::super::face_detect::detector(s).map_err(|e| e.into_error(C))?;
+        }
+        let (scope_ids, scope) = maintenance_scope(s, p)?;
+        if mode.detects() {
+            // A deliberate user run retries photos the continuous indexer could not read earlier in this session.
+            for id in &scope_ids {
+                s.faces.scan_failed.remove(&id.0);
+            }
+        }
+        let min_score = match p.get("minScore") {
+            None => crate::faces_worker::REGION_SCORE,
+            Some(value) => {
+                let score = value.as_f64().ok_or_else(|| bad(C, "`minScore` must be a number from 0 to 1"))?;
+                if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+                    return Err(bad(C, "`minScore` must be a number from 0 to 1"));
+                }
+                score as f32
+            }
+        };
+        let behavior = match p.get("behavior") {
+            None => "merge",
+            Some(value) => value.as_str().ok_or_else(|| bad(C, "`behavior` must be `merge` or `replace`"))?,
+        }
+        .trim()
+        .to_ascii_lowercase();
+        let replace_detections = match p.get("replaceDetections") {
+            Some(value) => value.as_bool().ok_or_else(|| bad(C, "`replaceDetections` must be true or false"))?,
+            None => match behavior.as_str() {
+                "merge" => false,
+                "replace" | "overwrite" => true,
+                _ => return Err(bad(C, "`behavior` is `merge` or `replace`")),
+            },
+        };
+        if mode != FaceScanMode::Rescan && (replace_detections || p.get("behavior").is_some()) {
+            return Err(bad(C, "`behavior` and `replaceDetections` apply only to `mode: rescan`"));
+        }
+
+        let mut queue = std::collections::VecDeque::new();
+        for id in &scope_ids {
+            if !mode_needs_photo(s, mode, *id) {
+                continue;
+            }
+            if mode == FaceScanMode::Rebuild {
+                s.faces.index.forget_photo(id.0);
+            } else if mode == FaceScanMode::RebuildNamed
+                && let Some(photo) = s.catalog.photo(*id)
+            {
+                for region in photo
+                    .meta
+                    .regions
+                    .iter()
+                    .filter(|region| region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                {
+                    s.faces.index.forget_region(id.0, &region.rect);
+                }
+            }
+            queue.push_back(FaceScanItem {
+                photo: *id,
+                search: matches!(mode, FaceScanMode::Detect | FaceScanMode::New),
+                redetect: mode.redetects(),
+                replace_detections,
+            });
+        }
+        let total = queue.len() as u64;
+        let task = s.activity.start_batch("faces", "Face Maintenance Scan", crate::activity::Cancel::Yes);
+        task.progress(0, total);
+        task.set_controls(Some(crate::activity::Controls {
+            paused: switches_cached(s).1,
+            pause: "faces.pause",
+            resume: "faces.resume",
+            settings_tab: "faces",
+            settings_section: None,
+        }));
+        s.faces.last_maintenance = None;
+        s.faces.maintenance = Some(FaceScanRun {
+            mode,
+            scope,
+            queue,
+            min_score,
+            named_only: mode.named_only(),
+            in_flight: std::collections::HashSet::new(),
+            total,
+            done: 0,
+            failed: 0,
+            cancelled: false,
+            task,
+        });
+        finish_maintenance_if_done(s);
+        maintenance_status(s, p)
+    }
+
+    fn finish_maintenance_if_done(s: &mut Session) {
+        if let Some(run) = s.faces.maintenance.as_mut()
+            && run.task.is_cancelled()
+        {
+            run.cancelled = true;
+            run.queue.clear();
+        }
+        let done = s.faces.maintenance.as_ref().is_some_and(|run| run.queue.is_empty() && run.in_flight.is_empty());
+        if done && let Some(run) = s.faces.maintenance.take() {
+            let state = if run.cancelled || run.task.is_cancelled() { "cancelled" } else { "complete" };
+            s.faces.last_maintenance = Some(run.status(state));
+        }
+    }
+
+    /// The scoped run's status, separate from the always-on whole-library indexer's progress.
+    pub fn maintenance_status(s: &mut Session, _: &Value) -> Result<Value> {
+        if let Some(run) = s.faces.maintenance.as_ref() {
+            let state = if run.cancelled || run.task.is_cancelled() { "cancelling" } else { "scanning" };
+            return Ok(run.status(state).value());
+        }
+        Ok(s.faces.last_maintenance.as_ref().map(FaceScanStatus::value).unwrap_or_else(|| {
+            json!({"state": "idle", "mode": null, "scope": null, "done": 0, "total": 0, "pendingPhotos": 0, "failed": 0, "cancelled": false, "taskId": null})
+        }))
+    }
+
+    fn scan_item_needs_work(s: &Session, item: FaceScanItem, named_only: bool) -> bool {
+        let Some(photo) = s.catalog.photo(item.photo).filter(|photo| photo.in_library()) else { return false };
+        let embed = photo.meta.regions.iter().any(|region| {
+            region.kind == RegionKind::Face
+                && (!named_only || region.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                && s.faces.index.needs(item.photo.0, &region.rect)
+        });
+        item.redetect || embed || (item.search && needs_search(s, photo))
+    }
+
+    fn finish_scan_photo(run: &mut FaceScanRun, id: PhotoId, failed: bool, reason: &str) {
+        run.done = run.done.saturating_add(1).min(run.total);
+        if failed {
+            run.failed = run.failed.saturating_add(1);
+            run.task.item_failed(&format!("photo {}: {reason}", id.0));
+        } else {
+            run.task.item_done();
+        }
+    }
+
+    /// Hand the scoped queue to the shared face worker, alongside any ordinary indexing jobs already in flight.
+    fn queue_maintenance(s: &mut Session, embedder: &Arc<Embedder>, pace: Pace, target: usize) {
+        if s.faces.maintenance.as_ref().is_some_and(|run| run.task.is_cancelled())
+            && let Some(run) = s.faces.maintenance.as_mut()
+        {
+            run.cancelled = true;
+            run.queue.clear();
+        }
+        let cancelling = s.faces.maintenance.as_ref().is_some_and(|run| run.cancelled);
+        if cancelling {
+            // Jobs already handed to the shared worker are bounded by the batch's in-flight set. Let them drain even if
+            // the continuous indexer was paused; the cancelled batch has no queued work left to start.
+            if let Some(worker) = &s.faces.worker {
+                worker.allow(max_workers(), Pace::Light);
+            }
+            return;
+        }
+        if target == 0 || s.faces.maintenance.is_none() {
+            if let Some(worker) = &s.faces.worker {
+                worker.allow(target, pace);
+            }
+            return;
+        }
+        if s.faces.worker.is_none() && s.faces.maintenance.as_ref().is_some_and(|run| !run.queue.is_empty()) {
+            s.faces.worker = Worker::start(max_workers());
+        }
+        if let Some(worker) = &s.faces.worker {
+            worker.allow(target, pace);
+        }
+        let queued_at_start = s.faces.maintenance.as_ref().map_or(0, |run| run.queue.len());
+        let limit = target;
+        let mut looked = 0;
+        while s.faces.in_flight.len() < limit && looked < queued_at_start {
+            let Some(item) = s.faces.maintenance.as_mut().and_then(|run| run.queue.pop_front()) else { break };
+            looked += 1;
+            if s.faces.in_flight.contains(&item.photo) {
+                if let Some(run) = s.faces.maintenance.as_mut() {
+                    run.queue.push_back(item);
+                }
+                continue;
+            }
+            let (min_score, named_only) =
+                s.faces.maintenance.as_ref().map_or((crate::faces_worker::REGION_SCORE, false), |run| (run.min_score, run.named_only));
+            let needs_work = scan_item_needs_work(s, item, named_only);
+            let Some(job) = prepare(s, item.photo, item.search, item.redetect, item.replace_detections, min_score, named_only) else {
+                if let Some(run) = s.faces.maintenance.as_mut() {
+                    finish_scan_photo(run, item.photo, needs_work, "photo could not be prepared for scanning");
+                }
+                continue;
+            };
+            let detail = s.catalog.photo(item.photo).map(|photo| photo.file_name.clone()).unwrap_or_else(|| item.photo.0.to_string());
+            if let Some(run) = s.faces.maintenance.as_ref() {
+                run.task.detail(&detail);
+            }
+            if s.faces.worker.as_ref().is_some_and(|worker| worker.submit(embedder.clone(), job)) {
+                s.faces.in_flight.insert(item.photo);
+                if let Some(run) = s.faces.maintenance.as_mut() {
+                    run.in_flight.insert(item.photo);
+                }
+            } else {
+                if let Some(run) = s.faces.maintenance.as_mut() {
+                    run.queue.push_front(item);
+                }
+                break;
+            }
+        }
     }
 
     pub fn index(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1102,6 +1692,7 @@ mod imp {
     /// of photos already searched, in memory and on disk. Faces already in the catalog (named, or found by an earlier
     /// scan) stay. What a worker is still making is dropped when it comes back.
     fn drop_index(s: &mut Session, cmd: &str) {
+        abort_maintenance(s);
         // the chosen model's index is loaded first, so its file is the one written fresh (none chosen: only the files go)
         let _ = current_manifest(s, cmd, true);
         s.faces.epoch = s.faces.epoch.wrapping_add(1);
@@ -1149,6 +1740,55 @@ mod imp {
         status(s, &Value::Null)
     }
 
+    /// `faces.reset`: confirmed, destructive clean slate. Remove face-region assignments and all recognition caches,
+    /// while leaving other region kinds and unrelated people-role bindings alone.
+    pub fn reset(s: &mut Session, p: &Value) -> Result<Value> {
+        const C: &str = "faces.reset";
+        if p.get("confirmed").and_then(Value::as_bool) != Some(true) {
+            return Err(bad(C, "set `confirmed: true` to remove every face region, name, decision and recognition cache"));
+        }
+        // Keep the clean slate: if the continuous recogniser remained enabled and unpaused, its next pump would start
+        // finding and embedding faces again immediately after this reset.
+        let paused = s.face_models_dir.is_some();
+        if paused {
+            set_paused(s, C, true)?;
+        }
+        abort_maintenance(s);
+        let mut edits = Vec::new();
+        let (mut regions, mut photos_changed) = (0usize, 0usize);
+        for photo in s.catalog.photos() {
+            let mut meta = photo.meta.clone();
+            let before = meta.regions.len();
+            meta.regions.retain(|region| !matches!(region.kind, RegionKind::Face | RegionKind::IgnoredFace));
+            let removed = before - meta.regions.len();
+            if removed > 0 {
+                regions += removed;
+                photos_changed += 1;
+                edits.push(Op::SetMeta { id: photo.id, meta: Box::new(meta) });
+            }
+        }
+        // This file also holds unrelated AI-mask role bindings, which a face reset does not erase. Remove the actual
+        // stored appearance examples and face-suggestion decisions, so a clean scan cannot inherit stale identities.
+        s.with_people(|store| {
+            store.people.clear();
+            store.decisions.clear();
+        })
+        .map_err(|error| bad(C, error))?;
+        drop_index(s, C);
+        if !edits.is_empty() {
+            s.commit("Reset Face Data", Op::Batch { ops: edits })?;
+            s.skip_auto_write = true;
+        }
+        Ok(json!({
+            "reset": true,
+            "paused": paused,
+            "photos": photos_changed,
+            "faceRegions": regions,
+            "indexedFaces": s.faces.index.len(),
+            "searchedPhotos": s.faces.scanned.len()
+        }))
+    }
+
     /// `faces.pump`: cheap to call every frame. Takes in what the background worker has finished and, when it is idle,
     /// hands it the next photo with faces to embed. Does nothing (and says so) until recognition is switched on in
     /// Settings with a model chosen.
@@ -1162,7 +1802,7 @@ mod imp {
         let target = target_workers(pace);
         // a model that has finished downloading is installed and chosen here, whether or not recognition was on
         finish_downloads(s);
-        if !enabled {
+        if !enabled && s.faces.maintenance.is_none() {
             track(s, 0, false);
             if let Some(w) = &s.faces.worker {
                 w.allow(0, Pace::Pause);
@@ -1188,13 +1828,19 @@ mod imp {
                 "indexedFaces": s.faces.index.len(),
             }));
         }
-        if s.faces.retry_at.is_some_and(|t| Instant::now() < t) {
+        if s.faces.maintenance.is_none() && s.faces.retry_at.is_some_and(|t| Instant::now() < t) {
             track(s, 0, paused);
             return Ok(json!({"active": false, "paused": paused, "state": "idle"}));
         }
         let Ok(embedder) = current_with(s, C, false) else {
-            // the chosen model is gone or broken: look again in a few seconds, not every frame
+            // the chosen model is gone or broken: look again in a few seconds, not every frame; an explicit scoped run
+            // has nowhere to make progress, so finish it as cancelled instead of leaving a stuck activity row.
             s.faces.retry_at = Some(Instant::now() + Duration::from_secs(3));
+            if s.faces.maintenance.is_some() {
+                abort_maintenance(s);
+                finish_maintenance_if_done(s);
+                return Ok(json!({"active": false, "paused": paused, "state": "idle", "maintenance": maintenance_status(s, &Value::Null)?}));
+            }
             track(s, 0, paused);
             return Ok(json!({"active": false, "paused": paused, "state": "idle"}));
         };
@@ -1216,6 +1862,59 @@ mod imp {
             }
             s.faces.saved_at = Some(Instant::now());
         }
+        finish_maintenance_if_done(s);
+        if !enabled && s.faces.maintenance.is_none() {
+            track(s, 0, false);
+            if let Some(worker) = &s.faces.worker {
+                worker.allow(0, Pace::Pause);
+            }
+            return Ok(json!({
+                "active": false,
+                "paused": paused,
+                "state": "off",
+                "inFlight": 0,
+                "pendingPhotos": 0,
+                "peak": 0,
+                "indexedFaces": s.faces.index.len(),
+                "maintenance": maintenance_status(s, &Value::Null)?,
+            }));
+        }
+        if s.faces.maintenance.is_some() {
+            let (runs, share, second_share) = crate::faces_worker::gpu_pace(pace);
+            lcc_gpu::faces::set_pace(runs, share, second_share);
+            if let Some(run) = s.faces.maintenance.as_ref() {
+                run.task.set_controls(Some(crate::activity::Controls {
+                    paused,
+                    pause: "faces.pause",
+                    resume: "faces.resume",
+                    settings_tab: "faces",
+                    settings_section: None,
+                }));
+            }
+            queue_maintenance(s, &embedder, pace, target);
+            finish_maintenance_if_done(s);
+            if !enabled {
+                track(s, 0, false);
+            } else {
+                let maintenance_in_flight = s.faces.maintenance.as_ref().map_or(0, |run| run.in_flight.len());
+                let regular_pending = s.faces.queue.len() + s.faces.in_flight.len().saturating_sub(maintenance_in_flight);
+                track(s, regular_pending as u64, paused);
+            }
+            let maintenance = maintenance_status(s, &Value::Null)?;
+            let total_pending = s.faces.queue.len() + s.faces.in_flight.len();
+            return Ok(json!({
+                "active": true,
+                "paused": paused,
+                "state": if paused { "paused" } else { "maintenance" },
+                "inFlight": s.faces.in_flight.len(),
+                "pendingPhotos": total_pending,
+                "indexedFaces": s.faces.index.len(),
+                "searchedPhotos": s.faces.scanned.len(),
+                "workers": target,
+                "embedded": embedded,
+                "maintenance": maintenance,
+            }));
+        }
         if s.faces.in_flight.is_empty() && s.faces.queue.is_empty() && s.faces.queue_stamp != Some(s.catalog.revision) {
             // the queue is taken from the end, so it is made last first
             let mut queue = pending(s, &[], true);
@@ -1236,7 +1935,7 @@ mod imp {
         lcc_gpu::faces::set_pace(runs, share, second_share);
         while target > 0 && s.faces.in_flight.len() < target + PREFETCH {
             let Some(id) = s.faces.queue.pop() else { break };
-            let Some(job) = prepare(s, id, true) else { continue };
+            let Some(job) = prepare(s, id, true, false, false, crate::faces_worker::REGION_SCORE, false) else { continue };
             if s.faces.worker.as_ref().is_some_and(|w| w.submit(embedder.clone(), job)) {
                 s.faces.in_flight.insert(id);
             } else {
@@ -1387,10 +2086,197 @@ mod imp {
         order
     }
 
+    /// How many faces one chunk of the judging covers: they are scored in parallel, and the clock is looked at between
+    /// chunks, so a call overshoots its budget by about one chunk rather than by the library.
+    const JUDGE_CHUNK: usize = 16;
+    /// The most faces one call judges, whatever the clock says (a coarse timer must not let a call run away).
+    const JUDGE_PER_CALL: usize = 200_000;
+
+    /// What the model and the bars of a suggestion are, as one number: the model's tag (which carries its identity,
+    /// version and mirror setting), which library it is, the threshold and how many of a person's faces a score
+    /// averages. A different one makes every judged face wrong, so the scan starts over.
+    fn model_stamp(tag: &str, epoch: u64, threshold: f32, top: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        tag.hash(&mut h);
+        epoch.hash(&mut h);
+        threshold.to_bits().hash(&mut h);
+        top.hash(&mut h);
+        h.finish()
+    }
+
+    /// The named faces the suggestions are made from, as one number: each one's name, photo and region. A different one
+    /// has every face judged again, over the answer the last one gave (a view that emptied on every name would be no
+    /// use on a large library).
+    fn gallery_stamp(gallery: &[(String, u64, usize, Arc<[f32]>)]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        gallery.len().hash(&mut h);
+        for (name, photo, index, _) in gallery {
+            name.trim().to_lowercase().hash(&mut h);
+            photo.hash(&mut h);
+            index.hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// The unnamed faces a suggestion is made from, and the named ones it is compared with: the named faces of the
+    /// library with an embedding, each with the photo and region it is (so one gallery is told from another).
+    fn suggestion_gallery(s: &Session) -> Vec<(String, u64, usize, Arc<[f32]>)> {
+        s.catalog
+            .photos()
+            .filter(|ph| ph.in_library())
+            .flat_map(|ph| {
+                ph.meta
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.kind == RegionKind::Face)
+                    .filter_map(|(index, r)| Some((r.name.clone()?, ph.id.0, index, s.faces.index.get(ph.id.0, &r.rect)?.clone())))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The name the named faces suggest for each of `faces`, as `faces.suggest` would, worked out here and now: a
+    /// decision acts on this, never on what a page (or an older scan) showed.
+    pub fn suggest_for(s: &mut Session, faces: &[(u64, usize, Rect)]) -> std::collections::HashMap<(u64, usize), (String, f32)> {
+        let mut out = std::collections::HashMap::new();
+        let Some(_) = s.face_models_dir.clone() else { return out };
+        let Ok(manifest) = current_manifest(s, "faces.unnamed", false) else { return out };
+        let gallery = suggestion_gallery(s);
+        if gallery.is_empty() {
+            return out;
+        }
+        let refs: Vec<(&str, &[f32])> = gallery.iter().map(|(name, _, _, e)| (name.as_str(), &e[..])).collect();
+        let threshold = manifest.thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
+        let top = top_faces(s);
+        for (photo, index, rect) in faces {
+            let Some(e) = s.faces.index.get(*photo, rect) else { continue };
+            if let Some(x) = matching::suggest(&matching::rank_top(e, &refs, top), threshold, DEFAULT_MARGIN) {
+                out.insert((*photo, *index), (x.name, x.score));
+            }
+        }
+        out
+    }
+
+    /// Judge every unnamed face with an embedding against the named ones, a slice per call, so a suggestion is the
+    /// library's answer and not a page's (issue #1365): `faces.unnamed` lists a page, and which page a face falls on
+    /// must not decide whether the person it looks like is offered. The work is kept in [`crate::face_suggestions`],
+    /// so it resumes where the last call stopped; it starts over only when what a suggestion depends on changed (the
+    /// model, the named faces, the bars). The faces of `first` (the page about to be listed) are judged first, so a
+    /// page keeps its names and hover scores while the rest of the library is looked at again.
+    ///
+    /// With `budget` zero nothing is judged: the caller only asks how far the judging is.
+    pub fn scan_suggestions(s: &mut Session, budget: Duration, first: &[(u64, usize, Rect)]) -> super::Progress {
+        let done = super::Progress { total: 0, judged: 0, complete: true };
+        let Some(_) = s.face_models_dir.clone() else { return done };
+        let Ok(manifest) = current_manifest(s, "faces.unnamed", false) else { return done };
+        let threshold = manifest.thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
+        let top = top_faces(s);
+        let gallery = suggestion_gallery(s);
+        let (model, named) = (model_stamp(&s.faces.index.tag, s.faces.epoch, threshold, top), gallery_stamp(&gallery));
+        {
+            let scan = &mut s.faces.suggestions;
+            if scan.model != model {
+                scan.reset(model, named);
+            } else if scan.gallery != named {
+                scan.named_again(named);
+            }
+        }
+        // nothing is named (or nothing named is embedded): no face has a person to be suggested as
+        if gallery.is_empty() {
+            let scan = &mut s.faces.suggestions;
+            scan.complete = true;
+            scan.indexed = s.faces.index.len();
+            return done;
+        }
+        // nothing was embedded since every face was judged: the walk over the library can be skipped
+        let judged_scan = &s.faces.suggestions;
+        if judged_scan.complete && judged_scan.indexed == s.faces.index.len() {
+            return super::Progress { total: judged_scan.judged.len(), judged: judged_scan.judged.len(), complete: true };
+        }
+        // the faces still to judge, and how many of the library's are judged under this stamp already
+        let (mut todo, mut judged) = {
+            let mut todo: Vec<(u64, usize, Arc<[f32]>)> = Vec::new();
+            let mut judged = 0usize;
+            for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
+                for (index, r) in ph.meta.regions.iter().enumerate() {
+                    if r.kind != RegionKind::Face || r.name.is_some() {
+                        continue;
+                    }
+                    let Some(e) = s.faces.index.get(ph.id.0, &r.rect) else { continue };
+                    if judged_scan.judged.contains(&(ph.id.0, index)) {
+                        judged += 1;
+                    } else {
+                        todo.push((ph.id.0, index, e.clone()));
+                    }
+                }
+            }
+            (todo, judged)
+        };
+        let total = judged + todo.len();
+        if !budget.is_zero() && !todo.is_empty() {
+            // the page's faces first: they are what the caller is about to list
+            let page: std::collections::HashSet<(u64, usize)> = first.iter().map(|(photo, index, _)| (*photo, *index)).collect();
+            todo.sort_by_key(|(photo, index, _)| !page.contains(&(*photo, *index)));
+            let refs: Vec<(&str, &[f32])> = gallery.iter().map(|(name, _, _, e)| (name.as_str(), &e[..])).collect();
+            let started = Instant::now();
+            let mut looked = 0usize;
+            for chunk in todo.chunks(JUDGE_CHUNK) {
+                let found: Vec<((u64, usize), Option<(String, f32)>, Option<(String, f32)>)> = chunk
+                    .par_iter()
+                    .map(|(photo, index, e)| {
+                        let ranked = matching::rank_top(e, &refs, top);
+                        let similarity = ranked.first().map(|b| (b.name.clone(), b.score));
+                        let suggestion = matching::suggest(&ranked, threshold, DEFAULT_MARGIN).map(|x| (x.name, x.score));
+                        ((*photo, *index), similarity, suggestion)
+                    })
+                    .collect();
+                let scan = &mut s.faces.suggestions;
+                for (key, similarity, suggestion) in found {
+                    scan.judge(key, similarity, suggestion);
+                }
+                judged += chunk.len();
+                looked += chunk.len();
+                if started.elapsed() >= budget || looked >= JUDGE_PER_CALL {
+                    break;
+                }
+            }
+        }
+        let complete = judged == total;
+        let scan = &mut s.faces.suggestions;
+        scan.complete = complete;
+        if complete {
+            scan.indexed = s.faces.index.len();
+        }
+        super::Progress { total, judged, complete }
+    }
+
+    /// The grouped suggestions the scope holds ([`super::suggestion_groups`]), from what the scan has judged so far.
+    pub fn suggestion_groups(s: &mut Session, scope: &super::Scope, people: &std::collections::HashSet<String>) -> Value {
+        let found = s.faces.suggestions.suggestions.clone();
+        super::suggestion_groups(s, &found, scope, people)
+    }
+
     /// Put the unnamed faces `all` in order of likeness (the ones already embedded; the rest follow in photo order) and
-    /// find a name for those the named faces recognise, for the first `limit` of them.
-    pub fn arrange_unnamed(s: &mut Session, all: &mut Vec<(u64, usize, Rect)>, limit: usize) -> super::Arranged {
-        let none = super::Arranged { ordered: false, ready: false, suggestions: Default::default(), groups: Default::default() };
+    /// give the page's faces what the named faces recognise them as, as the library-wide scan found it.
+    ///
+    /// The scan ([`scan_suggestions`]) has already judged the library, so which faces carry a suggestion no longer
+    /// depends on their place in this order or on `limit` (issue #1365): that is only how many are listed.
+    pub fn arrange_unnamed(
+        s: &mut Session,
+        all: &mut Vec<(u64, usize, Rect)>,
+        limit: usize,
+        people: &std::collections::HashSet<String>,
+    ) -> super::Arranged {
+        let none = super::Arranged {
+            ordered: false,
+            ready: false,
+            suggestions: Default::default(),
+            similarities: Default::default(),
+            groups: Default::default(),
+        };
         let Some(_) = s.face_models_dir.clone() else { return none };
         let Ok(manifest) = current_manifest(s, "faces.unnamed", false) else { return none };
         let (mut embedded, mut plain) = (Vec::new(), Vec::new());
@@ -1403,37 +2289,24 @@ mod imp {
         let beyond = embedded.split_off(embedded.len().min(MAX_ARRANGED));
         let order = nearest_chain(&embedded.iter().map(|(_, e)| &e[..]).collect::<Vec<_>>());
         let ordered: Vec<((u64, usize, Rect), Arc<[f32]>)> = order.into_iter().filter_map(|i| embedded.get(i).cloned()).collect();
-        // names the faces already named suggest, as `faces.suggest` would
-        let gallery: Vec<(String, Arc<[f32]>)> = s
-            .catalog
-            .photos()
-            .filter(|ph| ph.in_library())
-            .flat_map(|ph| {
-                ph.meta
-                    .regions
-                    .iter()
-                    .filter(|r| r.kind == RegionKind::Face)
-                    .filter_map(|r| Some((r.name.clone()?, s.faces.index.get(ph.id.0, &r.rect)?.clone())))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let refs: Vec<(&str, &[f32])> = gallery.iter().map(|(n, e)| (n.as_str(), &e[..])).collect();
         let threshold = manifest.thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
-        let top = top_faces(s);
-        let mut suggestions = std::collections::HashMap::new();
-        if !refs.is_empty() {
-            for ((photo, index, _), e) in ordered.iter().take(limit) {
-                if let Some(x) = matching::suggest(&matching::rank_top(e, &refs, top), threshold, DEFAULT_MARGIN) {
-                    suggestions.insert((*photo, *index), (x.name, x.score));
-                }
-            }
-        }
         let groups = look_alike_groups(ordered.iter().map(|((photo, index, _), e)| ((*photo, *index), &e[..])), threshold);
         let grouped = !ordered.is_empty();
         all.extend(ordered.into_iter().map(|(f, _)| f));
         all.extend(beyond.into_iter().map(|(f, _)| f));
         all.extend(plain);
-        super::Arranged { ordered: grouped, ready: true, suggestions, groups }
+        // a suggestion naming someone since renamed or removed is not shown: the judging has still to reach this face
+        let known = |v: &(String, f32)| people.contains(&v.0.trim().to_lowercase());
+        let (mut suggestions, mut similarities) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+        for (photo, index, _) in all.iter().take(limit) {
+            if let Some(v) = s.faces.suggestions.similarities.get(&(*photo, *index)).filter(|v| known(v)) {
+                similarities.insert((*photo, *index), v.clone());
+            }
+            if let Some(v) = s.faces.suggestions.suggestions.get(&(*photo, *index)).filter(|v| known(v)) {
+                suggestions.insert((*photo, *index), v.clone());
+            }
+        }
+        super::Arranged { ordered: grouped, ready: true, suggestions, similarities, groups }
     }
 
     /// Number the runs of `chain` (faces in order of likeness) whose neighbours are at least `threshold` alike: each
@@ -1578,7 +2451,17 @@ mod imp {
 
         fn finished(s: &Session, id: PhotoId, found: Option<Vec<Rect>>, results: Vec<(Rect, Option<Vec<f32>>, Rect)>) -> Done {
             let content = s.catalog.photo(id).map(|p| crate::media::content_key(p)).unwrap_or_default();
-            Done { tag: s.faces.index.tag.clone(), epoch: s.faces.epoch, id, content, results, detect_wanted: true, found }
+            Done {
+                tag: s.faces.index.tag.clone(),
+                epoch: s.faces.epoch,
+                id,
+                content,
+                results,
+                detect_wanted: true,
+                redetect: false,
+                replace_detections: false,
+                found,
+            }
         }
 
         #[test]
@@ -1632,13 +2515,25 @@ mod imp {
                 let scan = pending(&s, &[], true);
                 assert_eq!(scan.first(), Some(&b), "named faces first");
                 assert!(scan.contains(&a) && scan.len() > 2, "the unsearched photos follow");
-                assert!(prepare(&mut s, a, false).is_none(), "nothing to embed in a photo without boxes");
+                assert!(
+                    prepare(&mut s, a, false, false, false, crate::faces_worker::REGION_SCORE, false).is_none(),
+                    "nothing to embed in a photo without boxes"
+                );
                 if detector {
-                    assert!(prepare(&mut s, a, true).is_some_and(|p| p.detect && p.todo.is_empty()));
+                    assert!(
+                        prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false)
+                            .is_some_and(|p| p.detect && p.todo.is_empty())
+                    );
                 } else {
-                    assert!(prepare(&mut s, a, true).is_none(), "no detector: nothing to do, and not marked as searched");
+                    assert!(
+                        prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false).is_none(),
+                        "no detector: nothing to do, and not marked as searched"
+                    );
                 }
-                assert!(prepare(&mut s, b, true).is_some_and(|p| !p.detect && p.todo.len() == 2), "a photo with boxes is not searched");
+                assert!(
+                    prepare(&mut s, b, true, false, false, crate::faces_worker::REGION_SCORE, false).is_some_and(|p| !p.detect && p.todo.len() == 2),
+                    "a photo with boxes is not searched"
+                );
                 // once searched, a photo is not searched again
                 s.faces.scanned.insert(a.0);
                 assert!(!pending(&s, &[], true).contains(&a));
@@ -1750,6 +2645,183 @@ mod imp {
             assert_eq!(photos, vec![c.0; 10], "the faces past the first window are found, the ones like Bob are not");
             let _ = std::fs::remove_dir_all(&d);
         }
+
+        fn file_scope_session() -> (Session, PhotoId, PhotoId, PhotoId, PhotoId) {
+            let mut s = Session::new();
+            let rows = [
+                (PhotoId(1), "/photos/Trip/a.jpg", "a.jpg"),
+                (PhotoId(2), "/photos/Trip/Day1/b.jpg", "b.jpg"),
+                (PhotoId(3), "/photos/Trip-old/c.jpg", "c.jpg"),
+                (PhotoId(4), "/photos/Elsewhere/d.jpg", "d.jpg"),
+            ];
+            for (id, path, name) in rows {
+                let photo = Photo::new(id, Source::File { path: path.into() }, name, "JPEG", 60, 40, "2026-01-01");
+                s.catalog.apply(Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+            }
+            (s, rows[0].0, rows[1].0, rows[2].0, rows[3].0)
+        }
+
+        fn add_album(s: &mut Session, name: &str, parent: Option<u64>, folder: bool) -> u64 {
+            s.execute("album.create", &json!({"name": name, "parent": parent, "folder": folder})).unwrap()["id"].as_u64().unwrap()
+        }
+
+        fn add_to_album(s: &mut Session, album: u64, photos: &[PhotoId]) {
+            s.execute("library.select", &json!({"ids": photos.iter().map(|id| id.0).collect::<Vec<_>>()})).unwrap();
+            s.execute("album.addPhotos", &json!({"id": album})).unwrap();
+        }
+
+        #[test]
+        fn maintenance_folder_scope_resolves_direct_children_and_optional_subfolders() {
+            let (mut s, direct, nested, sibling, outside) = file_scope_session();
+            let (all, _) = maintenance_scope(&mut s, &json!({"folder": "/photos/Trip"})).unwrap();
+            assert_eq!(all, vec![direct, nested], "subfolders are included by default; a similarly named sibling is not");
+            let (only_direct, _) = maintenance_scope(&mut s, &json!({"folder": "/photos/Trip", "includeSubfolders": false})).unwrap();
+            assert_eq!(only_direct, vec![direct], "only files directly in the chosen folder are included");
+            let (many, _) =
+                maintenance_scope(&mut s, &json!({"folders": ["/photos/Trip", "/photos/Elsewhere"], "includeSubfolders": false})).unwrap();
+            assert_eq!(many, vec![direct, outside], "multiple folder roots are unioned and deduplicated");
+            assert!(!many.contains(&sibling));
+        }
+
+        #[test]
+        fn maintenance_collection_scope_always_recurses_nested_sets_and_unions_multiple_collections() {
+            let (mut s, direct, nested, sibling, outside) = file_scope_session();
+            let trip = add_album(&mut s, "Trip", None, true);
+            let picks = add_album(&mut s, "Picks", Some(trip), false);
+            let day = add_album(&mut s, "Day 1", Some(trip), true);
+            let day_picks = add_album(&mut s, "Day picks", Some(day), false);
+            let extra = add_album(&mut s, "Extra", None, false);
+            add_to_album(&mut s, picks, &[direct]);
+            add_to_album(&mut s, day_picks, &[nested]);
+            add_to_album(&mut s, extra, &[sibling, outside]);
+
+            let (with_subfolders, _) = maintenance_scope(&mut s, &json!({"albums": [trip]})).unwrap();
+            assert_eq!(with_subfolders, vec![direct, nested], "a collection set includes all nested collections");
+            let (folder_toggle_off, _) = maintenance_scope(&mut s, &json!({"albums": [trip], "includeSubfolders": false})).unwrap();
+            assert_eq!(folder_toggle_off, vec![direct, nested], "the filesystem-folder toggle does not trim a collection set");
+            let (multiple, _) = maintenance_scope(&mut s, &json!({"albums": [picks, extra]})).unwrap();
+            assert_eq!(multiple, vec![direct, sibling, outside], "several collections are unioned and returned in photo order");
+        }
+
+        #[test]
+        fn new_item_mode_skips_searched_photos_but_recognition_mode_keeps_existing_boxes() {
+            let d = temp("maintenance-new");
+            let (mut s, _) = setup(&d, 64);
+            let (with_face, without_faces) = two_photos(&s);
+            set_regions(&mut s, with_face, vec![region(0.1, None)]);
+            assert!(mode_needs_photo(&s, FaceScanMode::Recognize, with_face), "existing unindexed face needs its embedding");
+            assert!(mode_needs_photo(&s, FaceScanMode::New, with_face), "an unsearched photo with a face is new work");
+            s.faces.scanned.insert(with_face.0);
+            assert!(!mode_needs_photo(&s, FaceScanMode::New, with_face), "the new-items pass does not repeat a searched photo");
+            assert!(mode_needs_photo(&s, FaceScanMode::Recognize, with_face), "recognition-only can still rebuild an existing box");
+            assert!(mode_needs_photo(&s, FaceScanMode::Detect, without_faces), "detection considers unsearched photos without boxes");
+            assert!(!mode_needs_photo(&s, FaceScanMode::Recognize, without_faces), "recognition-only does not search for boxes");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        #[test]
+        fn reset_requires_confirmation_and_preserves_other_region_kinds_and_people_roles() {
+            let (mut s, d) = loaded("maintenance-reset");
+            let (photo, _) = two_photos(&s);
+            let face = region(0.1, Some("Ann"));
+            let ignored = Region { kind: RegionKind::IgnoredFace, ..region(0.4, None) };
+            let pet = Region { kind: RegionKind::Pet, ..region(0.55, Some("Milo")) };
+            let focus = Region { kind: RegionKind::Focus, ..region(0.7, None) };
+            let other = Region { kind: RegionKind::Other("RegionOfInterest".into()), ..region(0.8, None) };
+            set_regions(&mut s, photo, vec![face.clone(), ignored, pet.clone(), focus.clone(), other.clone()]);
+            s.faces.index.insert(photo.0, &face.rect, unit(&[(0, 1.0)]));
+            s.faces.scanned.insert(photo.0);
+            s.with_people(|store| {
+                store.roles.push(crate::people_store::RoleBinding {
+                    role: "Subject".into(),
+                    person: "Ann".into(),
+                    scope: crate::people_store::Scope::Folder("/photos/Trip".into()),
+                });
+                store.people.push(crate::people_store::PersonData {
+                    name: "Ann".into(),
+                    examples: vec![crate::people_store::Example {
+                        photo: photo.0,
+                        rect: [face.rect.x0, face.rect.y0, face.rect.x1, face.rect.y1],
+                        signature: json!([1.0, 0.0]),
+                    }],
+                });
+                store.decisions.push(crate::people_store::SuggestionDecision {
+                    photo: photo.0,
+                    index: 0,
+                    person: "Ann".into(),
+                    verdict: crate::people_store::Verdict::Rejected,
+                    rect: Some(face.rect),
+                    decided: "2026-01-01".into(),
+                });
+            })
+            .unwrap();
+
+            assert!(s.execute("faces.reset", &json!({})).is_err(), "a reset without explicit confirmation is refused");
+            assert_eq!(s.catalog.photo(photo).unwrap().meta.regions.len(), 5, "the refused reset changes nothing");
+            assert_eq!(s.faces.index.len(), 1);
+            assert!(s.faces.scanned.contains(photo.0));
+
+            let result = s.execute("faces.reset", &json!({"confirmed": true})).unwrap();
+            assert_eq!(result["faceRegions"], 2, "Face and IgnoredFace regions are removed");
+            assert_eq!(result["paused"], true, "the continuous scan stays paused after reset");
+            assert_eq!(s.execute("faces.status", &json!({})).unwrap()["paused"], true, "the saved scan status is paused too");
+            assert_eq!(s.catalog.photo(photo).unwrap().meta.regions, vec![pet, focus, other]);
+            assert_eq!(s.faces.index.len(), 0);
+            assert_eq!(s.faces.scanned.len(), 0);
+            let people = s.people_store().clone();
+            assert_eq!(people.roles.len(), 1, "role bindings remain intact");
+            assert_eq!(people.roles[0].person, "Ann");
+            assert!(people.people.is_empty(), "stored appearance examples are cleared");
+            assert!(people.decisions.is_empty(), "face suggestion decisions are cleared");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+
+        #[test]
+        fn replace_rescan_replaces_only_earlier_automatic_detections() {
+            let (mut s, d) = loaded("maintenance-rescan");
+            let (photo, _) = two_photos(&s);
+            let mut automatic = region(0.1, None);
+            automatic.description = Some(format!("{MARK}{LABEL}"));
+            let mut named = region(0.4, Some("Ann"));
+            named.description = Some(format!("{MARK}{LABEL}"));
+            let manual = region(0.7, None);
+            let ignored = Region { kind: RegionKind::IgnoredFace, ..region(0.82, None) };
+            let mut pet = Region { kind: RegionKind::Pet, ..region(0.9, None) };
+            pet.description = Some(format!("{MARK}{LABEL}"));
+            let old_automatic = automatic.rect;
+            set_regions(&mut s, photo, vec![automatic, named.clone(), manual.clone(), ignored.clone(), pet.clone()]);
+            let fresh = region(0.2, None).rect;
+            let mut done = finished(&s, photo, Some(vec![fresh]), vec![]);
+            done.redetect = true;
+            done.replace_detections = true;
+            ingest(&mut s, done);
+            let regions = &s.catalog.photo(photo).unwrap().meta.regions;
+            assert_eq!(regions.len(), 5);
+            assert!(
+                regions.iter().any(|r| r.rect == fresh && r.name.is_none() && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "the new automatic detection is kept"
+            );
+            assert!(regions.iter().any(|r| r.rect == named.rect && r.name.as_deref() == Some("Ann")), "named faces are kept");
+            assert!(
+                regions.iter().any(|r| r.rect == named.rect && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "a named face with an automatic-detection marker is kept"
+            );
+            assert!(regions.iter().any(|r| r.rect == manual.rect && r.description.is_none()), "manual regions are kept");
+            assert!(regions.iter().any(|r| r.kind == RegionKind::IgnoredFace), "ignored faces are kept");
+            assert!(regions.iter().any(|r| r.kind == RegionKind::Pet), "other region kinds are kept");
+            assert!(
+                regions.iter().any(|r| r.kind == RegionKind::Pet && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "non-face regions are not treated as automatic detections"
+            );
+            assert!(
+                !regions.iter().any(|r| r.rect == old_automatic
+                    && r.kind == RegionKind::Face
+                    && r.name.as_deref().is_none_or(|name| name.trim().is_empty())
+                    && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "old unnamed automatic detections are replaced"
+            );
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 }
 
@@ -1762,6 +2834,20 @@ mod imp {
 
     pub fn index(_: &mut Session, _: &Value) -> Result<Value> {
         Err(bad("faces.index", "this build cannot run face recognition"))
+    }
+
+    pub fn maintain(_: &mut Session, _: &Value) -> Result<Value> {
+        Err(bad("faces.maintain", "this build cannot run face recognition"))
+    }
+
+    pub fn maintenance_status(_: &mut Session, _: &Value) -> Result<Value> {
+        Ok(
+            serde_json::json!({"state": "idle", "mode": null, "scope": null, "done": 0, "total": 0, "pendingPhotos": 0, "failed": 0, "cancelled": false, "taskId": null}),
+        )
+    }
+
+    pub fn reset(_: &mut Session, _: &Value) -> Result<Value> {
+        Err(bad("faces.reset", "this build cannot run face recognition"))
     }
 
     pub fn suggest(_: &mut Session, _: &Value) -> Result<Value> {
@@ -1794,8 +2880,31 @@ mod imp {
         super::Similar { items: Vec::new(), ready: false, pending: 0 }
     }
 
-    pub fn arrange_unnamed(_: &mut Session, _: &mut Vec<(u64, usize, lcc_geom::Rect)>, _: usize) -> super::Arranged {
-        super::Arranged { ordered: false, ready: false, suggestions: Default::default(), groups: Default::default() }
+    pub fn suggest_for(_: &mut Session, _: &[(u64, usize, lcc_geom::Rect)]) -> std::collections::HashMap<(u64, usize), (String, f32)> {
+        std::collections::HashMap::new()
+    }
+
+    pub fn scan_suggestions(_: &mut Session, _: std::time::Duration, _: &[(u64, usize, lcc_geom::Rect)]) -> super::Progress {
+        super::Progress { total: 0, judged: 0, complete: true }
+    }
+
+    pub fn suggestion_groups(_: &mut Session, _: &super::Scope, _: &std::collections::HashSet<String>) -> Value {
+        Value::Array(Vec::new())
+    }
+
+    pub fn arrange_unnamed(
+        _: &mut Session,
+        _: &mut Vec<(u64, usize, lcc_geom::Rect)>,
+        _: usize,
+        _: &std::collections::HashSet<String>,
+    ) -> super::Arranged {
+        super::Arranged {
+            ordered: false,
+            ready: false,
+            suggestions: Default::default(),
+            similarities: Default::default(),
+            groups: Default::default(),
+        }
     }
 }
 
@@ -1820,6 +2929,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{budgetMs?: 200, ids?: [photo ids to do first]} → {embedded, photosDone, pendingPhotos, indexedFaces, ms}: embed the faces in the library with the chosen recognition model, as many photos as fit in the time (at least one); call again until `pendingPhotos` is 0. `budgetMs: 0` only reports",
             super::always,
             imp::index
+        ),
+        cmd!(
+            "faces.maintain",
+            "Maintain Face Index",
+            [],
+            None,
+            "{mode?: detect | recognize | new | rebuild | rebuildNamed | rescan, scope?: all | visible | selected, ids?, folder?, folders?, album?, albums?, includeSubfolders?: bool (filesystem folders only; collection sets include nested collections), minScore?: 0..1, behavior?: merge | replace} → {state, mode, scope, done, total, pendingPhotos, failed, taskId}: start a cancellable background maintenance pass. `detect` finds and embeds missing faces; `recognize` embeds existing boxes only; `new` skips indexed/searched photos; `rebuild` re-embeds existing boxes; `rebuildNamed` rebuilds the named-face gallery; `rescan` runs detection again and merges, or replaces earlier automatic detections with `behavior: replace`. Select folders/albums/ids, or the whole library by default. Pause with `faces.pause`, cancel its `taskId` with `activity.cancel`, and poll `faces.scanStatus`",
+            super::always,
+            imp::maintain
+        ),
+        cmd!(
+            query "faces.scanStatus",
+            "Face Maintenance Status",
+            [],
+            None,
+            "{} → {state: idle | scanning | cancelling | complete | cancelled, mode, scope, done, total, pendingPhotos, failed, taskId}: status of the separate folder/selection maintenance scan, not the continuous library indexer",
+            super::always,
+            imp::maintenance_status
         ),
         cmd!(
             "faces.suggest",
@@ -1885,6 +3012,15 @@ pub fn specs() -> Vec<CommandSpec> {
             imp::restart
         ),
         cmd!(
+            "faces.reset",
+            "Reset All Face Data",
+            [],
+            None,
+            "{confirmed: true} → {reset, paused, photos, faceRegions}: remove every Face and IgnoredFace region and its name, clear suggestion decisions and stored face examples, delete all recognition indexes, and pause the continuous scan so the clean slate stays empty. Other region kinds and people-role bindings are preserved. Destructive; callers must ask for confirmation",
+            super::always,
+            imp::reset
+        ),
+        cmd!(
             "faces.evaluate",
             "Evaluate Face Recognition",
             [],
@@ -1898,7 +3034,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unnamed Faces",
             [],
             None,
-            "{limit?: 600, scope?: \"filter\", bySuggestion?: false} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready, groups?}: the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest, and with `bySuggestion: true` `groups` lists those faces under the person suggested ([{name, total, faces: [{photo, index, rect, view, score}]}], the most faces first). `view` is the box to show the face by. Name them with `faces.nameFaces`, ignore them with `faces.ignore`",
+            "{limit?: 600, scope?: \"filter\", bySuggestion?: false, budgetMs?: 15} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null, similarity: {name, score} | null}], ordered, ready, rejected, scan: {total, judged, complete}, groups?}: the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `similarity` is the best confirmed-person match, including below-threshold matches. Every unnamed face with an embedding is judged against the named ones, `budgetMs` of that per call at most, so a suggestion does not depend on the page a face falls on: `scan` says how many of the library's faces were judged, and whether all of them were (`budgetMs: 0` only reports). With `bySuggestion: true`, `groups` lists every suggested face in the scope under the person suggested ([{name, total, faces: [{photo, index, rect, view, score}]}], the most faces first), not only the listed page's. `view` is the box to show the face by. Name them with `faces.nameFaces`, ignore them with `faces.ignore`",
             super::always,
             unnamed
         ),

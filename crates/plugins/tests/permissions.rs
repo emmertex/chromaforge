@@ -47,7 +47,7 @@ fn manifest(roots: &[(&Path, bool)]) -> String {
     json!({
         "id": ID, "name": "Perms", "version": "1.0.0", "requires": ["programs", "jobs"],
         "permissions": {
-            "catalog": true, "metadataWrite": true, "libraryAdd": true, "pixels": true, "crop": true, "virtualCopy": true,
+            "catalog": true, "metadataWrite": true, "libraryAdd": true, "libraryRemove": true, "pixels": true, "crop": true, "virtualCopy": true,
             "network": ["127.0.0.1", "api.example.com"], "fs": fs,
             "programs": [{"id": "conv", "name": "Converter", "macBundleIds": ["org.example.conv"], "windowsExe": "conv.exe", "linuxExe": "conv"}]
         },
@@ -86,6 +86,10 @@ impl lcc_plugins::HostApi for Host {
     fn library_add(&mut self, _: &Value) -> Result<Value, String> {
         self.seen.push("libraryAdd".into());
         Ok(json!({"id": "2"}))
+    }
+    fn library_remove(&mut self, _: &Value) -> Result<Value, String> {
+        self.seen.push("libraryRemove".into());
+        Ok(json!({"removed": 1, "skipped": 0}))
     }
     fn photo_pixels(&mut self, _: &str, _: u32) -> Result<Value, String> {
         self.seen.push("pixels".into());
@@ -322,6 +326,7 @@ fn every_gated_call_fails_ungranted_and_works_once_allowed() {
         (json!({"method": "keyword.list", "params": {}}), Request::group(Group::Catalog), "keyword.list"),
         (json!({"method": "metadata.setStandard", "params": {"ids": ["1"], "title": "t"}}), Request::group(Group::MetadataWrite), "metadata"),
         (json!({"method": "library.add", "params": {"path": "/x/a.tif", "from": "1"}}), Request::group(Group::LibraryAdd), "libraryAdd"),
+        (json!({"method": "library.remove", "params": {"ids": ["1"]}}), Request::group(Group::LibraryRemove), "libraryRemove"),
         (json!({"method": "photo.pixels", "params": {"photo": "1"}}), Request::group(Group::Pixels), "pixels"),
         (json!({"method": "develop.setCrop", "params": {"photo": "1", "rect": [0.1, 0.1, 0.9, 0.9]}}), Request::group(Group::Crop), "crop"),
         (json!({"method": "photo.virtualCopy", "params": {"photo": "1"}}), Request::group(Group::VirtualCopy), "virtualCopy"),

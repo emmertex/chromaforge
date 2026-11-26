@@ -519,7 +519,7 @@ fn the_highlight_stays_on_the_list() {
 }
 
 fn toast(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 // Given several photos selected, the box says how many its keywords are of; with one photo there
@@ -533,25 +533,23 @@ fn the_box_says_how_many_photos_it_is_for(h: &mut Headless, ids: &[u64]) {
 
 // Given a keyword on several selected photos,
 // when its × takes it off them,
-// then a message names the keyword and how many photos lost it and says how to get it back, and
-// Undo does. Taking a keyword off one photo says nothing: the chip going is enough.
+// then no toast says so (the overlay names the change and the count) and Undo puts it back.
 #[test]
-fn taking_a_keyword_off_several_photos_says_so_and_undo_puts_it_back() {
+fn taking_a_keyword_off_several_photos_shows_no_toast_and_undo_puts_it_back() {
     let (mut h, ids) = two_selected();
     ask(&mut h, "ui.clickWidget", json!({"id": "keywordChipRemove:Weddings"}));
     assert_eq!(toast(&h), "", "only one of the two had Weddings");
     ask(&mut h, "ui.clickWidget", json!({"id": "keywordChipRemove:beach"}));
     assert!(none_has(&h, &ids, "beach"));
-    let said = toast(&h);
-    assert!(said.contains("beach") && said.contains('2') && said.contains("Undo"), "{said}");
+    assert_eq!(toast(&h), "", "the overlay says it");
     ask(&mut h, "engine.execute", json!({"command": "edit.undo", "params": {}}));
     assert!(all_have(&h, &ids, "beach"), "one undo step puts it back on both");
 
-    // the menu's Remove from Selected Photos says the same
+    // the menu's Remove from Selected Photos does the same
     h.app.ui.toasts.clear();
     ask(&mut h, "ui.clickWidget", json!({"id": "keywordChip:beach", "button": "right"}));
     ask(&mut h, "ui.clickWidget", json!({"id": "keywordChipMenu:remove"}));
-    assert!(none_has(&h, &ids, "beach") && toast(&h).contains("beach"), "{}", toast(&h));
+    assert!(none_has(&h, &ids, "beach") && toast(&h).is_empty(), "{}", toast(&h));
 }
 
 // Names of any length and script stay inside the panel in both layouts, and nothing breaks: a

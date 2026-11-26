@@ -142,7 +142,7 @@ fn shift_h_and_the_command_cycle_the_tool_overlay() {
         assert_eq!(h.app.ui.tool_overlay, want);
         assert_eq!(h.app.ui.right, RightPanel::Remove, "Shift+H leaves the panel alone");
     }
-    let toast = h.app.ui.toast().map(|t| t.0.clone());
+    let toast = h.app.ui.toast().map(|t| t.text.clone());
     assert_eq!(toast.as_deref(), Some("Tool Overlay: Auto"));
     // the pins follow the key: Never hides them over the photo
     for _ in 0..3 {

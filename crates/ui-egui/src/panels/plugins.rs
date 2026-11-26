@@ -1272,20 +1272,20 @@ fn ask_ui(app: &mut LccApp, ctx: &egui::Context, s: &mut State) {
                     match start_command(app, s, &asking.ask.plugin, asking.ask.rerun.field("command").as_str().unwrap_or_default()) {
                         Ok(v) if !v.is_null() => toast_result(app, ctx, s, &v),
                         Ok(_) => {}
-                        Err(e) => app.toast(ctx, e),
+                        Err(e) => app.toast_error(ctx, e),
                     }
                 }
                 Ok(_) => match run_as_user(app, &asking.ask.rerun) {
                     Ok(v) => toast_result(app, ctx, s, &v),
-                    Err(e) => app.toast(ctx, e),
+                    Err(e) => app.toast_error(ctx, e),
                 },
-                Err(e) => app.toast(ctx, e.to_string()),
+                Err(e) => app.toast_error(ctx, e.to_string()),
             }
         }
         Some(false) => {
             s.asking = None;
             if let Err(e) = lcc_engine::cmd::plugins::deny_by_user(&mut app.session, &call) {
-                app.toast(ctx, e.to_string());
+                app.toast_error(ctx, e.to_string());
             }
         }
     }
@@ -2065,6 +2065,11 @@ fn updates_ui(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Val
             actions.push(("plugins.checkUpdates", json!({"id": id})));
         }
     });
+    // from `checkedAt` and the clock, not `plugin.list`'s `checkedAgo`, which is as old as the listing
+    if let Some(at) = u["checkedAt"].as_i64() {
+        let ago = chrono::Utc::now().timestamp().saturating_sub(at);
+        super::update::last_checked_line(ui, &crate::theme::Tokens::get(ui.ctx()), ago);
+    }
     if let Some(err) = u["error"].as_str() {
         ui.colored_label(ui.visuals().warn_fg_color, tr_format!("Couldn't check for updates: {error}", error = err));
     }

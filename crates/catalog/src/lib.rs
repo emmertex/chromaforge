@@ -66,6 +66,7 @@ pub use query::{DateGroup, Filter, MatchOp, Person, RatingOp, Sort, SortKey, Tal
 pub use remote::{PreviewEntry, RemoteIdentity, RemoteKey, RemoteTable, SyncState};
 pub use rules::{Match, Rule, RuleSet};
 use serde::{Deserialize, Serialize};
+pub use stacks::StackTop;
 pub use store::{FsStore, MemStore, Store};
 pub use vignetting_maps::{ReferenceState, VignettingMapRecord, reference_photo};
 pub use xmp_state::{SidecarStat, XmpStamp, XmpStatus};
@@ -563,6 +564,10 @@ impl Catalog {
 
     pub fn photos(&self) -> impl Iterator<Item = &Arc<Photo>> {
         self.photos.values()
+    }
+    /// The photos from id `from` on, in id order: a walk over a large library a stretch at a time.
+    pub fn photos_from(&self, from: PhotoId) -> impl Iterator<Item = &Arc<Photo>> {
+        self.photos.range(from..).map(|(_, p)| p)
     }
     pub fn len(&self) -> usize {
         self.photos.len()

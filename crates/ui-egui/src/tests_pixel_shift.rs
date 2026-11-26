@@ -95,7 +95,7 @@ fn select(h: &mut Headless, ids: &[PhotoId]) {
 
 /// The text of the message the window shows (the latest).
 fn said(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 #[test]

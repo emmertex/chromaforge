@@ -488,8 +488,26 @@ fn constants() -> String {
     let b = lcc_pipeline::geometry::BLANK;
     s += &format!("const BLANK_R: f32 = {:?};\nconst BLANK_G: f32 = {:?};\nconst BLANK_B: f32 = {:?};\n", b[0], b[1], b[2]);
     s += &format!(
-        "const SRGB_N: u32 = {SRGB_LUT_N}u;\nconst CURVE_N: u32 = {}u;\nconst MASK_TERMS: u32 = {MASK_TERMS}u;\nconst MASK_SUMS: u32 = {MASK_SUMS}u;\nconst MASK_TONE: u32 = {MASK_TONE}u;\n",
-        crate::params::CURVE_N
+        "const SRGB_N: u32 = {SRGB_LUT_N}u;\nconst CURVE_N: u32 = {}u;\nconst MASK_TERMS: u32 = {MASK_TERMS}u;\nconst MASK_SUMS: u32 = {MASK_SUMS}u;\nconst MASK_TONE: u32 = {MASK_TONE}u;\nconst MASK_RECOLOR: u32 = {}u;\n",
+        crate::params::CURVE_N,
+        lcc_pipeline::finish::MASK_RECOLOR
+    );
+    // Recolor's constants (`lcc_pipeline::recolor`), shared with the kernel's `recolor_one`
+    use lcc_pipeline::recolor::{DARK_FADE, GREY_CHROMA, HUE_ONLY_CHROMA, LIGHT_FADE, MAX_CHROMA_RATIO, MAX_HUE_OFFSET, MIN_CHROMA, MIN_REF_L};
+    s += &format!(
+        "const GREY_CHROMA = vec2<f32>({:?}, {:?});\nconst MIN_CHROMA = vec2<f32>({:?}, {:?});\nconst HUE_ONLY = vec4<f32>({:?}, {:?}, {:?}, {:?});\nconst DARK_FADE = vec2<f32>({:?}, {:?});\nconst LIGHT_FADE = vec2<f32>({:?}, {:?});\nconst MAX_CHROMA_RATIO: f32 = {MAX_CHROMA_RATIO:?};\nconst MAX_HUE_OFFSET: f32 = {MAX_HUE_OFFSET:?};\nconst MIN_REF_L: f32 = {MIN_REF_L:?};\n",
+        GREY_CHROMA[0],
+        GREY_CHROMA[1],
+        MIN_CHROMA[0],
+        MIN_CHROMA[1],
+        HUE_ONLY_CHROMA[0],
+        HUE_ONLY_CHROMA[1],
+        HUE_ONLY_CHROMA[2],
+        HUE_ONLY_CHROMA[3],
+        DARK_FADE[0],
+        DARK_FADE[1],
+        LIGHT_FADE[0],
+        LIGHT_FADE[1]
     );
     s += &format!("const POINT_WORDS: u32 = {}u;\n", lcc_pipeline::colorops::POINT_WORDS);
     s += &format!("const LOCAL_POINT_WORDS: u32 = {}u;\n", crate::params::LOCAL_POINT_WORDS);

@@ -28,6 +28,10 @@ pub struct Permissions {
     /// was made from, stacked on it or put in an album that holds it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub library_add: bool,
+    /// Remove photos from the library (`library.remove`): soft-delete into Recently Deleted.
+    /// The files on disk are never touched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub library_remove: bool,
     /// Read a downsized copy of a photo's pixels (`photo.pixels`): the whole uncropped frame, as
     /// the crop tool shows it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -100,6 +104,7 @@ impl Permissions {
             catalog: self.catalog && other.catalog,
             metadata_write: self.metadata_write && other.metadata_write,
             library_add: self.library_add && other.library_add,
+            library_remove: self.library_remove && other.library_remove,
             pixels: self.pixels && other.pixels,
             crop: self.crop && other.crop,
             virtual_copy: self.virtual_copy && other.virtual_copy,
@@ -120,6 +125,7 @@ impl Permissions {
         !self.catalog
             && !self.metadata_write
             && !self.library_add
+            && !self.library_remove
             && !self.pixels
             && !self.crop
             && !self.virtual_copy
@@ -183,6 +189,7 @@ pub enum Group {
     Catalog,
     MetadataWrite,
     LibraryAdd,
+    LibraryRemove,
     Pixels,
     Crop,
     VirtualCopy,
@@ -193,10 +200,11 @@ pub enum Group {
 
 impl Group {
     /// Every group, in the order the Plug-in Manager lists them.
-    pub const ALL: [Group; 9] = [
+    pub const ALL: [Group; 10] = [
         Group::Catalog,
         Group::MetadataWrite,
         Group::LibraryAdd,
+        Group::LibraryRemove,
         Group::Pixels,
         Group::Crop,
         Group::VirtualCopy,
@@ -211,6 +219,7 @@ impl Group {
             Group::Catalog => "catalog",
             Group::MetadataWrite => "metadataWrite",
             Group::LibraryAdd => "libraryAdd",
+            Group::LibraryRemove => "libraryRemove",
             Group::Pixels => "pixels",
             Group::Crop => "crop",
             Group::VirtualCopy => "virtualCopy",
@@ -273,6 +282,7 @@ impl Permissions {
             (self.catalog, Group::Catalog),
             (self.metadata_write, Group::MetadataWrite),
             (self.library_add, Group::LibraryAdd),
+            (self.library_remove, Group::LibraryRemove),
             (self.pixels, Group::Pixels),
             (self.crop, Group::Crop),
             (self.virtual_copy, Group::VirtualCopy),
@@ -291,6 +301,7 @@ impl Permissions {
             Group::Catalog => self.catalog,
             Group::MetadataWrite => self.metadata_write,
             Group::LibraryAdd => self.library_add,
+            Group::LibraryRemove => self.library_remove,
             Group::Pixels => self.pixels,
             Group::Crop => self.crop,
             Group::VirtualCopy => self.virtual_copy,
@@ -309,6 +320,7 @@ impl Permissions {
             Group::Catalog => out.catalog = requested.catalog,
             Group::MetadataWrite => out.metadata_write = requested.metadata_write,
             Group::LibraryAdd => out.library_add = requested.library_add,
+            Group::LibraryRemove => out.library_remove = requested.library_remove,
             Group::Pixels => out.pixels = requested.pixels,
             Group::Crop => out.crop = requested.crop,
             Group::VirtualCopy => out.virtual_copy = requested.virtual_copy,
@@ -327,6 +339,7 @@ impl Permissions {
             Group::Catalog => out.catalog = false,
             Group::MetadataWrite => out.metadata_write = false,
             Group::LibraryAdd => out.library_add = false,
+            Group::LibraryRemove => out.library_remove = false,
             Group::Pixels => out.pixels = false,
             Group::Crop => out.crop = false,
             Group::VirtualCopy => out.virtual_copy = false,
@@ -344,6 +357,7 @@ impl Permissions {
             (self.catalog && !granted.catalog, Group::Catalog),
             (self.metadata_write && !granted.metadata_write, Group::MetadataWrite),
             (self.library_add && !granted.library_add, Group::LibraryAdd),
+            (self.library_remove && !granted.library_remove, Group::LibraryRemove),
             (self.pixels && !granted.pixels, Group::Pixels),
             (self.crop && !granted.crop, Group::Crop),
             (self.virtual_copy && !granted.virtual_copy, Group::VirtualCopy),
@@ -436,6 +450,7 @@ mod tests {
             catalog: true,
             metadata_write: true,
             library_add: true,
+            library_remove: true,
             pixels: true,
             crop: true,
             virtual_copy: true,

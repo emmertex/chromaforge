@@ -378,3 +378,393 @@ fn clusters_grow_from_a_known_pixel() {
     // around a seed with nothing wrong next to it, nothing grows
     assert!(grow(&mosaic(100, 80, Cfa::bayer("RGGB"), 1, 0.003, sky), &seed).is_empty());
 }
+
+/// The per-sample loop `detect` used for every layout before its fast loop: the oracle for it.
+fn detect_plain(raw: &RawImage, t: &Thresholds) -> Detection {
+    let Some(view) = View::new(raw) else { return Detection::default() };
+    let noise = view.noise();
+    let a = view.area;
+    let (y0, y1) = (a.y + MARGIN, a.y + a.height - MARGIN);
+    let (x0, x1) = (a.x + MARGIN, a.x + a.width - MARGIN);
+    let black = raw.black.mean();
+    let floor_raw: Vec<f32> = view.scale.iter().map(|s| t.floor / s).collect();
+    let mut found: Vec<Defect> = Vec::new();
+    let mut buf = Vec::with_capacity(8);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let near = view.offsets(x, y);
+            for s in 0..view.cpp {
+                let v = view.raw_at(x, y, s);
+                let (mut mx, mut mn) = (f32::MIN, f32::MAX);
+                for &(dx, dy) in near.iter().take(4) {
+                    let Some((nx, ny)) = view.step(x, y, dx, dy) else { continue };
+                    let n = view.raw_at(nx, ny, s);
+                    mx = mx.max(n);
+                    mn = mn.min(n);
+                }
+                let fr = floor_raw.get(s).copied().unwrap_or(0.0);
+                let bright = v > mx + fr;
+                let dark = v - black < 0.5 * (mn - black) && mn - black > 0.0;
+                if (bright || dark)
+                    && let Some(d) = view.judge(x, y, s, t, &noise, &mut buf)
+                {
+                    found.push(d);
+                }
+            }
+        }
+    }
+    if found.len() > t.max {
+        return Detection { defects: Vec::new(), noise, overflow: true };
+    }
+    Detection { defects: found, noise, overflow: false }
+}
+
+/// Defects of every kind and size on a loose grid over `raw` (far enough apart for the context guard to leave them alone),
+/// at sizes either side of the floor and of the learning and correcting thresholds; some come as a side-by-side pair. Deterministic.
+fn sprinkle(raw: &mut RawImage, seed: u64) {
+    let mut n = Noise(seed);
+    let mut r = move || ((n.next() * 1e4).abs() as usize) ^ ((n.next() * 1e6).abs() as usize);
+    let (w, h) = (raw.width, raw.height);
+    for gy in (8..h.saturating_sub(8)).step_by(17) {
+        for gx in (8..w.saturating_sub(8)).step_by(17) {
+            let (x, y) = (gx + r() % 5, gy + r() % 5);
+            if x + 1 >= w || y >= h {
+                continue;
+            }
+            let here = get(raw, x, y, 0);
+            // (the sizes within a few noise sigmas of the floor are the ones that decide on the margin of each test)
+            let near_floor = here + 0.004 + 0.016 * (r() % 1000) as f32 / 1000.0;
+            let v = match r() % 8 {
+                0..=3 => near_floor,
+                4 => here + 0.1,
+                5 => 1.0,
+                6 => 0.0,
+                _ => here * 0.05,
+            };
+            set(raw, x, y, 0, v);
+            if r() % 6 == 0 {
+                set(raw, x + 1, y, 0, v);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_fast_detect_loop_matches_the_per_sample_loop() {
+    let layouts = [Cfa::bayer("RGGB"), Cfa::bayer("BGGR"), Cfa::bayer("GRBG"), Some(Cfa::xtrans())];
+    let scenes: [(&str, fn(f32, f32) -> [f32; 3], f32); 4] = [
+        ("sky", sky, 0.004),
+        ("dark", |_, _| [0.01, 0.012, 0.015], 0.002),
+        ("bright", |x, _| [0.6 + 0.0004 * x, 0.7, 0.55], 0.006),
+        ("black", |_, _| [0.0, 0.0, 0.0], 0.0),
+    ];
+    // black levels: uniform; a 2 × 2 pattern whose phases differ by hundreds of counts; with row and column deltas
+    let blacks = [
+        BlackLevel::uniform(BLACK),
+        BlackLevel {
+            repeat_rows: 2,
+            repeat_cols: 2,
+            values: vec![BLACK - 300.0, BLACK + 120.0, BLACK + 200.0, BLACK - 90.0],
+            delta_h: vec![],
+            delta_v: vec![],
+        },
+        BlackLevel {
+            repeat_rows: 1,
+            repeat_cols: 1,
+            values: vec![BLACK],
+            delta_h: (0..80).map(|i| (i % 7) as f32 * 20.0 - 60.0).collect(),
+            delta_v: (0..70).map(|i| (i % 5) as f32 * 30.0 - 60.0).collect(),
+        },
+    ];
+    let mut compared = 0;
+    for (li, cfa) in layouts.into_iter().flatten().enumerate() {
+        for (name, scene, sigma) in scenes {
+            for (bi, black) in blacks.iter().enumerate() {
+                for (area_i, area) in [Rect::new(0, 0, 80, 70), Rect::new(7, 5, 61, 53)].into_iter().enumerate() {
+                    let mut raw = mosaic(80, 70, Some(cfa.clone()), 1, sigma, scene);
+                    raw.active_area = area;
+                    raw.black = black.clone();
+                    for round in 0..4u64 {
+                        sprinkle(&mut raw, 11 + li as u64 * 7 + bi as u64 + round * 101);
+                        for (tn, t) in [("LEARN", &Thresholds::LEARN), ("CORRECT", &Thresholds::CORRECT)] {
+                            let want = detect_plain(&raw, t);
+                            let got = detect(&raw, t);
+                            assert_eq!(got, want, "layout {li}, scene {name}, black {bi}, area {area_i}, round {round}, {tn}");
+                            compared += want.defects.len();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // the comparison only means something if defects were found
+    assert!(compared > 300, "only {compared} defects compared");
+}
+
+#[test]
+fn detect_on_other_layouts_still_matches_the_per_sample_loop() {
+    // float data and three samples a photosite take the general loop; with a CFA and u16 data but a window of the mosaic
+    // too narrow for the fast loop's phases, too
+    let mut f32_raw = mosaic(70, 60, Cfa::bayer("RGGB"), 1, 0.004, sky);
+    f32_raw.data = match &f32_raw.data {
+        RawData::U16(d) => RawData::F32(d.iter().map(|&v| f32::from(v)).collect()),
+        other => other.clone(),
+    };
+    sprinkle(&mut f32_raw, 3);
+    let mut rgb = mosaic(70, 60, None, 3, 0.004, sky);
+    sprinkle(&mut rgb, 5);
+    let mut narrow = mosaic(9, 60, Cfa::bayer("RGGB"), 1, 0.004, sky);
+    sprinkle(&mut narrow, 9);
+    for (name, raw) in [("f32", &f32_raw), ("three samples", &rgb), ("narrow", &narrow)] {
+        for t in [&Thresholds::LEARN, &Thresholds::CORRECT] {
+            assert_eq!(detect(raw, t), detect_plain(raw, t), "{name}");
+        }
+    }
+}
+
+/// Black levels that differ across positions by about as much as the detection floor: where the stored-count tests of the
+/// fast loop need their slack. Many small random photos, judged both ways.
+#[test]
+fn the_fast_detect_loop_matches_when_the_black_level_varies_with_position() {
+    let mut n = Noise(99);
+    let mut rnd = move |amp: f32| n.next() * amp;
+    let mut compared = 0;
+    for round in 0..400u64 {
+        let cfa = if round % 5 == 4 { Cfa::xtrans() } else { Cfa::bayer(["RGGB", "BGGR", "GRBG", "GBRG"][(round % 4) as usize]).expect("bayer") };
+        let level = 0.01 + 0.002 * (round % 40) as f32;
+        let mut raw = mosaic(56, 56, Some(cfa), 1, 0.0015, |_, _| [level, level * 1.1, level * 0.9]);
+        raw.black = BlackLevel {
+            repeat_rows: 2,
+            repeat_cols: 2,
+            values: (0..4).map(|_| BLACK + rnd(60.0)).collect(),
+            delta_h: (0..56).map(|_| rnd(60.0)).collect(),
+            delta_v: (0..56).map(|_| rnd(60.0)).collect(),
+        };
+        sprinkle(&mut raw, round * 13 + 1);
+        for t in [&Thresholds::LEARN, &Thresholds::CORRECT] {
+            let want = detect_plain(&raw, t);
+            assert_eq!(detect(&raw, t), want, "round {round}");
+            compared += want.defects.len();
+        }
+    }
+    assert!(compared > 300, "only {compared} defects compared");
+}
+
+/// Rewrites `raw`'s samples so that each sits `black.at(..)` above what `mosaic` put at the uniform black level.
+fn with_position_black(raw: &mut RawImage, black: BlackLevel) {
+    let (w, cpp) = (raw.width, raw.cpp);
+    if let RawData::U16(d) = &mut raw.data {
+        for (i, v) in d.iter_mut().enumerate() {
+            let (x, y) = ((i / cpp) % w, (i / cpp) / w);
+            *v = (f32::from(*v) - BLACK + black.at(x, y, i % cpp, cpp)).round().clamp(0.0, 65535.0) as u16;
+        }
+    }
+    raw.black = black;
+}
+
+/// A hot sample whose brightest same-colour neighbour is a diagonal one that sits on a higher black level (stored counts
+/// higher, normalised value the same): the tighter stored-count test must keep it within the slack the black spread gives.
+fn diagonal_black_scene(delta_h: Vec<f32>, delta_v: Vec<f32>, x: usize, y: usize, e: f32) -> RawImage {
+    let mut raw = mosaic(80, 70, Cfa::bayer("RGGB"), 1, 0.0, |_, _| [0.002, 0.002, 0.002]);
+    let black = BlackLevel { repeat_rows: 1, repeat_cols: 1, values: vec![BLACK], delta_h, delta_v };
+    with_position_black(&mut raw, black);
+    // the candidate: e counts above its flat surroundings, on its own black
+    let i = y * raw.width + x;
+    if let RawData::U16(d) = &mut raw.data {
+        d[i] += e as u16;
+    }
+    raw
+}
+
+#[test]
+fn spread_slack_keeps_a_defect_whose_brightest_neighbour_is_on_a_higher_black() {
+    // column x-2 and row y-2 are 100 counts higher: the diagonal (-2,-2) is 200 above its value, the orthogonal ones 100
+    let (x, y) = (40usize, 30usize);
+    let mut dh = vec![0.0f32; 80];
+    let mut dv = vec![0.0f32; 70];
+    dh[x - 2] = 100.0;
+    dv[y - 2] = 100.0;
+    let raw = diagonal_black_scene(dh, dv, x, y, 280.0);
+    let t = Thresholds::LEARN;
+    let want = detect_plain(&raw, &t);
+    assert!(has(&want, x, y).is_some(), "the oracle must see the defect: {want:?}");
+    assert_eq!(detect(&raw, &t), want);
+}
+
+/// F01: BlackLevel::at adds 0 past the end of delta_h / delta_v, but black_spread only looks at the stored entries.
+#[test]
+fn a_black_delta_shorter_than_the_image_is_not_a_slack_of_zero() {
+    let (x, y) = (40usize, 30usize);
+    // equal entries (a spread of 0 over what is stored), ending just before the candidate's own column / row
+    let dh = vec![100.0f32; x - 1];
+    let dv = vec![100.0f32; y - 1];
+    let raw = diagonal_black_scene(dh, dv, x, y, 280.0);
+    let t = Thresholds::LEARN;
+    let want = detect_plain(&raw, &t);
+    assert!(has(&want, x, y).is_some(), "the oracle must see the defect: {want:?}");
+    assert_eq!(detect(&raw, &t), want);
+}
+
+/// A flat `level` counts above black everywhere (RGGB, no noise), on the position-dependent `black`, with the sample at
+/// `(x, y)` replaced by `cand` counts above its own black.
+fn black_scene(black: BlackLevel, level: u16, x: usize, y: usize, cand: u16) -> RawImage {
+    let mut raw = mosaic(80, 70, Cfa::bayer("RGGB"), 1, 0.0, |_, _| [f32::from(level) / (WHITE - BLACK); 3]);
+    with_position_black(&mut raw, black);
+    let own = raw.black.at(x, y, 0, 1);
+    let i = y * raw.width + x;
+    if let RawData::U16(d) = &mut raw.data {
+        d[i] = (own + f32::from(cand)).round().clamp(0.0, 65535.0) as u16;
+    }
+    raw
+}
+
+fn delta_black(dh: Vec<f32>, dv: Vec<f32>) -> BlackLevel {
+    BlackLevel { repeat_rows: 1, repeat_cols: 1, values: vec![BLACK], delta_h: dh, delta_v: dv }
+}
+
+/// `detect` (with the tighter pre-filter) and `detect_plain` (without it) agree on a scene, and the scene does hold `want`.
+#[track_caller]
+fn assert_prefilter_is_transparent(raw: &RawImage, t: &Thresholds, at: (usize, usize), want: Option<DefectKind>) {
+    let plain = detect_plain(raw, t);
+    assert_eq!(has(&plain, at.0, at.1), want, "the oracle must see what the scene holds: {plain:?}");
+    assert_eq!(detect(raw, t), plain);
+}
+
+/// The first whole count of excess `judge` accepts over a flat dark field: `excess > floor` in normalised values, and the
+/// noise term (1e-5 on a noiseless field) and `ratio * median` (0 at black) are far below the floor.
+fn first_hot_count(floor: f32) -> u16 {
+    (floor * (WHITE - BLACK)).floor() as u16 + 1
+}
+
+/// T03/T18: a hot sample exactly at, one count below and one count above the floor, on a flat dark field. `judge` takes
+/// `excess > floor`; the pre-filter's `0.999 * floor` margin must keep everything `judge` takes, at either threshold set.
+#[test]
+fn a_hot_sample_at_the_floor_boundary_is_judged_as_the_unfiltered_loop_judges_it() {
+    for t in [&Thresholds::LEARN, &Thresholds::CORRECT] {
+        let first = first_hot_count(t.floor);
+        for e in first - 2..=first + 2 {
+            let mut raw = mosaic(40, 40, Cfa::bayer("RGGB"), 1, 0.0, |_, _| [0.0; 3]);
+            let i = 20 * raw.width + 20;
+            if let RawData::U16(d) = &mut raw.data {
+                d[i] += e;
+            }
+            let want = (e >= first).then_some(DefectKind::Hot);
+            assert_prefilter_is_transparent(&raw, t, (20, 20), want);
+        }
+    }
+}
+
+/// T04: a dead sample whose neighbours' median is just above `dead_min`, at depths from a deep dip to the shallowest
+/// `judge` takes (`v < dead_ratio * median`) and past it: `lo - v` stays above `0.5 * dead_min` only because the median is
+/// above it, so a bound of `0.9 * dead_min` or `dead_min` would drop the shallower dips `judge` takes.
+#[test]
+fn a_dead_sample_beside_neighbours_just_above_the_dead_minimum_is_judged_as_the_unfiltered_loop_judges_it() {
+    let t = &Thresholds::LEARN;
+    let level = (t.dead_min * (WHITE - BLACK)).ceil() as u16 + 6; // the neighbours' median, a few counts above dead_min
+    let shallowest = (t.dead_ratio * f32::from(level)).ceil() as u16; // v < dead_ratio * median: counts of dip height at which it stops
+    let mut found = 0;
+    for dip in [0, 40, 100, 160, shallowest - 3, shallowest - 1, shallowest, shallowest + 1, shallowest + 40] {
+        let raw = black_scene(BlackLevel::uniform(BLACK), level, 40, 30, dip);
+        let plain = detect_plain(&raw, t);
+        assert_eq!(detect(&raw, t), plain, "dip {dip}");
+        found += usize::from(has(&plain, 40, 30) == Some(DefectKind::Dead));
+    }
+    // (the sweep must contain dips `judge` takes, or it compares nothing)
+    assert!(found >= 5, "only {found} dead samples seen");
+}
+
+/// T04, the `- spread` term of the dead bound: the darkest neighbour sits on a lower black (stored counts lower, the
+/// normalised value the same), which shrinks `lo - v` in stored counts by up to the spread.
+#[test]
+fn a_dead_sample_whose_darkest_neighbour_is_on_a_lower_black_is_kept() {
+    let (x, y) = (40usize, 30usize);
+    let mut dh = vec![0.0f32; 80];
+    let mut dv = vec![0.0f32; 70];
+    dh[x - 2] = -150.0;
+    dv[y - 2] = -150.0;
+    let raw = black_scene(delta_black(dh, dv), 800, x, y, 160);
+    assert_prefilter_is_transparent(&raw, &Thresholds::LEARN, (x, y), Some(DefectKind::Dead));
+}
+
+/// T07: a `BlackLevel` with a non-finite entry, a `values` table shorter than its repeat pattern or empty, and a white level
+/// at or under the black one (scale falls back to 1): the pre-filter must let through everything `detect_plain` takes.
+#[test]
+fn odd_black_and_white_levels_do_not_make_the_prefilter_drop_defects() {
+    let nan_cols = {
+        let mut dh = vec![0.0f32; 80];
+        dh[10] = f32::NAN;
+        dh
+    };
+    let inf_rows = {
+        let mut dv = vec![0.0f32; 70];
+        dv[12] = f32::INFINITY;
+        dv
+    };
+    let blacks = [
+        (
+            "nan in values",
+            BlackLevel { repeat_rows: 2, repeat_cols: 2, values: vec![BLACK, f32::NAN, BLACK, BLACK], delta_h: vec![], delta_v: vec![] },
+        ),
+        ("nan in delta_h", delta_black(nan_cols, vec![])),
+        ("inf in delta_v", delta_black(vec![], inf_rows)),
+        (
+            "values shorter than the repeat",
+            BlackLevel { repeat_rows: 2, repeat_cols: 2, values: vec![BLACK, BLACK + 80.0], delta_h: vec![], delta_v: vec![] },
+        ),
+        ("empty values", BlackLevel { repeat_rows: 1, repeat_cols: 1, values: vec![], delta_h: vec![30.0; 20], delta_v: vec![] }),
+    ];
+    for (name, black) in blacks {
+        let mut raw = mosaic(80, 70, Cfa::bayer("RGGB"), 1, 0.002, sky);
+        raw.black = black;
+        for round in 0..3 {
+            sprinkle(&mut raw, 41 + round);
+            for t in [&Thresholds::LEARN, &Thresholds::CORRECT] {
+                assert_eq!(detect(&raw, t), detect_plain(&raw, t), "{name}, round {round}");
+            }
+        }
+    }
+    for white in [BLACK, BLACK - 100.0, 0.0] {
+        let mut raw = mosaic(80, 70, Cfa::bayer("RGGB"), 1, 0.002, sky);
+        raw.white = vec![white];
+        sprinkle(&mut raw, 77);
+        for t in [&Thresholds::LEARN, &Thresholds::CORRECT] {
+            assert_eq!(detect(&raw, t), detect_plain(&raw, t), "white {white}");
+        }
+    }
+}
+
+/// F01/T07: `black_spread` over exactly the entries `BlackLevel::at` can read for an area, a missing one counting as 0.
+#[test]
+fn black_spread_covers_what_the_black_level_can_read_in_the_area() {
+    let area = Rect::new(0, 0, 10, 8);
+    let spread = |b: &BlackLevel| black_spread(b, area);
+    let with = |values: Vec<f32>, dh: Vec<f32>, dv: Vec<f32>| BlackLevel { repeat_rows: 2, repeat_cols: 2, values, delta_h: dh, delta_v: dv };
+    // nothing varies
+    assert_eq!(spread(&BlackLevel::uniform(BLACK)), 0.0);
+    assert_eq!(spread(&with(vec![], vec![], vec![])), 0.0);
+    // the repeat pattern, the column and the row deltas add
+    assert_eq!(spread(&with(vec![10.0, 25.0, 12.0, 20.0], vec![], vec![])), 15.0);
+    assert_eq!(spread(&with(vec![], vec![0.0, 5.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vec![])), 5.0);
+    assert_eq!(spread(&with(vec![10.0, 25.0], vec![-4.0; 10], vec![1.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])), 15.0 + 0.0 + 2.0);
+    // a table shorter than the area: the positions past its end read 0, so a table of equal non-zero entries is a spread
+    assert_eq!(spread(&with(vec![10.0], vec![100.0; 9], vec![])), 100.0);
+    assert_eq!(spread(&with(vec![10.0], vec![], vec![-30.0; 7])), 30.0);
+    assert_eq!(spread(&with(vec![10.0], vec![-7.0; 3], vec![])), 7.0);
+    // ... and one of exactly the area's length does not
+    assert_eq!(spread(&with(vec![10.0], vec![100.0; 10], vec![100.0; 8])), 0.0);
+    // entries past the area are never read
+    let mut long = vec![0.0f32; 10];
+    long.extend([1000.0, -1000.0]);
+    assert_eq!(spread(&with(vec![10.0], long.clone(), long)), 0.0);
+    // a non-finite entry anywhere (read or not) is an infinite spread: min/max would otherwise swallow it
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut long = vec![0.0f32; 12];
+        long[11] = bad;
+        assert_eq!(spread(&with(vec![10.0, bad], vec![], vec![])), f32::INFINITY, "{bad} in values");
+        assert_eq!(spread(&with(vec![10.0], vec![0.0, bad], vec![])), f32::INFINITY, "{bad} in delta_h");
+        assert_eq!(spread(&with(vec![10.0], vec![], vec![bad])), f32::INFINITY, "{bad} in delta_v");
+        assert_eq!(spread(&with(vec![10.0], long, vec![])), f32::INFINITY, "{bad} past the area");
+    }
+    // finite entries whose spread overflows
+    assert_eq!(spread(&with(vec![f32::MAX, -f32::MAX], vec![], vec![])), f32::INFINITY);
+}

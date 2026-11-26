@@ -11,7 +11,7 @@ use rayon::prelude::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DngCompression {
     Uncompressed,
-    /// Lossless JPEG tiles of `tile × tile` pixels (`tile` even). CFA tiles are encoded as two interleaved
+    /// Lossless JPEG tiles of `tile × tile` pixels (`tile` even, at most 2048). CFA tiles are encoded as two interleaved
     /// components of half the tile width (the common DNG layout), linear data with one component per sample.
     Lj92 {
         tile: u32,
@@ -109,6 +109,11 @@ const DEFLATE_LEVEL: u8 = 1;
 /// a multi-gigabyte buffer and billions of edge-replicate iterations. 2048² samples (≤ 24 MB of f32) is far
 /// above the 256 default and every real tile this writer makes.
 const MAX_DEFLATE_TILE: u32 = 2048;
+
+/// The largest lossless-JPEG tile edge: the Deflate bound. JPEG's 16-bit dimension limit alone would let a tiny image
+/// pad every tile to 65,534² samples; at most four channels keep this at 32 MiB of padding per tile (adapted from
+/// craft-libs #1759).
+const MAX_LJ92_TILE: usize = MAX_DEFLATE_TILE as usize;
 
 /// `tile` aligned down to a multiple of 16 and clamped to [`MAX_DEFLATE_TILE`].
 fn deflate_tile(tile: u32) -> usize {
@@ -614,7 +619,7 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
                 DngCompression::LossyJpeg { .. } => return Err(RawError::Unsupported("lossy DNG of this data".into())),
                 DngCompression::Lj92 { tile } => {
                     let tile = (tile.max(2) & !1) as usize;
-                    if tile > 65534 {
+                    if tile > MAX_LJ92_TILE {
                         return Err(RawError::Limit("tile too large"));
                     }
                     ifd.set(t::COMPRESSION, Value::Short(vec![compression::JPEG]));
@@ -732,9 +737,32 @@ mod tests {
     /// file as requesting the cap exactly, and a DNG either way.
     #[test]
     fn a_hostile_deflate_tile_edge_is_clamped() {
+        let raw = tiny_raw();
+        let opts = |tile: u32| DngWriteOptions { compression: DngCompression::Deflate { tile, half: false }, ..DngWriteOptions::default() };
+        let hostile = write_dng(&raw, &opts(u32::MAX)).expect("the clamped tile writes");
+        assert_eq!(hostile, write_dng(&raw, &opts(2048)).expect("the cap itself writes"), "u32::MAX is clamped to the cap");
+        assert_ne!(hostile, write_dng(&raw, &opts(256)).expect("a normal tile writes"), "the clamp is not a no-op");
+        assert_eq!(crate::probe(&hostile), Some(RawFormat::Dng), "the clamped output is still a DNG");
+    }
+
+    /// craft-libs #1759: a lossless-JPEG tile edge past the Deflate bound is refused before any tile is padded. 2050
+    /// comes first, so a reverted guard fails on a small allocation before the multi-gigabyte ones.
+    #[test]
+    fn an_oversized_lj92_tile_is_refused() {
+        let raw = tiny_raw();
+        for tile in [2050, 65534, u32::MAX] {
+            let opts = DngWriteOptions { compression: DngCompression::Lj92 { tile }, ..DngWriteOptions::default() };
+            assert!(matches!(write_dng(&raw, &opts), Err(RawError::Limit("tile too large"))), "tile {tile}");
+        }
+        let back = crate::decode(&write_dng(&raw, &DngWriteOptions::default()).expect("default tiles write")).expect("decodes");
+        assert_eq!(back.data, raw.data, "default tiles keep the samples");
+    }
+
+    /// An 8×8 linear 12-bit raw.
+    fn tiny_raw() -> RawImage {
         let (w, h) = (8usize, 8usize);
         let full = Rect::new(0, 0, w, h);
-        let raw = RawImage {
+        RawImage {
             format: RawFormat::Dng,
             width: w,
             height: h,
@@ -754,12 +782,7 @@ mod tests {
             opcodes: OpcodeLists::default(),
             metadata: Default::default(),
             lens_metadata: Default::default(),
-        };
-        let opts = |tile: u32| DngWriteOptions { compression: DngCompression::Deflate { tile, half: false }, ..DngWriteOptions::default() };
-        let hostile = write_dng(&raw, &opts(u32::MAX)).expect("the clamped tile writes");
-        assert_eq!(hostile, write_dng(&raw, &opts(2048)).expect("the cap itself writes"), "u32::MAX is clamped to the cap");
-        assert_ne!(hostile, write_dng(&raw, &opts(256)).expect("a normal tile writes"), "the clamp is not a no-op");
-        assert_eq!(crate::probe(&hostile), Some(RawFormat::Dng), "the clamped output is still a DNG");
+        }
     }
 
     fn white_level(dng: &[u8]) -> Value {

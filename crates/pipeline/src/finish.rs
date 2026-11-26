@@ -35,8 +35,14 @@ pub fn sharpen_limit(detail: f64) -> f32 {
 /// mask (`mask` = Masking / 100) so flat areas and noise can be left alone.
 #[inline]
 pub fn sharpen_term(det: f32, limit: f32, mask: f32) -> f32 {
-    let m = if mask > 0.0 { smooth(mask * 0.1, mask * 0.1 + 0.06, det.abs()) } else { 1.0 };
-    SHARPEN_GAIN * m * det / (1.0 + det.abs() / limit)
+    SHARPEN_GAIN * sharpen_gate(det, mask) * det / (1.0 + det.abs() / limit)
+}
+
+/// The Masking edge mask (`mask` = Masking / 100) at band detail `det`: 1 where the photo is
+/// sharpened, 0 in the flat areas Masking leaves alone.
+#[inline]
+pub fn sharpen_gate(det: f32, mask: f32) -> f32 {
+    if mask > 0.0 { smooth(mask * 0.1, mask * 0.1 + 0.06, det.abs()) } else { 1.0 }
 }
 
 /// Whether `s` sharpens with process V4's unsharp mask (older processes boost the Texture band).
@@ -219,7 +225,12 @@ pub const LOCAL_BLACKS: (f32, f32) = (-5.5, 1.0);
 pub const LOCAL_WB_EV: f32 = 1.5;
 
 /// Number of per-mask terms in [`mask_terms`].
-pub const MASK_TERMS: usize = MASK_SUMS + 8;
+pub const MASK_TERMS: usize = MASK_SUMS + 18;
+
+/// Where a mask's Recolor terms start in its [`mask_terms`] ([`crate::recolor::TERMS`] of them:
+/// [`crate::recolor::terms`], patched per mask from the measured main colours by
+/// [`crate::recolor::with_recolor`]; zeros while off).
+pub const MASK_RECOLOR: usize = MASK_SUMS + 8;
 
 /// Where a mask's own tone range starts in its [`mask_terms`]: Whites from nothing to full, then Blacks
 /// from full to nothing (log2 luminance over middle grey; [`crate::mask_tone`] fits them to the tones
@@ -302,6 +313,17 @@ pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
         DEFAULT_MASK_TONE[1],
         DEFAULT_MASK_TONE[2],
         DEFAULT_MASK_TONE[3],
+        // Recolor: patched per mask from the measured main colour (crate::recolor::with_recolor)
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ]
 }
 
@@ -349,6 +371,9 @@ pub struct FinishParams {
     /// instead of on the output's encoded values ([`CurveSpace`]); `None` before V10 or while all three are neutral.
     pub curve_space: Option<CurveSpace>,
     pub vig: Option<Vig>,
+    /// Glow (beyond Lightroom), as a post-pass on the finished encoded window (see
+    /// [`crate::glow`]); `None` while off.
+    pub glow: Option<crate::glow::Params>,
     /// Linear Rec.2020 → linear output RGB, the output's luminance weights (gamut mapping) and its
     /// encoding curve (see [`crate::output`]).
     pub to_out: [[f32; 3]; 3],
@@ -481,6 +506,7 @@ impl FinishParams {
             levels,
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
+            glow: if effects { crate::glow::Params::of(&s.glow) } else { None },
             to_out: space.from_working(),
             out_luma: space.luma(),
             out_trc: space.trc(),
@@ -589,18 +615,31 @@ fn finish_post<T: Copy + Default + Send>(
     linear: bool,
     store: impl Fn(usize, usize, [f32; 3]) -> T + Sync + Send,
 ) -> Vec<T> {
-    if post.stack.is_empty() {
+    if post.stack.is_empty() && fp.glow.is_none() {
         return finish_with(p, fp, exact, store);
     }
     let (w, h) = (p.img.width, p.img.height);
-    let mut v = if linear { finish_with(p, fp, true, |_, _, e| e.map(srgb_to_linear_ext)) } else { finish_with(p, fp, exact, |_, _, e| e) };
-    crate::plugin_filters::apply_display(post.stack, &mut v, w, h, post.frame.clone(), linear, &mut post.warnings.borrow_mut());
+    // the whole window in its encoded values: Glow (see [`crate::glow`]) runs there, and the
+    // Display-stage plug-ins take it in their own domain
+    let mut v = finish_with(p, fp, if linear { true } else { exact }, |_, _, e| e);
+    if let Some(g) = fp.glow {
+        crate::glow::apply(&mut v, w, h, &g, fp.px_per_long);
+    }
+    if !post.stack.is_empty() {
+        if linear {
+            v.iter_mut().for_each(|e| *e = e.map(srgb_to_linear_ext));
+        }
+        crate::plugin_filters::apply_display(post.stack, &mut v, w, h, post.frame.clone(), linear, &mut post.warnings.borrow_mut());
+        if linear {
+            v.iter_mut().for_each(|e| *e = e.map(linear_to_srgb_ext));
+        }
+    }
     let (ox, oy) = view_origin(fp.view);
     let mut out = vec![T::default(); v.len()];
     for_rows(&mut out, w.max(1), |y, row| {
         for (x, o) in row.iter_mut().enumerate() {
             let e = v.get(y * w + x).copied().unwrap_or_default();
-            *o = store(ox.wrapping_add(x), oy.wrapping_add(y), if linear { e.map(linear_to_srgb_ext) } else { e });
+            *o = store(ox.wrapping_add(x), oy.wrapping_add(y), e);
         }
     });
     out
@@ -741,6 +780,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let rgb_contrast = rgb_contrast.as_ref();
     let mut terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
     with_tone(&mut terms, &p.mask_tone);
+    {
+        let ids: Vec<u32> = p.masks.iter().map(|m| m.id).collect();
+        let adjusts: Vec<lcc_develop::LocalAdjustments> = p.masks.iter().map(|m| m.adjust).collect();
+        crate::recolor::with_recolor(&mut terms, &ids, &adjusts, &p.recolor);
+    }
     // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
     let local_points: &[Vec<crate::colorops::PointK>] = if fp.local_points.len() == p.masks.len() { &fp.local_points } else { &[] };
     let local_mixers: &[Option<crate::colorops::MixerK>] = if fp.local_mixers.len() == p.masks.len() { &fp.local_mixers } else { &[] };
@@ -975,6 +1019,21 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 d = lcc_color::perceptual::oklab_to_2020([lab[0], lab[1] + dir[0] * 0.08 * amt, lab[2] + dir[1] * 0.08 * amt]);
             }
             d = crate::colorops::local_grade(d, &l_grade);
+
+            // --- Recolor: each mask's main colour takes its target, keeping shading (crate::recolor)
+            for (m, t) in p.masks.iter().zip(&terms) {
+                if t[MASK_RECOLOR] <= 0.0 {
+                    continue;
+                }
+                let a = m.alpha.data[i];
+                if a <= 0.0 {
+                    continue;
+                }
+                let lab = lcc_color::perceptual::oklab_from_2020(d);
+                // (the recolor block is the fixed tail of the terms: always in range)
+                let out = crate::recolor::apply_terms(lab, &t[MASK_RECOLOR..MASK_RECOLOR + crate::recolor::TERMS], a);
+                d = lcc_color::perceptual::oklab_to_2020(out);
+            }
 
             // --- process V10: the Tone Curve in its wide space, before the vignette and the gamut map
             // (with Brightness and Levels before it, in the same order as the older processes run them on output values)

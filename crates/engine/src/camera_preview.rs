@@ -3905,7 +3905,9 @@ mod tests {
     #[test]
     fn a_sony_body_outside_the_table_takes_the_stand_in() {
         let stand_in = lcc_raw::spectral::stand_in(RawFormat::Arw).unwrap();
-        for (make, model) in [("SONY", "ILCE-1M2"), ("SONY", ""), ("HASSELBLAD", "Lunar")] {
+        // a body no table (camdb incl. LibRaw, spectral) knows; the guard keeps the test honest when tables grow
+        assert!(!lcc_camdb::has_matrices_camera("SONY ILCE-99M9"));
+        for (make, model) in [("SONY", "ILCE-99M9"), ("SONY", ""), ("HASSELBLAD", "Lunar")] {
             let mut raw = raw_of(RawFormat::Arw, make, model, Default::default());
             if model.is_empty() {
                 raw.metadata.model = None;
@@ -3927,12 +3929,12 @@ mod tests {
             let w = t.matrix.apply([1.0; 3]);
             assert!(w.iter().all(|v| (v - 1.0).abs() < 1e-4), "{w:?}");
         }
-        let mut raw = raw_of(RawFormat::Arw, "SONY", "ILCE-1M2", Default::default());
+        let mut raw = raw_of(RawFormat::Arw, "SONY", "ILCE-99M9", Default::default());
         let mut trace = StartTrace::default();
         starting_colour_traced_from(&mut raw, None, CameraColour::Auto, |_, _| (None, false), |_, _| None, |_, _| None, &mut trace);
         assert!(matches!(&trace.colour, ColourSource::SpectralStandIn { model, .. } if model == stand_in.model), "{trace:?}");
-        assert_eq!(lcc_raw::spectral::find(Some("SONY"), "ILCE-1M2"), None);
-        assert_eq!(lcc_catalog::relative_wb_camera("ARW", "SONY ILCE-1M2"), !lcc_raw::kelvin_presets::covers(Some("SONY"), "ILCE-1M2"));
+        assert_eq!(lcc_raw::spectral::find(Some("SONY"), "ILCE-99M9"), None);
+        assert_eq!(lcc_catalog::relative_wb_camera("ARW", "SONY ILCE-99M9"), !lcc_raw::kelvin_presets::covers(Some("SONY"), "ILCE-99M9"));
         // the same failure outside ARW keeps the neutral fallback
         let mut raw = raw_of(RawFormat::Nef, "NIKON CORPORATION", "NIKON D3Z", Default::default());
         let (_, t, _) = starting_colour_with(&mut raw, CameraColour::Auto, |_, _| (None, false), |_, _| None, |_, _| None);
@@ -5720,6 +5722,44 @@ mod tests {
             assert!((t.baseline_exposure - want).abs() < 1e-9, "dcp {dcp}: {}", t.baseline_exposure);
             assert_eq!(trace.default_exposure > 0.0, !dcp);
         }
+    }
+
+    /// Issue #1174 on a synthetic ColorChecker: the scene light such a DNG's start gives (its transform's
+    /// BaselineExposure; the profile's look-table brightening counted a second time) renders the chart within
+    /// 1 mean ΔE2000 of the chart at the issue's reference brightness (twice the baseline, what Lightroom shows),
+    /// where the baseline applied once was visibly darker (the issue's ~0.3 EV).
+    #[test]
+    fn adobe_standard_style_dng_start_renders_the_chart_at_the_reference_brightness() {
+        use lcc_raw::profile::HsvTable;
+        let own = Mat3([[0.6, -0.1, -0.05], [-0.4, 1.3, 0.1], [-0.1, 0.2, 0.7]]);
+        let baseline = 0.3;
+        let mut looked =
+            lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(own), None], baseline_exposure: baseline, ..Default::default() };
+        looked.profile.look_table = HsvTable::from_tags(&[1, 2, 1], &[0.0, 1.0, 1.0, 0.0, 1.0, 1.0], 0);
+        let mut raw = raw_of(RawFormat::Dng, "Canon", "Canon EOS 6D", looked);
+        let mut trace = StartTrace::default();
+        let (_, t, _) = starting_colour_traced(&mut raw, &[], None, None, CameraColour::Auto, false, &mut trace);
+        let src = lcc_fidelity::chart(&lcc_color::REC2020, 240, 160);
+        let at = |ev: f64| {
+            let gain = 2f64.powf(ev) as f32;
+            let lit = lcc_raster::Rgb32f::from_fn(src.width, src.height, |x, y| src.get(x, y).map(|v| v * gain));
+            let img = lcc_pipeline::render(
+                &lit,
+                &lcc_pipeline::SourceInfo::default(),
+                &lcc_develop::DevelopSettings::default(),
+                &lcc_pipeline::RenderRequest::fit(src.width, src.height),
+            )
+            .image;
+            lcc_fidelity::measure_chart(&img).unwrap()
+        };
+        let reference = at(2.0 * baseline);
+        let de = |m: &lcc_fidelity::ChartDe| {
+            m.patches.iter().zip(&reference.patches).map(|(a, b)| lcc_fidelity::delta_e2000(a.1, b.1)).sum::<f64>() / m.patches.len() as f64
+        };
+        let fixed = de(&at(t.baseline_exposure));
+        let once = de(&at(baseline));
+        assert!(fixed < 1.0, "the start's light: chart mean ΔE00 {fixed:.2} from the reference");
+        assert!(once > fixed + 1.0, "the baseline once should be visibly darker ({once:.2} vs {fixed:.2})");
     }
 
     /// The 1024 px preview Lightroom Classic writes into a 7008 px DNG is fitted; a 256 px thumbnail is not.

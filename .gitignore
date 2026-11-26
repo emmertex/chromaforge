@@ -8,6 +8,8 @@
 /android-ui-preview/
 /target
 /target-*/
+# sdk/stamp is its own workspace: where its cargo runs put a build when CARGO_TARGET_DIR is unset (bin/ship sets it)
+/sdk/stamp/target/
 /dist
 # Play Store bundles and signing notes, built locally for a manual upload
 /play-store/

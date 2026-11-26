@@ -57,6 +57,7 @@ pub fn display_item_label<'a>(id: &str, params: &Value, label: &'a str) -> &'a s
             | "keyword.toggleFromSet"
             | "keyword.useSet"
             | "map.style"
+            | "photo.editInPreset"
     ) || (id == "map.filter" && params.get("filter").and_then(Value::as_str).is_some_and(|f| f.starts_with("location:")))
         || (id == "app.export" && params.get("preset").is_some())
         || (id == "app.openLibrary" && params.get("path").is_some())
@@ -136,6 +137,7 @@ pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "Vi
 /// Order inside submenus whose items come from the registry: (menu, submenu, ids and `---`).
 /// Items not listed follow in registry order, dialogs (labels ending in `…`) last.
 const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
+    ("Library", "Faces", &["faces.detect=Find Faces Again…", "faces.clearAndRescan", "---", "dialog.faceMaintenance"]),
     (
         "Photo",
         "Develop Settings",
@@ -150,6 +152,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "---",
             "develop.treatment",
             "develop.matchExposure",
+            "develop.matchLook",
             "develop.updateProcess",
             "masks.updateAi",
             "---",
@@ -326,6 +329,10 @@ pub(crate) fn selection_deleted(app: &LccApp) -> bool {
 /// Items only some hosts have are left out of the others' menus (the web build's library backup);
 /// Restore and Delete Permanently replace Delete for photos in Recently Deleted.
 fn host_supports(app: &LccApp, id: &str) -> bool {
+    // a single-language build (`CRAFT_FONTS_LANGUAGE`) has no menu item for the languages it left out
+    if crate::menus::language_left_out(id) {
+        return false;
+    }
     match id {
         "file.backupLibrary" => app.services.backup_library.is_some(),
         // the desktop's backup into the library's backup folder; a host with a backup of its own
@@ -413,6 +420,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.filterBar" => Some(u.filter_bar),
         "library.toggleFilters" => Some(!app.session.filters_off()),
         "view.soloSections" => Some(u.single_panel),
+        "mask.solo" => Some(u.mask_solo),
         "view.navigator" => Some(u.navigator),
         "view.layoutImage" => Some(u.layout_image.show && !u.layout_image.path.trim().is_empty()),
         "library.holdView" => Some(app.session.hold_view),
@@ -477,6 +485,10 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
     // the state-driven choice submenus (`menu_choices`)
     if let Some(v) = crate::menu_choices::expanded(app, name) {
         return Some(v);
+    }
+    // the saved external editors, each with its own items
+    if name == "Edit In" {
+        return Some(crate::edit_in::menu_items(app));
     }
     let active = app.session.active().and_then(|id| app.session.catalog.photo(id).cloned());
     let has = active.is_some();
@@ -659,6 +671,20 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                     let on = if k.is_dark() { s.dark_theme.kind() == k } else { s.light_theme.kind() == k };
                     v.push(item("view.theme", json!({"theme": k.id()}), k.label(), None, true, Some(on)));
                 }
+            }
+            // each background as a titled group of shades, not a submenu: Appearance is already
+            // a submenu of Window, and menus stay two levels deep
+            for (label, command, current) in [
+                ("Loupe Background", "view.loupeBackground", s.loupe_background),
+                ("Filmstrip Background", "view.filmstripBackground", s.filmstrip_background),
+            ] {
+                v.push(MenuNode::Separator);
+                v.push(item(command, Value::Null, label, None, false, None));
+                v.extend(
+                    crate::theme::CanvasShade::ALL
+                        .into_iter()
+                        .map(|shade| item(command, json!({"shade": shade.id()}), shade.label(), None, true, Some(current == shade))),
+                );
             }
             v
         }
@@ -1107,8 +1133,9 @@ impl Build<'_> {
 
     /// The items of a submenu shown as `label` in menu `title`, gathering path `menu>path`.
     fn submenu(&mut self, title: &str, label: &str, menu: &str, path: &str) -> Vec<MenuNode> {
-        // Zoom's generated choices (Space Zooms To) follow its commands
-        let after = path == "Zoom";
+        // Zoom's generated choices (Space Zooms To) and the saved Edit In presets follow their
+        // submenu's commands
+        let after = matches!(path, "Zoom" | "Edit In");
         let generated = expanded(self.app, path).unwrap_or_default();
         let mut children = if after { Vec::new() } else { generated.clone() };
         children.push(MenuNode::Separator);
@@ -1456,7 +1483,7 @@ pub fn show_in_window(app: &mut LccApp, ui: &mut egui::Ui, max_width: f32) -> f3
         if let Err(e) = r
             && matches!(id.as_str(), "app.export" | "app.exportPrevious" | "file.backupLibrary" | "file.restoreLibrary")
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     ui.cursor().left() - start
@@ -1622,6 +1649,26 @@ mod tests {
         a.ui.module = crate::module::ModuleId::Library;
         a.ui.view = ViewMode::Compare;
         check(&a);
+    }
+
+    #[test]
+    fn face_actions_are_grouped_in_the_library_faces_submenu() {
+        let app = app();
+        let bar = menu_bar(&app);
+        let Some((_, library)) = bar.iter().find(|(title, _)| title == "Library") else { panic!("Library menu") };
+        let Some(MenuNode::Submenu { children, .. }) =
+            library.iter().find(|node| matches!(node, MenuNode::Submenu { label, .. } if label == "Faces"))
+        else {
+            panic!("Library ▸ Faces submenu")
+        };
+        let actions = ["faces.detect", "faces.clearAndRescan", "dialog.faceMaintenance"];
+        for id in actions {
+            assert!(find(children, id).is_some(), "{id} is in Library ▸ Faces");
+        }
+        assert!(
+            !library.iter().any(|node| matches!(node, MenuNode::Item { id, .. } if actions.contains(&id.as_str()))),
+            "face actions do not add separate top-level Library rows"
+        );
     }
 
     fn find<'a>(nodes: &'a [MenuNode], id: &str) -> Option<&'a MenuNode> {
@@ -2112,6 +2159,24 @@ mod tests {
         assert!(run_item(&mut app, "merge.hdrLast", Value::Null).is_err());
     }
 
+    /// Help ▸ Send Feedback… opens the repository's issues page: the link the command and the menu
+    /// item both read (`links::FEEDBACK`), and the item keeps that label in every build.
+    #[test]
+    fn send_feedback_opens_the_issues_page() {
+        let mut app = app();
+        let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let o = opened.clone();
+        app.services.open_url = Some(Box::new(move |u: &str| {
+            o.lock().unwrap().push(u.to_string());
+            Ok(())
+        }));
+        let help = menu_bar(&app).into_iter().find(|(t, _)| t == "Help").map(|(_, items)| items).unwrap_or_default();
+        assert!(matches!(find(&help, "app.feedback"), Some(MenuNode::Item { label, .. }) if label == "Send Feedback…"), "Help lists Send Feedback…");
+        run_item(&mut app, "app.feedback", Value::Null).unwrap();
+        assert_eq!(opened.lock().unwrap().as_slice(), [crate::links::FEEDBACK]);
+        assert_eq!(crate::links::FEEDBACK, format!("{}/issues", lcc_brand::REPOSITORY.trim_end_matches('/')));
+    }
+
     /// #260: Help ▸ Open Log Folder reveals the log file the host names. Without one (the web,
     /// `--memory`) or without a file manager to show it, the item is off and the command says why.
     #[test]
@@ -2206,7 +2271,7 @@ mod tests {
             h.step();
         }
         // (read at once: a toast keeps the UI repainting until it expires, so settling would outlive it)
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert!(toast.contains(refusal), "the refusal is shown: {toast:?}");
     }
 
@@ -2237,7 +2302,7 @@ mod tests {
         let bad_dir = dir.join("nonexistent_subdir");
         let err = run_item(&mut app, "file.findMissing", json!({"folder": bad_dir.to_string_lossy(), "wait": true})).unwrap_err();
         assert!(err.contains("not a folder"), "expected 'not a folder' error, got: {err}");
-        assert!(app.ui.toast().map(|t| t.0.contains("not a folder")).unwrap_or(false), "toast should reflect failure");
+        assert!(app.ui.toast().map(|t| t.text.contains("not a folder")).unwrap_or(false), "toast should reflect failure");
         assert!(app.ui.last_find_missing.is_none(), "last_find_missing must remain None on failure");
 
         // 2. Invalid timeout parameters are rejected cleanly

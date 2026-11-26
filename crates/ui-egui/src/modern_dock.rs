@@ -103,7 +103,7 @@ impl Group {
         match self {
             Group::Light => &[("light", "Basic"), ("profile", "Profile & Treatment")],
             Group::Colour => &[("mixer", "Color Mixer"), ("grading", "Color Grading"), ("calibration", "Calibration")],
-            Group::Tone => &[("levels", "Levels"), ("curve", "Tone Curve")],
+            Group::Tone => &[("levels", "Levels"), ("toneEq", "Tone Equalizer"), ("curve", "Tone Curve")],
             Group::Detail => &[("detail", "Detail"), ("retouch", "Retouch")],
             Group::Optics => &[("optics", "Lens Corrections"), ("geometry", "Transform")],
             Group::Effects => &[("effects", "Effects"), ("plugins", "Plug-in Filters")],
@@ -130,7 +130,7 @@ impl Group {
                 "detail.nrColor",
             ],
             Group::Optics => &["optics.distortion", "optics.vignetting", "optics.caRed", "optics.caBlue", "optics.vignettingCalibrationAmount"],
-            Group::Effects => &["effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount", "grain.amount"],
+            Group::Effects => &["effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount", "glow.amount", "grain.amount"],
             _ => &[],
         }
     }
@@ -141,9 +141,10 @@ fn section_of(control: &str) -> Option<&'static str> {
     let prefix = control.split('.').next().unwrap_or("");
     Some(match (prefix, control) {
         (_, "color.saturation" | "color.vibrance") => "mixer",
-        ("vignette" | "grain", _) => "effects",
+        ("vignette" | "glow" | "grain", _) => "effects",
         ("curve", _) => "curve",
         ("levels", _) => "levels",
+        ("toneEq", _) => "toneEq",
         ("wb", _) => "light",
         ("detail", _) => "detail",
         ("optics", _) => "optics",
