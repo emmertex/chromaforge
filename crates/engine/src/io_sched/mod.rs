@@ -22,6 +22,8 @@ pub(crate) mod shared;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_gate;
 
 pub(crate) use job::JobState;
 #[cfg(not(target_arch = "wasm32"))]

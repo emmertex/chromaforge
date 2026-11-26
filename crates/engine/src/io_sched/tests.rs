@@ -441,8 +441,10 @@ fn a_hung_volume_is_declared_not_responding() {
     wait_until(|| started.load(Ordering::SeqCst) == 4 && call.done.load(Ordering::SeqCst) == 4, "/a hung and /b done");
     call.settle(&h, 3);
     h.advance(STALL_WITH_BYTES);
+    let done = call.done.clone();
     let r = call.join();
     assert_eq!(vnr_count(&r), 6, "running and queued jobs of /a");
+    assert_eq!(done.load(Ordering::SeqCst), 10, "`done` counts the files that failed too");
     assert_eq!(ok_count(&r), 4);
     for o in r.outcomes.iter().take(6) {
         match o {
