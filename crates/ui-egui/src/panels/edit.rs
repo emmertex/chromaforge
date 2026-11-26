@@ -955,7 +955,7 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
 }
 
-/// The Lens Blur section: Apply, the focus picker, Blur Amount, the bokeh shape and the focal range.
+/// The Lens Blur section: Apply, the focus picker, Blur Amount, Boost, the bokeh shape and the focal range.
 fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     let lb = d.lens_blur;
     let dim = Tokens::get(ui.ctx()).text_dim;
@@ -988,6 +988,7 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         }
     });
     control(app, ui, d, "lensBlur.amount", lb.enabled);
+    control(app, ui, d, "lensBlur.boost", lb.enabled);
     sub_title(ui, crate::i18n::tr("Bokeh"));
     let shapes = lcc_develop::BokehShape::ALL;
     let items: Vec<(&str, &str)> = shapes.iter().map(|b| (b.label(), b.name())).collect();

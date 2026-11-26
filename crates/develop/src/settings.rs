@@ -2617,11 +2617,15 @@ pub struct LensBlur {
     pub focus_size: f64,
     /// The shape of the out-of-focus highlights.
     pub bokeh: BokehShape,
+    /// Boost, `0..100`: how much brighter the out-of-focus highlights get before they are spread
+    /// into bokeh discs. Omitted while 0, so settings without it keep their JSON (and hash).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub boost: f64,
 }
 
 impl Default for LensBlur {
     fn default() -> Self {
-        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle }
+        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle, boost: 0.0 }
     }
 }
 

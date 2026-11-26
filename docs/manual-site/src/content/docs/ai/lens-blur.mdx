@@ -8,10 +8,11 @@ sidebar:
 import NeedsImage from '../../../components/NeedsImage.astro';
 import { Aside } from '@astrojs/starlight/components';
 
-<NeedsImage what="The Lens Blur section of the Edit panel (Apply, Focus Picker, Blur Amount, Bokeh, Focal Range) next to a portrait whose background is blurred" />
+<NeedsImage what="The Lens Blur section of the Edit panel (Apply, Focus Picker, Blur Amount, Boost, Bokeh, Focal Range) next to a portrait whose background is blurred" />
 
 - **Where**: Edit panel ▸ **Lens Blur**, below Lens Corrections. Tick **Apply**, or move any slider: that switches it on.
 - **Blur Amount**: how strong the blur gets for the farthest parts. 100 is about 3 % of the photo's long edge.
+- **Boost**: brightens the blurred highlights, so lamps and reflections in the background turn into bright discs. Midtones and shadows keep their level. 0 leaves the blur as it is.
 - **Focus Picker**: click the photo to keep the distance under the pointer sharp. Drag to use the middle distance of an area. The picker stays armed until you click it again or press Esc. **Clear Focus** goes back to the Focal Distance slider.
 - **Focal Distance** (0 near, 100 far) and **Focal Range** (how deep the sharp zone is): set the sharp zone by hand when no focus is picked. **Focus Area** changes the size of a picked area.
 - **Bokeh**: the shape of blurred highlights. **Circle**, **5 Blades**, **6 Blades** or **Ring** (a mirror lens).
@@ -31,9 +32,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## By command
 
-- `lensBlur.set {amount, focalDistance, focalRange, focus: {x, y} | null, focusSize, bokeh, enabled}`. Every change is one undo step.
+- `lensBlur.set {amount, boost, focalDistance, focalRange, focus: {x, y} | null, focusSize, bokeh, enabled}`. Every change is one undo step.
 - `lensBlur.status`: the current settings and the depth source (`model` or `subject`).
-- The sliders are develop controls: `lensBlur.amount`, `lensBlur.focalDistance`, `lensBlur.focalRange`, `lensBlur.focusSize`.
+- The sliders are develop controls: `lensBlur.amount`, `lensBlur.boost`, `lensBlur.focalDistance`, `lensBlur.focalRange`, `lensBlur.focusSize`.
 - `section.lensBlur` opens the section (Window ▸ Edit Sections ▸ Lens Blur).
 
 ## Limits

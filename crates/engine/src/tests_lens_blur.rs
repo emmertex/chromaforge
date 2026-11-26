@@ -32,12 +32,17 @@ fn lens_blur_is_set_picked_undone_and_refuses_bad_values() {
     // the sliders are develop controls too
     s.execute("develop.set", &json!({"control": "lensBlur.amount", "value": 30})).unwrap();
     assert_eq!(lens(&s).amount, 30.0);
+    // Boost: by the command (clamped) and as a develop control
+    assert_eq!(s.execute("lensBlur.set", &json!({"boost": 400})).unwrap()["boost"], 100.0);
+    s.execute("develop.set", &json!({"control": "lensBlur.boost", "value": 25})).unwrap();
+    assert_eq!(lens(&s).boost, 25.0);
     // hostile parameters are refused with a message
     for p in [
         json!({"bokeh": "triangle"}),
         json!({"focus": {"x": "left"}}),
         json!({"focus": [0.5, 0.5]}),
         json!({"amount": "lots"}),
+        json!({"boost": "bright"}),
         json!({"enabled": 1}),
     ] {
         assert!(s.execute("lensBlur.set", &p).is_err(), "{p}");

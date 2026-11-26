@@ -11,11 +11,13 @@
 //! growing radius that each pixel blends between. A layer's large kernel runs on a reduced copy
 //! (≤ 5 px kernel radius there), so its cost doesn't grow with the blur. A tap from a pixel that is
 //! sharper than the layer counts for little, so a sharp subject doesn't smear into the blurred
-//! background around it. Radii are relative to the photo's long edge: previews match exports.
+//! background around it. Boost brightens highlights before they are spread, so they turn into
+//! bright discs (bokeh) while the rest of the blur keeps its level. Radii are relative to the photo's long edge: previews match exports.
 //! Both renderers run this CPU code on the scene-linear image after noise reduction.
 //!
 //! Sources: own design (layered gather of a depth-of-field blur, as commonly described for
-//! real-time renderers); no code read or copied.
+//! real-time renderers). Boost (the highlight gain before the spread, and its constants) is
+//! translated from upstream PR #2661's `lens_blur.rs` (MIT).
 
 use std::sync::Arc;
 
@@ -33,6 +35,8 @@ const LAYERS: usize = 6;
 const REDUCED_RADIUS: f64 = 5.0;
 /// How far past the sharp band (in `0..1` distance) the blur reaches its full size.
 const FALLOFF: f32 = 0.35;
+/// The brightest highlights grow this much brighter at Boost 100 before they are spread.
+const BOOST_GAIN: f32 = 4.0;
 
 /// Where the distance grid came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -131,6 +135,20 @@ pub fn coc(d: f32, focus: f32, range: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// How much brighter a tap of colour `c` counts at `boost` (`0..1`): 1 up to mid-grey, rising to
+/// `1 + BOOST_GAIN · boost` at scene white and above.
+fn boost_gain(c: [f32; 3], boost: f32) -> f32 {
+    if !boost.is_finite() || boost <= 0.0 {
+        return 1.0;
+    }
+    let l = lcc_color::luminance_2020(c);
+    if !l.is_finite() {
+        return 1.0;
+    }
+    let t = ((l - 0.5) / 0.5).clamp(0.0, 1.0);
+    1.0 + BOOST_GAIN * boost.min(1.0) * t * t * (3.0 - 2.0 * t)
+}
+
 /// Whether offset `(u, v)` (in kernel radii) is inside `shape`'s aperture.
 pub fn inside(shape: BokehShape, u: f64, v: f64) -> bool {
     let r = (u * u + v * v).sqrt();
@@ -189,7 +207,8 @@ pub fn blur(img: &mut Rgb32f, lb: &LensBlur, depth: &Depth, frame: &Frame, px_pe
     if c.data.iter().all(|v| *v <= 0.0) {
         return;
     }
-    let layers: Vec<Layer> = (1..=LAYERS).map(|k| Layer::new(img, &c, rmax * k as f64 / LAYERS as f64, k, lb.bokeh)).collect();
+    let boost = if lb.boost.is_finite() { (lb.boost.clamp(0.0, 100.0) / 100.0) as f32 } else { 0.0 };
+    let layers: Vec<Layer> = (1..=LAYERS).map(|k| Layer::new(img, &c, rmax * k as f64 / LAYERS as f64, k, lb.bokeh, boost)).collect();
     let src = &*img;
     let mut out = src.data.clone();
     crate::for_rows(&mut out, w, |y, row| {
@@ -215,7 +234,7 @@ struct Layer {
 }
 
 impl Layer {
-    fn new(src: &Rgb32f, coc: &Plane, r: f64, k: usize, shape: BokehShape) -> Layer {
+    fn new(src: &Rgb32f, coc: &Plane, r: f64, k: usize, shape: BokehShape, boost: f32) -> Layer {
         let scale = ((r / REDUCED_RADIUS).ceil() as usize).max(1);
         let (small, small_coc) = reduce(src, coc, scale);
         let rr = r / scale as f64;
@@ -234,7 +253,9 @@ impl Layer {
                     let i = sy * w + sx;
                     let (Some(p), Some(cv)) = (small.data.get(i), small_coc.data.get(i)) else { continue };
                     let wt = if *cv >= need { 1.0 } else { 0.02 + 0.98 * (cv / need.max(1e-3)).clamp(0.0, 1.0).powi(2) };
-                    sum = [sum[0] + p[0] * wt, sum[1] + p[1] * wt, sum[2] + p[2] * wt];
+                    // (Boost: a highlight counts brighter in what it is spread into, not in the weights)
+                    let g = wt * boost_gain(*p, boost);
+                    sum = [sum[0] + p[0] * g, sum[1] + p[1] * g, sum[2] + p[2] * g];
                     wsum += wt;
                 }
                 if wsum > 0.0 {
@@ -386,6 +407,36 @@ mod tests {
         assert!(img.data.iter().all(|p| p.iter().all(|v| v.is_finite())));
         let after: f32 = img.data.iter().map(|p| p[0]).sum();
         assert!((after - before).abs() / before < 0.35, "light is roughly kept: {before} → {after}");
+    }
+
+    /// Boost brightens the bokeh of a highlight only: a mid-grey background blurs to the same level.
+    #[test]
+    fn boost_brightens_blurred_highlights_only() {
+        let (w, h) = (64, 32);
+        let mut img0 = Rgb32f::from_fn(w, h, |_, _| [0.2; 3]);
+        if let Some(p) = img0.data.get_mut(16 * w + 16) {
+            *p = [10.0; 3];
+        }
+        let depth = Depth { grid: Arc::new(Plane::filled(4, 4, 1.0)), source: DepthSource::Model };
+        let run = |boost: f64| {
+            let mut img = img0.clone();
+            let lb = LensBlur { enabled: true, amount: 100.0, focal_distance: 0.0, focal_range: 10.0, boost, ..LensBlur::default() };
+            blur(&mut img, &lb, &depth, &frame(w, h), 100.0);
+            img
+        };
+        let (plain, boosted) = (run(0.0), run(100.0));
+        let at = |i: &Rgb32f, x: usize, y: usize| i.data[y * w + x][0];
+        assert!(at(&boosted, 17, 16) > at(&plain, 17, 16) * 2.0, "{} vs {}", at(&boosted, 17, 16), at(&plain, 17, 16));
+        assert!((at(&boosted, 50, 16) - at(&plain, 50, 16)).abs() < 1e-4, "mid-grey keeps its level");
+        // hostile Boost values and pixels: finite, and no brighter than Boost 100
+        for b in [f64::NAN, f64::INFINITY, -50.0, 1e300] {
+            let img = run(b);
+            assert!(img.data.iter().all(|p| p.iter().all(|v| v.is_finite())), "{b}");
+            assert!(at(&img, 17, 16) <= at(&boosted, 17, 16) + 1e-4, "{b}");
+        }
+        assert_eq!(boost_gain([f32::NAN; 3], 1.0), 1.0);
+        assert_eq!(boost_gain([0.3; 3], 1.0), 1.0);
+        assert_eq!(boost_gain([5.0; 3], f32::NAN), 1.0);
     }
 
     #[test]
