@@ -87,6 +87,7 @@
   "Frame {n} of the series is selected more than once": "El fotograma {n} de la serie está seleccionado más de una vez",
   "Frames moved to Recently Deleted: {n}": "Fotogramas movidos a Eliminadas recientemente: {n}",
   "Frames moved to Recently Deleted: {n}; already gone: {missing}": "Fotogramas movidos a Eliminadas recientemente: {n}; ya no estaban: {missing}",
+  "Geotagged {n} photo(s)": "{n} foto(s) geoetiquetada(s)",
   "Go Back to Version {version}": "Volver a la versión {version}",
   "Goes into the group “{group}” that exists already.": "Va al grupo «{group}», que ya existe.",
   "Healed {n} blemishes": "{n} imperfecciones corregidas",
