@@ -17,8 +17,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 /// `format` field of a curve file.
 pub const FORMAT: &str = "base-curve";
-/// The newest format version this build reads.
-pub const VERSION: u32 = 1;
+/// The newest format version this build reads. Version 2 adds the `natural-cubic-spline` interpolation and the
+/// `encode` and `decode` steps; a version 1 file may not use them.
+pub const VERSION: u32 = 2;
 /// Largest curve file read (bytes).
 pub const MAX_FILE: u64 = 1 << 20;
 pub const MAX_CURVES: usize = 8;
@@ -34,6 +35,9 @@ const MAX_ID: usize = 128;
 pub enum Interpolation {
     Linear,
     MonotoneCubic,
+    /// A C2 cubic spline through the points with natural ends (second derivative 0 at both), clamped to 0..=1. Not
+    /// monotone by construction. Format version 2.
+    NaturalCubicSpline,
 }
 
 /// What a step's curve acts on.
@@ -106,11 +110,46 @@ struct RawCurve {
     points: Vec<[f64; 2]>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum EncodeKind {
+    #[default]
+    PowerSegment,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum DecodeKind {
+    #[default]
+    PowerToe,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum RawStep {
-    Curve { curve: String, on: On },
-    Mix { a: String, b: String, t: f64 },
+    Curve {
+        curve: String,
+        on: On,
+    },
+    Mix {
+        a: String,
+        b: String,
+        t: f64,
+    },
+    Encode {
+        #[serde(default)]
+        kind: EncodeKind,
+        gamma: f64,
+        #[serde(default)]
+        offset: f64,
+    },
+    Decode {
+        #[serde(default)]
+        kind: DecodeKind,
+        gamma: f64,
+        #[serde(default)]
+        knee: f64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -136,13 +175,77 @@ struct RawFile {
 pub struct Curve {
     pub interpolation: Interpolation,
     pub points: Vec<[f64; 2]>,
+    /// Second derivatives at the points for [`Interpolation::NaturalCubicSpline`] (empty otherwise).
+    second: Vec<f64>,
 }
 
 /// One step of a curve file's `apply` list.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
-    Curve { curve: String, on: On },
-    Mix { a: String, b: String, t: f64 },
+    Curve {
+        curve: String,
+        on: On,
+    },
+    Mix {
+        a: String,
+        b: String,
+        t: f64,
+    },
+    /// Linear x in 0..=1 to an encoded value: `(1 + offset) · x^(1/gamma) − offset` above a knee, a straight line
+    /// below it (value and slope continuous), `1` at 1. Offset 0 is the plain power.
+    Encode {
+        gamma: f64,
+        offset: f64,
+    },
+    /// An encoded value in 0..=1 to a display-linear one: `e^gamma` from `knee` up, a straight line below it
+    /// (`knee^(gamma − 1) · e`). Knee 0 is the plain power.
+    Decode {
+        gamma: f64,
+        knee: f64,
+    },
+}
+
+/// The `encode` step.
+fn encode(x: f64, gamma: f64, offset: f64) -> f64 {
+    let x = if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
+    let p = 1.0 / gamma;
+    if offset <= 0.0 {
+        return x.powf(p);
+    }
+    let knee = (offset / ((1.0 + offset) * (1.0 - p))).powf(gamma);
+    if x < knee { (1.0 + offset) * p * knee.powf(p - 1.0) * x } else { (1.0 + offset) * x.powf(p) - offset }
+}
+
+/// The `decode` step.
+fn decode(e: f64, gamma: f64, knee: f64) -> f64 {
+    let e = if e.is_nan() { 0.0 } else { e.clamp(0.0, 1.0) };
+    if knee > 0.0 && e < knee { knee.powf(gamma - 1.0) * e } else { e.powf(gamma) }
+}
+
+/// Second derivatives of the natural cubic spline through `p` (x strictly increasing).
+fn natural_second(p: &[[f64; 2]]) -> Vec<f64> {
+    let n = p.len();
+    let mut m = vec![0.0; n];
+    if n < 3 {
+        return m;
+    }
+    let h: Vec<f64> = (0..n - 1).map(|i| p[i + 1][0] - p[i][0]).collect();
+    // tridiagonal system for the interior points, solved forwards and back
+    let (mut diag, mut rhs) = (vec![0.0; n], vec![0.0; n]);
+    for i in 1..n - 1 {
+        diag[i] = 2.0 * (h[i - 1] + h[i]);
+        rhs[i] = 6.0 * ((p[i + 1][1] - p[i][1]) / h[i] - (p[i][1] - p[i - 1][1]) / h[i - 1]);
+    }
+    for i in 2..n - 1 {
+        let f = h[i - 1] / diag[i - 1];
+        diag[i] -= f * h[i - 1];
+        rhs[i] -= f * rhs[i - 1];
+    }
+    m[n - 2] = rhs[n - 2] / diag[n - 2];
+    for i in (1..n - 2).rev() {
+        m[i] = (rhs[i] - h[i] * m[i + 1]) / diag[i];
+    }
+    m
 }
 
 /// A parsed, validated curve file.
@@ -159,6 +262,11 @@ pub struct BaseCurve {
 }
 
 impl Curve {
+    fn new(interpolation: Interpolation, points: Vec<[f64; 2]>) -> Curve {
+        let second = if interpolation == Interpolation::NaturalCubicSpline { natural_second(&points) } else { Vec::new() };
+        Curve { interpolation, points, second }
+    }
+
     /// The curve at `x` (clamped to 0..=1).
     pub fn eval(&self, x: f64) -> f64 {
         let p = &self.points;
@@ -171,6 +279,12 @@ impl Curve {
         let t = (x - a[0]) / h;
         match self.interpolation {
             Interpolation::Linear => a[1] + t * (b[1] - a[1]),
+            Interpolation::NaturalCubicSpline => {
+                let (m0, m1) = (self.second[i], self.second[i + 1]);
+                let (u, v) = (b[0] - x, x - a[0]);
+                (m0 * u * u * u / (6.0 * h) + m1 * v * v * v / (6.0 * h) + (a[1] / h - m0 * h / 6.0) * u + (b[1] / h - m1 * h / 6.0) * v)
+                    .clamp(0.0, 1.0)
+            }
             Interpolation::MonotoneCubic => {
                 let (m0, m1) = (self.tangent(i), self.tangent(i + 1));
                 let (t2, t3) = (t * t, t * t * t);
@@ -228,7 +342,7 @@ impl BaseCurve {
     /// Why this build cannot render the curve, if it cannot: this build evaluates luminance curve steps only.
     pub fn unsupported(&self) -> Option<&'static str> {
         self.apply.iter().find_map(|s| match s {
-            Step::Curve { on: On::Luminance, .. } => None,
+            Step::Curve { on: On::Luminance, .. } | Step::Encode { .. } | Step::Decode { .. } => None,
             Step::Curve { on: On::EachChannel, .. } => Some("per-channel curves are not supported by this version"),
             Step::Mix { .. } => Some("mix steps are not supported by this version"),
         })
@@ -244,10 +358,15 @@ impl BaseCurve {
         }
         let mut x = self.input.gain * f64::from(v) / self.input.white;
         for s in &self.apply {
-            if let Step::Curve { curve, on: On::Luminance } = s
-                && let Some(c) = self.curves.get(curve)
-            {
-                x = c.eval_extended(x, self.extension);
+            match s {
+                Step::Curve { curve, on: On::Luminance } => {
+                    if let Some(c) = self.curves.get(curve) {
+                        x = c.eval_extended(x, self.extension);
+                    }
+                }
+                Step::Encode { gamma, offset } => x = encode(x, *gamma, *offset),
+                Step::Decode { gamma, knee } => x = decode(x, *gamma, *knee),
+                _ => {}
             }
         }
         x.max(0.0) as f32
@@ -280,7 +399,7 @@ fn validate_curve(name: &str, c: &RawCurve) -> Result<Curve, String> {
     if p[0][1] < 0.0 || p[p.len() - 1][1] > 1.0 {
         return Err(format!("curve {name}: y must lie within 0 to 1"));
     }
-    Ok(Curve { interpolation: c.interpolation, points: p.clone() })
+    Ok(Curve::new(c.interpolation, p.clone()))
 }
 
 /// Parse and validate a curve file. Unknown fields are ignored; an unknown step, encoding or interpolation, a
@@ -315,6 +434,9 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
         if !valid_name(name) {
             return Err(format!("curve name {name:?} is not valid"));
         }
+        if f.version < 2 && c.interpolation == Interpolation::NaturalCubicSpline {
+            return Err(format!("curve {name}: the natural-cubic-spline interpolation needs format version 2"));
+        }
         curves.insert(name.clone(), validate_curve(name, c)?);
     }
     if f.apply.is_empty() || f.apply.len() > MAX_STEPS {
@@ -337,6 +459,28 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
                     return Err("mix weight must be within 0 to 1".into());
                 }
                 apply.push(Step::Mix { a, b, t });
+            }
+            RawStep::Encode { kind, gamma, offset } => {
+                let EncodeKind::PowerSegment = kind;
+                if f.version < 2 {
+                    return Err("the encode step needs format version 2".into());
+                }
+                // the straight part must end before x = 1 (knee below 1), which holds for offset below gamma − 1
+                if !(gamma.is_finite() && gamma > 1.0 && gamma <= 4.0 && offset.is_finite() && (0.0..=1.0).contains(&offset) && offset < gamma - 1.0)
+                {
+                    return Err("encode: gamma must be above 1 and at most 4, offset within 0 to 1 and below gamma − 1".into());
+                }
+                apply.push(Step::Encode { gamma, offset });
+            }
+            RawStep::Decode { kind, gamma, knee } => {
+                let DecodeKind::PowerToe = kind;
+                if f.version < 2 {
+                    return Err("the decode step needs format version 2".into());
+                }
+                if !(gamma.is_finite() && (1.0..=4.0).contains(&gamma) && knee.is_finite() && (0.0..1.0).contains(&knee)) {
+                    return Err("decode: gamma must be within 1 to 4, knee within 0 to below 1".into());
+                }
+                apply.push(Step::Decode { gamma, knee });
             }
         }
     }
@@ -523,7 +667,7 @@ mod tests {
             assert!(parse(d.to_string().as_bytes()).is_err(), "{d}");
         };
         bad(&|d| d["format"] = json!("other"));
-        bad(&|d| d["version"] = json!(2));
+        bad(&|d| d["version"] = json!(3));
         bad(&|d| d["version"] = json!(0));
         bad(&|d| d["curves"]["a"]["points"] = json!([[0, 0]]));
         bad(&|d| d["curves"]["a"]["points"] = json!([[0, 0], [0.6, 0.5], [0.5, 0.6], [1, 1]]));
@@ -545,6 +689,144 @@ mod tests {
         bad(&|d| d["curves"]["a"]["points"] = json!((0..=300).map(|i| json!([i as f64 / 300.0, i as f64 / 300.0])).collect::<Vec<_>>()));
         assert!(parse(b"not json").is_err());
         assert!(parse(&vec![b' '; (MAX_FILE as usize) + 1]).is_err());
+    }
+
+    fn v2(curve: serde_json::Value, apply: serde_json::Value) -> serde_json::Value {
+        json!({ "format": "base-curve", "version": 2, "curves": { "a": curve }, "apply": apply })
+    }
+
+    #[test]
+    fn the_natural_cubic_spline_matches_the_closed_form_and_hits_its_points() {
+        // three points: the one interior second derivative solves 2 (h0 + h1) m = 6 (d1 − d0) = −7.2, so m = −3.6,
+        // and at x = 0.25 the spline is −3.6 · 0.25³ / (6 · 0.5) + (0.8 / 0.5 + 3.6 · 0.5 / 6) · 0.25 = 0.45625
+        let d = v2(
+            json!({ "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.5, 0.8], [1, 1]] }),
+            json!([{ "op": "curve", "curve": "a", "on": "luminance" }]),
+        );
+        let c = parse(d.to_string().as_bytes()).unwrap();
+        assert!((c.eval_luminance(0.25) - 0.45625).abs() < 1e-6, "{}", c.eval_luminance(0.25));
+        for (v, y) in [(0.0, 0.0), (0.5, 0.8), (1.0, 1.0)] {
+            assert!((c.eval_luminance(v) - y).abs() < 1e-6, "{v}");
+        }
+        // two points: a straight line
+        let d = v2(
+            json!({ "interpolation": "natural-cubic-spline", "points": [[0, 0.1], [1, 0.7]] }),
+            json!([{ "op": "curve", "curve": "a", "on": "luminance" }]),
+        );
+        assert!((parse(d.to_string().as_bytes()).unwrap().eval_luminance(0.5) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_spline_is_smooth_where_a_piecewise_one_is_not_and_stays_within_zero_and_one() {
+        let pts = json!([[0, 0], [0.05, 0.3], [0.1, 0.32], [0.4, 0.8], [0.6, 0.85], [1, 1]]);
+        let d = v2(json!({ "interpolation": "natural-cubic-spline", "points": pts }), json!([{ "op": "curve", "curve": "a", "on": "luminance" }]));
+        let c = parse(d.to_string().as_bytes()).unwrap();
+        let f = |x: f64| c.curves["a"].eval(x);
+        // continuous first derivative at every interior knot (the slopes either side agree)
+        for x in [0.05, 0.1, 0.4, 0.6] {
+            let e = 1e-6;
+            let (l, r) = ((f(x) - f(x - e)) / e, (f(x + e) - f(x)) / e);
+            assert!((l - r).abs() < 1e-3 * (1.0 + l.abs()), "{x}: {l} against {r}");
+        }
+        for i in 0..=2000 {
+            let y = f(i as f64 / 2000.0);
+            assert!((0.0..=1.0).contains(&y), "{i}: {y}");
+        }
+    }
+
+    #[test]
+    fn version_two_features_need_version_two() {
+        let steps = json!([{ "op": "curve", "curve": "a", "on": "luminance" }]);
+        let mut d = v2(json!({ "interpolation": "natural-cubic-spline", "points": [[0, 0], [1, 1]] }), steps.clone());
+        assert!(parse(d.to_string().as_bytes()).is_ok());
+        d["version"] = json!(1);
+        assert!(parse(d.to_string().as_bytes()).is_err(), "spline in a version 1 file");
+        let mut d = v2(json!({ "interpolation": "linear", "points": [[0, 0], [1, 1]] }), json!([{ "op": "encode", "gamma": 2.0, "offset": 0.1 }]));
+        assert!(parse(d.to_string().as_bytes()).is_ok());
+        d["version"] = json!(1);
+        assert!(parse(d.to_string().as_bytes()).is_err(), "encode in a version 1 file");
+        let mut d = v2(json!({ "interpolation": "linear", "points": [[0, 0], [1, 1]] }), json!([{ "op": "decode", "gamma": 1.5 }]));
+        assert!(parse(d.to_string().as_bytes()).is_ok());
+        d["version"] = json!(1);
+        assert!(parse(d.to_string().as_bytes()).is_err(), "decode in a version 1 file");
+    }
+
+    #[test]
+    fn encode_and_decode_are_bounded_monotone_and_continuous_with_the_right_ends() {
+        for (gamma, offset) in [(1.5, 0.0), (2.5, 0.12), (3.0, 0.3), (1.2, 0.19)] {
+            assert!((encode(0.0, gamma, offset)).abs() < 1e-12 && (encode(1.0, gamma, offset) - 1.0).abs() < 1e-12, "{gamma} {offset}");
+            let mut prev = -1.0;
+            for i in 0..=4000 {
+                let e = encode(i as f64 / 4000.0, gamma, offset);
+                assert!(e >= prev - 1e-12 && (0.0..=1.0 + 1e-12).contains(&e), "{gamma} {offset} {i}");
+                if i > 0 {
+                    assert!(e - prev < 0.05 + 4.0 * offset, "a jump at {i}: {prev} to {e}");
+                }
+                prev = e;
+            }
+        }
+        for (gamma, knee) in [(1.0, 0.0), (1.8, 0.0), (2.2, 0.02), (1.5, 0.5)] {
+            assert!(decode(0.0, gamma, knee).abs() < 1e-12 && (decode(1.0, gamma, knee) - 1.0).abs() < 1e-12);
+            let mut prev = -1.0;
+            for i in 0..=4000 {
+                let y = decode(i as f64 / 4000.0, gamma, knee);
+                assert!(y >= prev - 1e-12 && (0.0..=1.0 + 1e-12).contains(&y), "{gamma} {knee} {i}");
+                prev = y;
+            }
+            // continuous at the knee
+            if knee > 0.0 {
+                let (a, b) = (decode(knee - 1e-9, gamma, knee), decode(knee + 1e-9, gamma, knee));
+                assert!((a - b).abs() < 1e-7, "{gamma} {knee}: {a} {b}");
+            }
+        }
+        // the encode is continuous in value and slope where its straight part meets the power
+        let (gamma, offset): (f64, f64) = (2.5, 0.12);
+        let p = 1.0 / gamma;
+        let knee = (offset / ((1.0 + offset) * (1.0 - p))).powf(gamma);
+        let (a, b) = (encode(knee - 1e-9, gamma, offset), encode(knee + 1e-9, gamma, offset));
+        assert!((a - b).abs() < 1e-7, "{a} {b}");
+        let (sl, sr) = (
+            (encode(knee - 1e-6, gamma, offset) - encode(knee - 2e-6, gamma, offset)) / 1e-6,
+            (encode(knee + 2e-6, gamma, offset) - encode(knee + 1e-6, gamma, offset)) / 1e-6,
+        );
+        assert!((sl - sr).abs() < 1e-3 * sl, "{sl} {sr}");
+    }
+
+    #[test]
+    fn a_curve_then_encode_then_decode_composes_in_order() {
+        let steps = json!([{ "op": "curve", "curve": "a", "on": "luminance" }, { "op": "encode", "gamma": 2.5, "offset": 0.12 }, { "op": "decode", "gamma": 1.7, "knee": 0.01 }]);
+        let mut d = v2(json!({ "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.5, 0.6], [1, 1]] }), steps);
+        d["input"] = json!({ "gain": 0.9 });
+        let c = parse(d.to_string().as_bytes()).unwrap();
+        for v in [0.0f32, 0.001, 0.02, 0.2, 0.6, 1.0] {
+            let x = 0.9 * f64::from(v);
+            let want = decode(encode(c.curves["a"].eval(x), 2.5, 0.12), 1.7, 0.01) as f32;
+            assert!((c.eval_luminance(v) - want).abs() < 1e-6, "{v}: {} {want}", c.eval_luminance(v));
+        }
+        // above x = 1 the clamped curve holds 1, so the whole transfer holds white
+        assert!((c.eval_luminance(5.0) - 1.0).abs() < 1e-6);
+        // the steps are monotone together
+        let mut prev = 0.0;
+        for i in 0..=3000 {
+            let y = c.eval_luminance(i as f32 / 1000.0);
+            assert!(y >= prev - 1e-6, "{i}");
+            prev = y;
+        }
+        // bad parameters are rejected
+        let bad = |step: serde_json::Value| {
+            let d = v2(json!({ "interpolation": "linear", "points": [[0, 0], [1, 1]] }), json!([step]));
+            assert!(parse(d.to_string().as_bytes()).is_err(), "{d}");
+        };
+        bad(json!({ "op": "encode", "gamma": 1.0 }));
+        bad(json!({ "op": "encode", "gamma": 5.0 }));
+        bad(json!({ "op": "encode", "gamma": 2.0, "offset": -0.1 }));
+        bad(json!({ "op": "encode", "gamma": 2.0, "offset": 1.5 }));
+        bad(json!({ "op": "encode", "gamma": 1.2, "offset": 0.5 }));
+        bad(json!({ "op": "encode", "kind": "log", "gamma": 2.0 }));
+        bad(json!({ "op": "decode", "gamma": 0.5 }));
+        bad(json!({ "op": "decode", "gamma": 2.0, "knee": 1.0 }));
+        bad(json!({ "op": "decode", "kind": "x", "gamma": 2.0 }));
+        bad(json!({ "op": "encode" }));
     }
 
     #[test]
