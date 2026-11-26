@@ -64,9 +64,29 @@ pub enum Shown {
     /// A value being turned (the host reads its current value).
     Value { target: String },
     /// A command that ran: English label and icon.
-    Command { label: String, icon: Option<&'static str> },
+    Command { label: String, icon: Option<&'static str>, area: crate::settings::OsdArea },
     /// A surface notice (page or profile change, a toggle): English text.
     Notice { text: String },
+}
+
+/// The part of the app a command is about, from its id (not its label, which is a curated short name): develop,
+/// mask, crop and spot commands, applying a preset, and rotating or flipping a photo are Develop, the rest Elsewhere.
+pub fn command_area(command: &str) -> crate::settings::OsdArea {
+    use crate::settings::OsdArea;
+    const PREFIXES: [&str; 4] = ["develop.", "mask.", "crop.", "spot."];
+    const IDS: [&str; 5] = ["preset.apply", "photo.rotateLeft", "photo.rotateRight", "photo.flipHorizontal", "photo.flipVertical"];
+    if PREFIXES.iter().any(|p| command.starts_with(p)) || IDS.contains(&command) { OsdArea::Develop } else { OsdArea::Elsewhere }
+}
+
+/// The part of the app a readout is about: a develop or mask value or command is Develop; a view value, another
+/// command or a notice is Elsewhere.
+pub fn shown_area(s: &Shown) -> crate::settings::OsdArea {
+    use crate::settings::OsdArea;
+    match s {
+        Shown::Value { target } if crate::targets::target_spec(target).is_some_and(|t| t.kind != crate::targets::TargetKind::Ui) => OsdArea::Develop,
+        Shown::Command { area, .. } => *area,
+        Shown::Value { .. } | Shown::Notice { .. } => OsdArea::Elsewhere,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -228,7 +248,8 @@ impl Runtime {
     pub fn shown(&self, now_ms: f64) -> Option<(&Shown, f64)> {
         let (s, at) = self.shown.as_ref()?;
         let age = now_ms - at;
-        (self.settings.osd.enabled && age.is_finite() && age < f64::from(self.settings.osd.display_ms) + 400.0).then_some((s, *at))
+        (age.is_finite() && age < f64::from(self.settings.osd.display_ms) + 400.0 && self.settings.osd.allows(shown_area(s), true))
+            .then_some((s, *at))
     }
 
     fn show(&mut self, s: Shown, now_ms: f64) {
@@ -632,7 +653,7 @@ impl Runtime {
                 Vec::new()
             }
             Binding::Command { command, params } => {
-                self.show(Shown::Command { label: b.describe(), icon: crate::icons::icon_for(b) }, now_ms);
+                self.show(Shown::Command { label: b.describe(), icon: crate::icons::icon_for(b), area: command_area(command) }, now_ms);
                 // a command may change the photo: what the dial did so far goes to this one first
                 let mut out = self.interrupt();
                 out.push(Effect::Command { command: command.clone(), params: params.clone() });
@@ -709,7 +730,7 @@ impl Runtime {
             && let Some((_, b, _)) = self.armed.take()
             && let Binding::Command { command, params } = &b
         {
-            self.show(Shown::Command { label: b.describe(), icon: crate::icons::icon_for(&b) }, now_ms);
+            self.show(Shown::Command { label: b.describe(), icon: crate::icons::icon_for(&b), area: command_area(command) }, now_ms);
             out.extend(self.interrupt());
             out.push(Effect::Command { command: command.clone(), params: params.clone() });
         }
@@ -788,6 +809,34 @@ mod tests {
         // a 1:1 dial feel and no per-value tuning: these tests check the arithmetic, not the shipped feel
         let motion = MotionSettings { speed: 1.0, acceleration: 1.0, ..MotionSettings::default() };
         SurfaceSettings { profiles: vec![p], profile: "T".into(), enabled: true, motion, tuning: Default::default(), ..SurfaceSettings::default() }
+    }
+
+    /// The readout a control surface puts up obeys "In Develop" and "Elsewhere" like a change report does: a key
+    /// whose label is a curated short name still counts by its command (`develop.resetControl`), a dial on a develop
+    /// value is Develop, a key for the library is Elsewhere.
+    #[test]
+    fn a_readout_follows_the_overlay_areas_by_what_it_is_about() {
+        use crate::settings::OsdArea::{Develop, Elsewhere};
+        let curated = Binding::command_with("develop.resetControl", serde_json::json!({"control": "crop.angle"}));
+        assert_eq!(curated.describe(), "Reset Straighten", "a curated label, not the command id");
+        let mut s = settings();
+        s.profiles[0].pages.iter_mut().find(|p| p.name == "Cull").unwrap().bindings.insert("key.2".into(), curated);
+        // what shows with only `in_develop` on, and with only `elsewhere` on: (key, shows with develop only, shows with elsewhere only)
+        for (input, develop_only, elsewhere_only) in [(press("key.2"), true, false), (turn("dial", 1), true, false), (press("key.1"), false, true)] {
+            for (in_develop, elsewhere, expect) in [(true, false, develop_only), (false, true, elsewhere_only)] {
+                let mut r = Runtime::new(s.clone());
+                r.settings_mut().osd.set_areas(in_develop, elsewhere);
+                r.input(input.clone(), 0.0);
+                assert_eq!(r.shown(100.0).is_some(), expect, "{input:?} with in_develop {in_develop}, elsewhere {elsewhere}");
+            }
+        }
+        // by what a readout names
+        let value = |t: &str| Shown::Value { target: t.into() };
+        assert_eq!((shown_area(&value("light.exposure")), shown_area(&value("mask.temp"))), (Develop, Develop));
+        assert_eq!(shown_area(&Shown::Notice { text: "Dial: Exposure".into() }), Elsewhere);
+        assert_eq!(shown_area(&value("no.such.target")), Elsewhere, "an unknown target is not guessed at");
+        assert_eq!((command_area("crop.rotateAspect"), command_area("photo.rate"), command_area("mask.add")), (Develop, Elsewhere, Develop));
+        assert_eq!((command_area("preset.apply"), command_area("photo.rotateLeft"), command_area("spot.add")), (Develop, Develop, Develop));
     }
 
     fn turn(c: &str, t: i32) -> Input {

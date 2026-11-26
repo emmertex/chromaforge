@@ -37,6 +37,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("performance", "Performance"),
     ("display", "Display"),
     ("interface", "Interface"),
+    ("notifications", "Notifications"),
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("profiles", "Profiles"),
@@ -359,6 +360,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "performance" => performance_tab(app, ui, t),
         "display" => display_tab(app, ui, t),
         "interface" => interface_tab(app, ui, t),
+        "notifications" => super::notifications::settings_tab(app, ui, t),
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
@@ -2139,8 +2141,6 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too.",
         ),
     );
-    // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t, false);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and
