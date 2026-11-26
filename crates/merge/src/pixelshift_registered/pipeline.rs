@@ -7,6 +7,7 @@
 
 use super::gain::Gains;
 use super::gate::GateResult;
+use super::model::Similarity;
 use super::positions::Start;
 use super::recon::{Params, reconstruct};
 use super::register::{FallbackReason, Outcome, RegisterOptions, Timings, register_progress};
@@ -48,6 +49,8 @@ pub struct Report {
     pub tiles: usize,
     /// Brightness gains of the frames (reconstruction) or of the plain merge (when they were applied).
     pub gains: Option<Gains>,
+    /// The frames' similarity models against frame 1 (registered merges only).
+    pub models: Vec<Similarity>,
     pub timings: Stages,
 }
 
@@ -125,6 +128,7 @@ pub fn merge_series_registered(
                 start: Some(r.fit.start),
                 tiles: r.fit.tiles.len(),
                 gains: Some(r.gains),
+                models: r.fit.models,
                 timings: st,
             };
             Ok((merged, report))
@@ -140,7 +144,8 @@ pub fn merge_series_registered(
                 FallbackReason::MeasuredWorse(g) => Some(g.clone()),
                 _ => None,
             };
-            let report = Report { registered: false, reason: Some(reason), gate, start: None, tiles: 0, gains: plain_gains, timings: st };
+            let report =
+                Report { registered: false, reason: Some(reason), gate, start: None, tiles: 0, gains: plain_gains, models: Vec::new(), timings: st };
             Ok((merged, report))
         }
     }

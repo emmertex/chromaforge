@@ -2078,6 +2078,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ("dialog.mergeHdrPanorama", "HDR Panorama…"),
             ("dialog.mergeFocusStack", "Focus Stack…"),
             (crate::menus::PIXEL_SHIFT_ID, crate::menus::PIXEL_SHIFT_LABEL),
+            (crate::menus::PIXEL_SHIFT_PLAIN_ID, crate::menus::PIXEL_SHIFT_PLAIN_LABEL),
         ] {
             if ui.add_enabled(n >= 2, egui::Button::new(crate::i18n::tr(label))).clicked() {
                 let _ = app.run(id, json!({}));
