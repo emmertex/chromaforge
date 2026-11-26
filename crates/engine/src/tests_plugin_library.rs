@@ -524,6 +524,7 @@ fn reply_module(manifest: &str, reply: &str) -> Vec<u8> {
 fn before_import_hook_replaces_and_skips_on_library_import() {
     use crate::cmd::plugins::{TEST_PLUGINS, use_in_memory_manager};
     let _guard = TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _turn = crate::cmd::plugins::tests::turn();
     let dir = temp_dir("before-import");
     write_png(&dir.join("first.png"), 1, 16, 16);
     write_png(&dir.join("second.png"), 2, 16, 16);
