@@ -224,7 +224,7 @@ pub fn update(app: &mut LccApp, ctx: &egui::Context, id: PhotoId, state: &VideoU
                 Ok(Err(e)) => {
                     app.video_view.still = None;
                     app.video_view.failed = Some(k);
-                    app.toast(ctx, e);
+                    app.toast_error(ctx, e);
                 }
                 Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(15)),
                 Err(TryRecvError::Disconnected) => app.video_view.still = None,
@@ -241,7 +241,7 @@ fn fail(app: &mut LccApp, ctx: &egui::Context, e: String) -> Option<(egui::Textu
         app.session.video.follow_system_clock();
     }
     let _ = app.session.execute("video.pause", &json!({}));
-    app.toast(ctx, format!("{}: {e}", crate::i18n::tr("Playback stopped")));
+    app.toast_error(ctx, format!("{}: {e}", crate::i18n::tr("Playback stopped")));
     app.video_view.shown.as_ref().map(|s| (s.tex.id(), s.tex.size()))
 }
 

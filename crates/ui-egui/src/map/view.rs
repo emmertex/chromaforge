@@ -219,9 +219,9 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             if released {
                 if r.contains(p) {
                     let at = screen_to_geo(&app.map, r, p);
-                    match app.run("map.geotag", json!({"ids": ids, "lat": at.lat, "lon": at.lon})) {
-                        Ok(_) => app.toast(&ctx, crate::i18n::tr("Moved the photos to the new location")),
-                        Err(e) => app.toast_error(&ctx, e),
+                    // the overlay says what changed; only a refusal is a toast
+                    if let Err(e) = app.run("map.geotag", json!({"ids": ids, "lat": at.lat, "lon": at.lon})) {
+                        app.toast_error(&ctx, e);
                     }
                 }
                 app.map.dragging_pin = None;
@@ -238,10 +238,8 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             painter.circle_stroke(p, 10.0, Stroke::new(2.0, t.accent));
             if released {
                 let at = screen_to_geo(&app.map, r, p);
-                let n = ids.len();
-                match app.run("map.geotag", json!({"ids": ids, "lat": at.lat, "lon": at.lon})) {
-                    Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Geotagged {n} photo(s)", n = n)),
-                    Err(e) => app.toast_error(&ctx, e),
+                if let Err(e) = app.run("map.geotag", json!({"ids": ids, "lat": at.lat, "lon": at.lon})) {
+                    app.toast_error(&ctx, e);
                 }
                 app.ui.dragging_photos = None;
             }

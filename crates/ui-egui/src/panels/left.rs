@@ -491,7 +491,7 @@ fn section_drag(app: &mut LccApp, ui: &mut egui::Ui, placed: &[PlacedSection]) {
         app.ui.dragging_section = None;
         let before = before.map_or(serde_json::Value::Null, |b| json!(b.id()));
         if let Err(e) = app.run("view.sidebarMoveSection", json!({"section": dragged.id(), "before": before})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         return;
     }
@@ -692,9 +692,8 @@ fn sections_menu(app: &mut LccApp, ui: &mut egui::Ui, on: Option<SidebarSection>
         run = Some(("view.sidebarReset", json!({})));
     }
     if let Some((command, params)) = run {
-        if let Err(e) = app.run(command, params) {
-            app.toast(ui.ctx(), e);
-        }
+        let result = app.run(command, params);
+        app.report(ui.ctx(), result);
         ui.close();
     }
 }
@@ -1043,7 +1042,7 @@ fn local_rows(app: &mut LccApp, ui: &mut egui::Ui, now: &LocalNow) {
                     let dir = r.field("path").as_str().unwrap_or(&path).to_string();
                     let _ = app.run("local.addRoot", json!({"path": dir}));
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
     }
@@ -1312,7 +1311,7 @@ pub(crate) fn folder_tree(
         // that tab's alone, and kept it would hide a library folder's photos here (#881)
         && let Err(e) = app.run("library.browse", json!({"path": path, "show": "all"}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     disk_folder_menu(app, &resp, FolderRow::Local { top: indent == 0.0, transient }, path, None);
     if open && indent < INDENT_STEP * 8.0 {
@@ -1535,7 +1534,7 @@ fn finish_drop(app: &mut LccApp, ui: &egui::Ui, dragged: AlbumId, result: Result
             app.ui.reveal_album = Some(dragged.0);
             ui.ctx().request_repaint();
         }
-        Err(e) => app.toast(ui.ctx(), e),
+        Err(e) => app.toast_error(ui.ctx(), e),
     }
     app.ui.dragging_album = None;
 }
@@ -1748,7 +1747,7 @@ fn drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, a: &A
                 }
                 app.toast(ui.ctx(), msg);
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
         app.ui.dragging_photos = None;
     }
@@ -1787,7 +1786,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
             if b.clicked() {
                 match app.run("album.addPhotos", json!({"id": a.id.0})) {
                     Ok(r) => super::grid::toast_skipped(app, ui.ctx(), &r),
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
             // File ▸ Import's ways in; the import review opens with this album chosen
@@ -1796,9 +1795,8 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
                     let r = ui.button(label);
                     crate::widgets::register(ui.ctx(), widget, r.rect);
                     if r.clicked() {
-                        if let Err(e) = app.run(command, params) {
-                            app.toast(ui.ctx(), e);
-                        }
+                        let result = app.run(command, params);
+                        app.report(ui.ctx(), result);
                         ui.close();
                     }
                 };
@@ -1837,7 +1835,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
                         let _ = app.run("library.source", json!({"kind": "album", "id": n}));
                     }
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
             ui.close();
         }
@@ -1861,7 +1859,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
         if a.is_smart() && ui.button(crate::i18n::tr("Update Rules from Current Filter")).clicked() {
             // refused when the view would make the album test itself: say why
             if let Err(e) = app.run("album.setRules", json!({"id": a.id.0, "fromView": true})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
         if !a.folder {
@@ -1881,7 +1879,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
                         if ui.button(&p.name).clicked() {
                             show_all(app);
                             if let Err(e) = app.run("app.export", json!({"preset": p.name, "background": true})) {
-                                app.toast(ui.ctx(), e);
+                                app.toast_error(ui.ctx(), e);
                             }
                         }
                     }
@@ -1926,7 +1924,7 @@ fn folder_menu(app: &mut LccApp, resp: &egui::Response, a: &Album) {
             delete.on_hover_text(crate::i18n::tr("Photos stay in All Photos. Deleting a folder also deletes its albums. You can undo this."));
         if delete.clicked() {
             if let Err(e) = app.run("album.delete", json!({"id": a.id.0})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -2261,21 +2259,19 @@ pub(crate) fn move_photos(app: &mut LccApp, ids: Option<&[u64]>, path: &str) -> 
     Ok(r.field("moved").as_u64().unwrap_or(0))
 }
 
-/// What a move of `n` photos into the folder `name` says: how many moved and that Undo moves them
-/// back, or that they were there already.
-pub(crate) fn moved_text(n: u64, name: &str) -> String {
+/// What a move that changed nothing says: the overlay reports a move that happened (and Undo moves it back), so
+/// only "they were there already" is a toast.
+pub(crate) fn say_nothing_moved(app: &mut LccApp, ctx: &egui::Context, n: u64, name: &str) {
     if n == 0 {
-        crate::i18n::tr_format!("Already in “{}”", name)
-    } else {
-        crate::i18n::tr_format!("Moved {n} photo{} to “{}”. Edit → Undo moves them back.", if n == 1 { "" } else { "s" }, name, n = n)
+        app.toast(ctx, crate::i18n::tr_format!("Already in “{}”", name));
     }
 }
 
-/// [`move_photos`], saying how it went in a toast.
+/// [`move_photos`], saying so in a toast when nothing moved.
 fn move_photos_here(app: &mut LccApp, ctx: &egui::Context, ids: Option<&[u64]>, path: &str, name: &str) {
     match move_photos(app, ids, path) {
-        Ok(n) => app.toast(ctx, moved_text(n, name)),
-        Err(e) => app.toast(ctx, e),
+        Ok(n) => say_nothing_moved(app, ctx, n, name),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
@@ -2295,7 +2291,7 @@ fn locate_missing_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode) {
     register(ui.ctx(), "folderLocateMissing", r.rect);
     if r.clicked() {
         if let Err(e) = app.run("file.findMissing", json!({"within": n.path})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         ui.close();
     }
@@ -2341,7 +2337,7 @@ fn add_new_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, name: &str)
         crate::widgets::register(ui.ctx(), "folderAddNew", r.rect);
         if r.clicked() {
             if let Err(e) = crate::sync::open(app, &n.path, name, n.volume || !n.selectable) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -2362,7 +2358,7 @@ fn synchronize_item(app: &mut LccApp, ui: &mut egui::Ui, target: Option<(&Folder
     {
         // a disk, or a folder holding disks, was chosen as such
         if let Err(e) = crate::sync::open(app, &n.path, name, n.volume || !n.selectable) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         ui.close();
     }
@@ -2402,7 +2398,7 @@ fn export_folder_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, with_
         register(ui.ctx(), "folderExport", r.rect);
         if r.clicked() {
             if let Err(e) = show_all(app).and_then(|()| app.run("file.export", json!({})).map(|_| ())) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -2415,7 +2411,7 @@ fn export_folder_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode, with_
                 register(ui.ctx(), format!("folderExportPreset:{}", p.name), r.rect);
                 if r.clicked() {
                     if let Err(e) = show_all(app).and_then(|()| app.run("app.export", json!({"preset": p.name, "background": true})).map(|_| ())) {
-                        app.toast(ui.ctx(), e);
+                        app.toast_error(ui.ctx(), e);
                     }
                     ui.close();
                 }
@@ -2435,7 +2431,7 @@ fn folder_label_menu(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode) {
     let menu = crate::widgets::menu_button(ui, crate::i18n::tr("Set Color Label"), |ui| {
         if let Some(l) = crate::panels::grid::label_items(app, ui, n.label, "folderLabel") {
             if let Err(e) = app.run("folder.label", json!({"path": n.path, "label": crate::panels::grid::label_param(l)})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -2594,7 +2590,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             if r.clicked() {
                 // the folder picker, then the Import review copying into this folder
                 if let Err(e) = app.run("file.addFolder", json!({"destination": path})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
@@ -2607,7 +2603,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             register(ui.ctx(), "folderAddToMyPhotos", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("file.addFolder", json!({"path": path})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
@@ -2646,8 +2642,12 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                 let picked = app.services.pick_folder.as_mut().and_then(|f| f());
                 if let Some(to) = picked {
                     match app.run("folder.relocate", json!({"path": path, "to": to})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("{n} photos relinked", n = r.field("relinked").as_u64().unwrap_or(0))),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        // the overlay says it ("Update Folder Location"); only a relink that found nothing is a toast
+                        Ok(r) if r.field("relinked").as_u64().unwrap_or(0) == 0 => {
+                            app.toast(ui.ctx(), crate::i18n::tr_format!("{n} photos relinked", n = 0))
+                        }
+                        Ok(_) => {}
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
                 ui.close();
@@ -2698,8 +2698,8 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                     && let Some(into) = v.into_iter().next()
                 {
                     match app.run("folder.move", json!({"path": path, "into": into})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::pick::answered_message("folder.move", &r).unwrap_or_default()),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Ok(_) => {}
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
                 ui.close();
@@ -2726,7 +2726,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             register(ui.ctx(), "folderReveal", r.rect);
             if r.clicked() {
                 if let Some(Err(e)) = app.services.reveal.as_mut().map(|f| f(path)) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
@@ -2750,7 +2750,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                 // photo itself; choosing it then opens the rows above it
                 app.caches.show_folder(&parent);
                 if let Err(e) = app.run("library.source", json!({"kind": "libraryFolder", "path": parent})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
@@ -2768,7 +2768,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             register(ui.ctx(), "folderKeepInLocal", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("local.addRoot", json!({"path": path})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
@@ -2782,7 +2782,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             register(ui.ctx(), "folderRemoveFromLocal", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("local.hide", json!({"path": path})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }

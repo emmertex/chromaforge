@@ -15,9 +15,8 @@ use crate::widgets::{register, text_button};
 
 /// Runs a tool profile command; a refusal is said in a toast.
 fn edit(app: &mut LccApp, ctx: &egui::Context, params: Value) {
-    if let Err(e) = app.run("view.toolProfileEdit", params) {
-        app.toast(ctx, e);
-    }
+    let result = app.run("view.toolProfileEdit", params);
+    app.report(ctx, result);
 }
 
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
@@ -43,7 +42,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if chosen != profile.id
             && let Err(e) = app.run("view.toolProfile", json!({"id": chosen}))
         {
-            app.toast(&ctx, e);
+            app.toast_error(&ctx, e);
         }
     });
     crate::dialog_frame::control_row(ui, |ui| {
@@ -75,7 +74,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 if name.trim() != profile.name
                     && let Err(e) = app.run("view.toolProfileEdit", json!({"op": "rename", "id": profile.id, "name": name}))
                 {
-                    app.toast(&ctx, e);
+                    app.toast_error(&ctx, e);
                 }
                 ui.data_mut(|d| d.remove::<String>(key));
             } else if r.cancelled() {

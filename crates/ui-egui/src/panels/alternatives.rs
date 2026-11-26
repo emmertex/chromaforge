@@ -59,7 +59,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                                 let n = v.field("chosen").as_array().map_or(0, Vec::len);
                                 app.toast(ui.ctx(), crate::i18n::tr_format!("{n} alternatives in the catalog", n = n));
                             }
-                            Err(e) => app.toast(ui.ctx(), e),
+                            Err(e) => app.toast_error(ui.ctx(), e),
                         }
                     }
                     let same = ui.checkbox(&mut app.ui.alternatives_same_edit, crate::i18n::tr("Apply the same edit"));

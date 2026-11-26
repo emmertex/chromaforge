@@ -1271,9 +1271,7 @@ pub enum KeywordChips {
     Grouped,
 }
 
-/// A short message at the bottom of the photo view: its text, when it goes (app time, s), and the colour label it is
-/// shown in, if any.
-pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
+pub use crate::toast::{Toast, ToastKind};
 
 /// A toast with a button (Undo…): its text, the button's label, the command the button runs and
 /// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
@@ -2996,15 +2994,18 @@ impl UiState {
     }
 
     /// Show a toast below those already showing: one no longer hides another (upstream #1936). The same message again
-    /// (same text and label) is not shown twice: it moves to the newest place and stays until the later of its times.
+    /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
-    pub fn show_toast(&mut self, toast: Toast) {
-        let (text, until, label) = toast;
-        let until = match self.toasts.iter().position(|t| t.0 == text && t.2 == label) {
-            Some(at) => self.toasts.remove(at).1.max(until),
-            None => until,
-        };
-        self.toasts.push((text, until, label));
+    pub fn show_toast(&mut self, mut toast: Toast) {
+        if let Some(at) = self.toasts.iter().position(|t| t.text == toast.text) {
+            let older = self.toasts.remove(at);
+            toast.until = older.until.max(toast.until);
+            // a failure stays a failure when the same text comes again as a plain message
+            if older.kind == ToastKind::Error {
+                toast.kind = ToastKind::Error;
+            }
+        }
+        self.toasts.push(toast);
         if self.toasts.len() > MAX_TOASTS {
             self.toasts.drain(..self.toasts.len() - MAX_TOASTS);
         }
@@ -3012,7 +3013,7 @@ impl UiState {
 
     /// Let go of the toasts whose time is over at `now`.
     pub fn expire_toasts(&mut self, now: f64) {
-        self.toasts.retain(|t| t.1 >= now);
+        self.toasts.retain(|t| t.until >= now);
     }
 
     /// Which colour grading wheels (shadows, midtones, highlights) are hidden for viewing `photo`.
@@ -3391,27 +3392,37 @@ mod loupe_info_tests {
 
 #[cfg(test)]
 mod toast_tests {
-    use super::{MAX_TOASTS, UiState};
+    use super::{MAX_TOASTS, Toast, ToastKind, UiState};
 
     /// Two messages close together both stay on screen; the same one again is not shown twice; past the limit the
     /// oldest goes; each expires at its own time.
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
+        let message = |text: String, until: f64| Toast { text, until, kind: ToastKind::Message };
         let mut ui = UiState::default();
-        ui.show_toast(("Red Label".into(), 2.0, None));
-        ui.show_toast(("Cache cleared".into(), 3.0, None));
+        ui.show_toast(message("Red Label".into(), 2.0));
+        ui.show_toast(message("Cache cleared".into(), 3.0));
         assert_eq!(ui.toasts.len(), 2);
-        assert_eq!(ui.toast().map(|t| t.0.as_str()), Some("Cache cleared"));
-        ui.show_toast(("Red Label".into(), 4.0, None));
+        assert_eq!(ui.toast().map(|t| t.text.as_str()), Some("Cache cleared"));
+        ui.show_toast(message("Red Label".into(), 4.0));
         assert_eq!(ui.toasts.len(), 2, "the same message is shown once");
-        assert_eq!(ui.toast().map(|t| (t.0.as_str(), t.1)), Some(("Red Label", 4.0)));
+        assert_eq!(ui.toast().map(|t| (t.text.as_str(), t.until)), Some(("Red Label", 4.0)));
         for i in 0..5 {
-            ui.show_toast((format!("m{i}"), 10.0, None));
+            ui.show_toast(message(format!("m{i}"), 10.0));
         }
         assert_eq!(ui.toasts.len(), MAX_TOASTS);
-        assert_eq!(ui.toasts.first().map(|t| t.0.as_str()), Some("m2"));
-        ui.show_toast(("short".into(), 1.0, None));
+        assert_eq!(ui.toasts.first().map(|t| t.text.as_str()), Some("m2"));
+        ui.show_toast(message("short".into(), 1.0));
         ui.expire_toasts(5.0);
-        assert!(ui.toasts.iter().all(|t| t.0 != "short"));
+        assert!(ui.toasts.iter().all(|t| t.text != "short"));
+    }
+
+    /// A failure said again as a plain message is still a failure, and the longer time wins.
+    #[test]
+    fn the_same_text_again_keeps_the_error_kind() {
+        let mut ui = UiState::default();
+        ui.show_toast(Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error });
+        ui.show_toast(Toast { text: "Disk full".into(), until: 2.0, kind: ToastKind::Message });
+        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error }]);
     }
 }

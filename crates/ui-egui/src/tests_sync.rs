@@ -398,7 +398,7 @@ fn a_stopped_synchronize_says_it_was_stopped_and_stays_at_most_one_step() {
     h.app.sync_run.as_mut().expect("running").cancel();
     gate.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(h.step_until(T, |h| h.app.sync_run.is_none()), "it ends");
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(toast.contains("Stopped") && !toast.contains("by an error"), "stopped by the Cancel, not by a crashed worker: {toast:?}");
     assert!(h.app.session.undo.len() <= steps + 1, "what was done by then is at most one step");
 }
@@ -414,7 +414,7 @@ fn toast_of_run_that_ended(h: &mut Headless, counts: (usize, usize), cancel: boo
     }
     drop(worker);
     assert!(h.step_until(T, |h| h.app.sync_run.is_none()), "it ends");
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn a_synchronize_shows_a_row_and_its_cross_stops_it() {
     h.app.session.activity.cancel(rows[0].id).unwrap();
     gate.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(h.step_until(T, |h| h.app.sync_run.is_none()), "it ends");
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(toast.contains("Stopped") && !toast.contains("by an error"), "{toast:?}");
     assert!(h.app.session.activity.list().is_empty(), "the row goes with the run");
 }
