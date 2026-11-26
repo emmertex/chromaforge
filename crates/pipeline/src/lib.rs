@@ -128,6 +128,11 @@ pub struct SourceInfo {
     /// divides the scene value by it, so the curve sees sensor white as 1.0 whatever gain the colour model carries
     /// (`tone::ToneMap::film`). `None`: not known (a smart preview, which keeps the pixels but not the colour model; the engine works it out from the original when a base curve needs it), read as 1.
     pub white_scale: Option<f32>,
+    /// Raw sources: the green row of the inverse of the colour model's development (look gain, matrix, white-balance
+    /// multipliers): the raw green a developed pixel stands for is `probe · pixel`. A base curve reads it to anchor its
+    /// input on the sensor's green at any white balance, as Capture One does ([`local::film_white_scale`]). `None`: not
+    /// known (as `white_scale`), the as-shot `white_scale` is used.
+    pub green_probe: Option<[f32; 3]>,
     /// Segmentation mattes stored in the file (DNG semantic masks): AI masks use them.
     pub mattes: Option<Arc<masks::Mattes>>,
     /// The raw's own local tone mapping (DNG `ProfileGainTableMap`), rendered only when the
@@ -219,6 +224,7 @@ impl Default for SourceInfo {
             camera_color: None,
             camera_tone: None,
             white_scale: None,
+            green_probe: None,
             mattes: None,
             local_tone: None,
             filters: None,

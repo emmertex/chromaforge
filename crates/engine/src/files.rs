@@ -578,7 +578,13 @@ pub fn load_bytes_with(bytes: &[u8], max_edge: usize, options: LoadOptions) -> R
 /// way every decode chooses it) and remembers the answer for the file as it was (path, size, modification time) and
 /// the options that change the colour model. `None`: the file is not readable or is not a raw.
 pub fn white_scale_of(path: &str, options: LoadOptions) -> Option<f32> {
-    static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<f32>>>> = std::sync::OnceLock::new();
+    film_inputs_of(path, options).and_then(|(w, _)| w)
+}
+
+/// [`white_scale_of`] and `SourceInfo::green_probe` of the file (one decode, remembered together).
+pub fn film_inputs_of(path: &str, options: LoadOptions) -> Option<(Option<f32>, Option<[f32; 3]>)> {
+    type Known = (Option<f32>, Option<[f32; 3]>);
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<Known>>>> = std::sync::OnceLock::new();
     let stamp = std::fs::metadata(path)
         .ok()
         .map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs())))?;
@@ -589,7 +595,7 @@ pub fn white_scale_of(path: &str, options: LoadOptions) -> Option<f32> {
     }
     let bytes = std::fs::read(path).ok()?;
     let options = LoadOptions { path: Some(path.to_string()), ..options };
-    let scale = load_bytes_with(&bytes, 96, options).ok().filter(|(_, info)| info.raw).and_then(|(_, info)| info.white_scale);
+    let scale = load_bytes_with(&bytes, 96, options).ok().filter(|(_, info)| info.raw).map(|(_, info)| (info.white_scale, info.green_probe));
     known.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, scale);
     scale
 }
@@ -898,6 +904,12 @@ fn load_bytes_now(
             let y = lcc_color::luminance_2020(neutral) * colour.gain;
             if y.is_finite() && y > 0.0 { y } else { 1.0 }
         };
+        // the raw green a developed pixel stands for: the green row of the inverse of gain · matrix · multipliers
+        // (`SourceInfo::green_probe`)
+        let green_probe = {
+            let dev = colour.matrix.mul(&lcc_color::Mat3::diag(f64::from(colour.wb[0]), f64::from(colour.wb[1]), f64::from(colour.wb[2])));
+            dev.inverse().map(|i| i.0[1].map(|v| v as f32 / colour.gain)).filter(|p| p.iter().all(|v| v.is_finite()))
+        };
         // camera RGB → what the pipeline takes: clipped highlights rebuilt, white balance and the colour model applied,
         // fitted to `max_edge` and upright (the same for the plain and the denoised picture)
         let finish = |mut img: Rgb32f| {
@@ -960,6 +972,7 @@ fn load_bytes_now(
                 camera_color,
                 camera_tone,
                 white_scale: Some(white_scale),
+                green_probe,
                 mattes,
                 local_tone,
                 filters: None,

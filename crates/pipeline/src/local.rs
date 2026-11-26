@@ -46,6 +46,24 @@ pub fn wb_matrix_for(info: &SourceInfo, s: &DevelopSettings) -> Option<[[f32; 3]
     Some(m.mul(&lcc_color::Mat3::diag(1.0 / y, 1.0 / y, 1.0 / y)).to_f32())
 }
 
+/// What a base curve divides the scene value by under the photo's white balance: the luminance the render gives a
+/// neutral whose raw green is 1, so a neutral of raw green `g` meets the curve at `g` at any white balance (Capture One
+/// anchors green at 1; the multipliers here are normalised to their minimum, and a white balance change moves the
+/// pixels afterwards, so sensor white's luminance is not constant). A source that does not know its colour model
+/// (`green_probe` unset) keeps the as-shot `white_scale`.
+pub fn film_white_scale(info: &SourceInfo, s: &DevelopSettings) -> f32 {
+    let as_shot = info.white_scale.unwrap_or(1.0);
+    let Some(p) = info.green_probe.filter(|p| p.iter().all(|v| v.is_finite())) else { return as_shot };
+    // the neutral of the white balance in effect, as developed for the shot's white: m⁻¹ · (1, 1, 1)
+    let neutral = match wb_matrix_for(info, s) {
+        None => Some([1.0f64; 3]),
+        Some(m) => lcc_color::Mat3(m.map(|r| r.map(f64::from))).inverse().map(|i| i.apply([1.0; 3])),
+    };
+    let green = neutral.map_or(0.0, |n| (0..3).map(|i| f64::from(p[i]) * n[i]).sum::<f64>());
+    let scale = (1.0 / green) as f32;
+    if green.is_finite() && green > 0.0 && scale.is_finite() { scale } else { as_shot }
+}
+
 fn wb_gain(img: &mut Rgb32f, info: &SourceInfo, s: &DevelopSettings, gain: f32) {
     let m = wb_matrix_for(info, s);
     let w = img.width;

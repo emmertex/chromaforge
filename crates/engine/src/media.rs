@@ -1656,7 +1656,9 @@ impl RenderJob {
                     && !self.settings.profile.base_curve.is_empty()
                     && let lcc_catalog::Source::File { path } = &self.origin
                 {
-                    info.white_scale = crate::files::white_scale_of(path, LoadOptions::of(&self.settings));
+                    let (w, p) = crate::files::film_inputs_of(path, LoadOptions::of(&self.settings)).unwrap_or((None, None));
+                    info.white_scale = w;
+                    info.green_probe = p;
                 }
                 // an export that keeps transparency develops the colour without the white the pixels
                 // were flattened onto, and carries the alpha through the same geometry (issue #2976)

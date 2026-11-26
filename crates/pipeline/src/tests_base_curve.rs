@@ -300,3 +300,56 @@ fn scene_values_at_or_above_the_curves_white_render_white() {
     assert!(t.apply(0.99 * 1.0) < 1.0);
     base_curve::install_library(vec![]);
 }
+
+/// A synthetic colour model: the matrix has unit row sums, the multipliers are the as-shot ones (red and blue above the
+/// green, which is not the smallest here: the case the old, as-shot scale got wrong). `green_probe` is the green row of
+/// the inverse of matrix · multipliers.
+fn film_info(wb: [f64; 3]) -> (SourceInfo, lcc_color::Mat3) {
+    let m = lcc_color::Mat3([[0.8, 0.3, -0.1], [-0.1, 1.2, -0.1], [0.0, -0.2, 1.2]]);
+    let dev = m.mul(&lcc_color::Mat3::diag(wb[0], wb[1], wb[2]));
+    let p = dev.inverse().unwrap().0[1].map(|v| v as f32);
+    (SourceInfo { raw: true, as_shot_temp: 5200.0, as_shot_tint: 4.0, white_scale: Some(1.0), green_probe: Some(p), ..Default::default() }, dev)
+}
+
+#[test]
+fn a_neutral_of_the_same_raw_green_meets_the_curve_at_the_same_input_under_any_white_balance() {
+    use crate::local::{film_white_scale, wb_matrix_for};
+    let (info, dev) = film_info([1.9, 1.35, 1.0]);
+    let lum = |c: [f64; 3]| 0.2627 * c[0] + 0.6780 * c[1] + 0.0593 * c[2];
+    let mut cases = vec![];
+    for (t, tint) in [(5200.0, 4.0), (3200.0, 0.0), (8474.0, 8.0), (6500.0, -20.0), (10000.0, 30.0)] {
+        let mut s = DevelopSettings::default();
+        s.wb.mode = lcc_develop::WbMode::Custom;
+        s.wb.temp = t;
+        s.wb.tint = tint;
+        // the raw neutral of this white balance: what the white-balance change turns into grey (c, c, c)
+        let m = wb_matrix_for(&info, &s).map_or(lcc_color::Mat3::IDENTITY, |m| lcc_color::Mat3(m.map(|r| r.map(f64::from))));
+        let pixel = m.inverse().unwrap().apply([1.0; 3]);
+        let raw = dev.inverse().unwrap().apply(pixel);
+        // the developed value the tone stage sees, over the scale the curve divides it by
+        let x = lum(m.apply(pixel)) / f64::from(film_white_scale(&info, &s));
+        cases.push((t, x / raw[1]));
+    }
+    for (t, r) in &cases {
+        assert!((r - 1.0).abs() < 1e-4, "{t} K: x / raw green = {r}");
+    }
+}
+
+#[test]
+fn a_source_without_the_probe_keeps_the_as_shot_scale_and_the_default_render_is_untouched() {
+    use crate::local::film_white_scale;
+    let mut s = DevelopSettings::default();
+    s.wb.mode = lcc_develop::WbMode::Custom;
+    s.wb.temp = 3300.0;
+    let known = SourceInfo { raw: true, white_scale: Some(1.7), ..Default::default() };
+    assert_eq!(film_white_scale(&known, &s), 1.7);
+    assert_eq!(film_white_scale(&SourceInfo::default(), &s), 1.0);
+    // a probe that gives no positive green (nonsense) falls back too
+    let bad = SourceInfo { green_probe: Some([0.0; 3]), ..known.clone() };
+    assert_eq!(film_white_scale(&bad, &s), 1.7);
+    // without a base curve nothing reads the probe: the table is the camera/generic one whatever the probe says
+    let _g = lock();
+    let plain = base_tone(&DevelopSettings::default(), &raw_info(), 1.0);
+    let probed = base_tone(&DevelopSettings::default(), &SourceInfo { green_probe: Some([0.1, 0.9, 0.2]), ..raw_info() }, 1.0);
+    assert_eq!(plain.lut(), probed.lut());
+}
