@@ -43,13 +43,45 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, ReadError> {
     if meta.len() > max {
         return Err(ReadError::TooLarge(meta.len()));
     }
-    let file = std::fs::File::open(path).map_err(ReadError::Io)?;
+    let file = counting(std::fs::File::open(path).map_err(ReadError::Io)?);
     let mut out = Vec::new();
+    // (the counting reader hides the file's own size hint from `read_to_end`: reserve it here, best effort)
+    let hint = usize::try_from(meta.len().min(max.saturating_add(1))).unwrap_or(0);
+    let _ = out.try_reserve_exact(hint);
     file.take(max.saturating_add(1)).read_to_end(&mut out).map_err(ReadError::Io)?;
     if out.len() as u64 > max {
         return Err(ReadError::TooLarge(out.len() as u64));
     }
     Ok(out)
+}
+
+/// Most bytes one `read` of a [`CountingReader`] asks for, so a slow card can't sit inside one
+/// huge read without its progress showing (§5.2 of the I/O spec).
+pub(crate) const MAX_READ_CHUNK: usize = 4 << 20;
+
+/// A reader that caps every `read` at [`MAX_READ_CHUNK`] and counts what it reads for the I/O
+/// job the thread runs (its bytes and last-progress time, which the scheduler's stall rule reads).
+pub(crate) struct CountingReader<R> {
+    inner: R,
+    job: Option<std::sync::Arc<crate::io_sched::JobState>>,
+}
+
+/// `inner`, counted for the thread's current I/O job (none: just capped).
+pub(crate) fn counting<R>(inner: R) -> CountingReader<R> {
+    CountingReader { inner, job: crate::memory::current_job() }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let cap = buf.len().min(MAX_READ_CHUNK);
+        let n = self.inner.read(buf.get_mut(..cap).unwrap_or_default())?;
+        if n > 0
+            && let Some(job) = &self.job
+        {
+            job.add_bytes(n);
+        }
+        Ok(n)
+    }
 }
 
 #[cfg(test)]

@@ -154,7 +154,8 @@ pub fn embedded_lens(raw: &lcc_raw::RawInfo) -> Option<lcc_develop::EmbeddedLens
 pub fn probe_video_file(path: &std::path::Path) -> Result<ProbeInfo, String> {
     use std::io::Read;
     let name = path.to_string_lossy().to_string();
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
+    // (counted, so the I/O scheduler sees a long clip progressing)
+    let mut f = crate::bounded_read::counting(std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?);
     let mut hash = lcc_preview::Hasher128::new();
     let mut sha = lcc_hash::Sha1::new();
     let mut buf = vec![0u8; 1 << 20];
@@ -1596,7 +1597,9 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
             return Ok(info);
         }
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
-        let _permit = crate::memory::work_gate().acquire(len);
+        // (as an I/O scheduler job: the wait ends when the job is abandoned, or when memory held by
+        // abandoned reads means this file can never fit)
+        let _permit = crate::memory::work_gate().acquire_for_job(len).map_err(|e| format!("{path}: {e}"))?;
         let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
             .map_err(|e| format!("{path}: {e}"))?;
         // (a short file that hasn't changed for a while is corrupt: the decode below reports it)
@@ -1605,7 +1608,12 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
         {
             return Err(format!("{path}: {}", lcc_catalog::incoming::STILL_BEING_WRITTEN));
         }
-        let mut info = probe_bytes(path, &bytes)?;
+        // pure CPU: the scheduler doesn't count it as the volume's silence (the metadata calls
+        // before and after are I/O and stay outside)
+        let mut info = {
+            let _computing = crate::memory::computing();
+            probe_bytes(path, &bytes)?
+        };
         info.file_modified = file_modified(path);
         Ok(info)
     });

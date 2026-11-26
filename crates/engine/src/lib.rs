@@ -88,6 +88,7 @@ pub mod import;
 mod import_move;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instance;
+mod io_sched;
 pub mod legacy;
 pub mod lens_download;
 pub mod lens_profiles;

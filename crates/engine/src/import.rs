@@ -820,8 +820,12 @@ pub(crate) fn probe_with(probe: &crate::media::FileProbe, paths: &[String]) -> V
     probe_all(Some(probe), paths, &progress.done, &progress.cancel)
 }
 
-/// Probe `paths` (several at once), counting each in `done`. Stops before the next file once
-/// `cancel` is set: the files not reached come back as errors.
+/// Probe `paths` (several at once, per volume: [`crate::io_sched`]), counting each in `done`. Stops
+/// before the next file once `cancel` is set: the files not reached come back as errors.
+///
+/// Since the per-volume scheduler (I/O spec PR 1): a probe that panics fails only its own file; a
+/// volume that stops responding fails its files "volume not responding" while the other volumes
+/// go on; cancel returns even when a volume hangs; `done` also counts files that failed that way.
 pub(crate) fn probe_all(
     probe: Option<&crate::media::FileProbe>,
     paths: &[String],
@@ -840,35 +844,15 @@ pub(crate) fn probe_all(
             })
             .collect();
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let n = workers(paths.len());
-        if n > 1 {
-            let mut results: Vec<Option<Result<ProbeInfo, String>>> = vec![None; paths.len()];
-            let next = std::sync::atomic::AtomicUsize::new(0);
-            let out = std::sync::Mutex::new(&mut results);
-            std::thread::scope(|sc| {
-                for _ in 0..n {
-                    sc.spawn(|| {
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if i >= paths.len() {
-                                break;
-                            }
-                            if cancel.load(Relaxed) {
-                                break;
-                            }
-                            let r = probe(&paths[i]);
-                            done.fetch_add(1, Relaxed);
-                            out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
-                        }
-                    });
-                }
-            });
-            return results.into_iter().map(|r| r.unwrap_or_else(|| Err("not probed".into()))).collect();
-        }
+    // a single file, as today: cancelled before it starts, or run on this thread
+    if paths.len() == 1 && cancel.load(Relaxed) {
+        return vec![Err("cancelled".into())];
     }
-    paths
+    #[cfg(not(target_arch = "wasm32"))]
+    let probed = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
+    // (no threads: one file after another, R10)
+    #[cfg(target_arch = "wasm32")]
+    let probed = paths
         .iter()
         .map(|p| {
             if cancel.load(Relaxed) {
@@ -877,6 +861,43 @@ pub(crate) fn probe_all(
             let r = probe(p);
             done.fetch_add(1, Relaxed);
             r
+        })
+        .collect();
+    probed
+}
+
+/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
+/// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
+/// ran threads, `"cancelled"` where it ran serially on one CPU).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_scheduled(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    probe: &crate::media::FileProbe,
+    paths: &[String],
+    workers: usize,
+    done: &std::sync::atomic::AtomicUsize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Result<ProbeInfo, String>> {
+    use crate::io_sched::{IoJob, JobOutcome};
+    let jobs = paths
+        .iter()
+        .map(|p| {
+            let (probe, path) = (probe.clone(), p.clone());
+            IoJob { source: p.clone(), run: Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send> }
+        })
+        .collect();
+    let report = crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done);
+    let unreached = if workers > 1 { "not probed" } else { "cancelled" };
+    report
+        .outcomes
+        .into_iter()
+        .zip(paths)
+        .map(|(o, p)| match o {
+            JobOutcome::Done(r) => r,
+            JobOutcome::NotStarted => Err(unreached.into()),
+            JobOutcome::Cancelled => Err("cancelled".into()),
+            JobOutcome::VolumeNotResponding { volume } => Err(format!("{p}: volume not responding ({volume})")),
+            JobOutcome::Panicked(m) => Err(format!("{p}: {m}")),
         })
         .collect()
 }
