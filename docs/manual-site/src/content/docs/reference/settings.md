@@ -9,6 +9,10 @@ sidebar:
 - The **?** beside a group or a setting opens this manual at the part about it.
 - **App settings** (layout, theme, GPU, shortcuts…) are this computer's. **Catalog settings** (import defaults, XMP
   sidecars, thumbnail cache, slideshow playback) travel with the catalog.
+- **Search settings** (the field above the list of pages) finds a page by any text on it, in the app's language: a
+  heading, a setting's name or choices, or a note under it. Several words must all be on the page, in any order, whatever
+  their case. It also takes the whole id of a setting (`settings.gpu`); part of an id with no dot in it finds nothing. The list keeps only the pages that match; the
+  open page stays open, with the matches marked. Clear the field to list every page again.
 - Where the settings are kept, and what goes online: [Settings and privacy](../../platforms/settings-and-privacy/).
 
 ## General

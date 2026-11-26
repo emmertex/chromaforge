@@ -50,7 +50,7 @@ pub struct PeerSyncUi {
     /// When the tab was last drawn.
     seen: f64,
     /// `sync.find {on: true}` was sent and not yet undone; when.
-    finding: Option<f64>,
+    pub(crate) finding: Option<f64>,
     /// `sync.start` was tried this run.
     started: bool,
     name: String,
@@ -195,21 +195,24 @@ fn last_synced(last: i64) -> String {
 }
 
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    // (read off screen for the Settings search: only drawn, it starts no discovery and polls nothing)
     let now = ui.input(|i| i.time);
-    app.peer_sync.seen = now;
-    if app.peer_sync.finding.is_none() {
-        app.peer_sync.finding = Some(now);
-        if run(app, "find", "sync.find", json!({"on": true})).is_some() {
+    if !crate::settings_search::off_screen(ui.ctx()) {
+        app.peer_sync.seen = now;
+        if app.peer_sync.finding.is_none() {
+            app.peer_sync.finding = Some(now);
+            if run(app, "find", "sync.find", json!({"on": true})).is_some() {
+                app.peer_sync.polled = now;
+            }
+        }
+        if now - app.peer_sync.polled >= POLL_EVERY {
             app.peer_sync.polled = now;
+            if let Ok(v) = app.session.execute("sync.status", &json!({})) {
+                app.peer_sync.status = v;
+            }
         }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(POLL_EVERY));
     }
-    if now - app.peer_sync.polled >= POLL_EVERY {
-        app.peer_sync.polled = now;
-        if let Ok(v) = app.session.execute("sync.status", &json!({})) {
-            app.peer_sync.status = v;
-        }
-    }
-    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(POLL_EVERY));
     let st = app.peer_sync.status.clone();
     if !app.peer_sync.name_loaded && !s(&st, "name").is_empty() {
         app.peer_sync.name = s(&st, "name").to_string();

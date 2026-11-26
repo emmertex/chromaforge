@@ -126,6 +126,7 @@ pub mod render;
 pub mod render_dng_task;
 pub mod run_presets_ui;
 pub mod settings_screen;
+mod settings_search;
 /// The module shell's frame steps (fork-owned).
 mod shell;
 pub mod shortcuts;
@@ -467,6 +468,8 @@ mod tests_settings_back;
 mod tests_settings_categories;
 #[cfg(test)]
 mod tests_settings_profiles;
+#[cfg(test)]
+mod tests_settings_search;
 #[cfg(test)]
 mod tests_settings_tab_row;
 #[cfg(test)]

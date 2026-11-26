@@ -156,25 +156,28 @@ const SECTIONS: &[(&str, &str)] = &[
 ];
 
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    if let Some(c) = app.surface.runtime.take_learned() {
-        app.surface.editor.device = device_of(&c).to_string();
-        app.surface.editor.section = "layout".into();
-        // a Loupedeck+ colour knob: show the colour mode it was turned in
-        if let Some(n) = c.strip_prefix("ld.r").and_then(|n| n.parse::<u32>().ok()).filter(|n| (1..=32).contains(n)) {
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("surfaceLoupedeckMode"), (n - 1) / 8));
+    // (read off screen for the Settings search, it takes nothing the device just said, arms nothing, asks the installer nothing)
+    if !crate::settings_search::off_screen(ui.ctx()) {
+        if let Some(c) = app.surface.runtime.take_learned() {
+            app.surface.editor.device = device_of(&c).to_string();
+            app.surface.editor.section = "layout".into();
+            // a Loupedeck+ colour knob: show the colour mode it was turned in
+            if let Some(n) = c.strip_prefix("ld.r").and_then(|n| n.parse::<u32>().ok()).filter(|n| (1..=32).contains(n)) {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("surfaceLoupedeckMode"), (n - 1) / 8));
+            }
+            app.surface.editor.control = Some(c);
+            app.surface.editor.params_text.clear();
         }
-        app.surface.editor.control = Some(c);
-        app.surface.editor.params_text.clear();
-    }
-    // Touch to find: while this page is open, a control touched on the device is selected here
-    // and does nothing to the photo (`surface::tick` stops it once the page is gone)
-    if !app.surface.editor.touch_find_off && app.surface.settings().enabled {
-        app.surface.editor.touch_find = Some(app.surface.now());
-        if !app.surface.runtime.learning() {
-            app.surface.runtime.arm_learn();
+        // Touch to find: while this page is open, a control touched on the device is selected here
+        // and does nothing to the photo (`surface::tick` stops it once the page is gone)
+        if !app.surface.editor.touch_find_off && app.surface.settings().enabled {
+            app.surface.editor.touch_find = Some(app.surface.now());
+            if !app.surface.runtime.learning() {
+                app.surface.runtime.arm_learn();
+            }
         }
+        crate::surface_plugin::refresh(app, false);
     }
-    crate::surface_plugin::refresh(app, false);
     top_bar(app, ui, t);
     banners(app, ui, t);
     device_bar(app, ui, t);
