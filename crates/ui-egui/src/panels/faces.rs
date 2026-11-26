@@ -512,7 +512,7 @@ fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             if r.clicked()
                 && let Err(e) = app.session.activity.cancel(id)
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     } else {

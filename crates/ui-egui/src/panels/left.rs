@@ -2631,7 +2631,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             register(ui.ctx(), "folderScanFaces", r.rect);
             if r.clicked() {
                 if let Err(e) = app.run("dialog.faceMaintenance", json!({"mode": "detect", "scope": "folder", "folder": path})) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
                 ui.close();
             }
