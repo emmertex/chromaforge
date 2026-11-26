@@ -592,3 +592,48 @@ fn the_drawn_boxes_of_a_message_and_a_message_with_a_button_follow_the_one_look(
         assert!((r.center().x - centre).abs() < 1.5, "centred on the canvas: {r:?} {centre}");
     }
 }
+
+/// A sticky message is raised and cleared by key through `ui.toast`, shows a dismiss button, has no end, and stays
+/// through a long idle time.
+#[test]
+fn a_sticky_message_stays_until_dismissed_or_cleared() {
+    let mut h = demo();
+    let toast = |h: &mut Headless, params: Value| h.request("ui.toast", params, T);
+    let sticky = |h: &mut Headless| -> Vec<Value> {
+        let i = h.request("ui.inspect", json!({}), T)["result"]["toasts"].clone();
+        i.as_array().into_iter().flatten().filter(|t| t["kind"] == "sticky").cloned().collect()
+    };
+
+    assert_eq!(toast(&mut h, json!({"text": "Not saved", "kind": "sticky", "key": "save-failed"}))["ok"], true);
+    assert_eq!(toast(&mut h, json!({"text": "Not saved (2)", "kind": "sticky", "key": "save-failed"}))["ok"], true);
+    h.step();
+    let now = sticky(&mut h);
+    assert_eq!(now.len(), 1, "the same key stays one message: {now:?}");
+    assert_eq!((now[0]["key"].as_str(), now[0]["text"].as_str()), (Some("save-failed"), Some("Not saved (2)")));
+    assert!(now[0].get("secsLeft").is_none(), "no end time: {now:?}");
+    assert!(widget(&h, "button:toastDismiss:save-failed").is_some(), "a dismiss button");
+
+    // far longer than any message stays (the longest is 20 s; a frame is 1/60 s)
+    for _ in 0..1500 {
+        h.step();
+    }
+    assert_eq!(sticky(&mut h).len(), 1, "a sticky message stays through a long idle time");
+
+    // the code that raised it clears the key
+    assert_eq!(toast(&mut h, json!({"clear": true, "key": "save-failed"}))["ok"], true);
+    h.step();
+    assert!(sticky(&mut h).is_empty());
+
+    // the person dismisses it with its button
+    assert_eq!(toast(&mut h, json!({"text": "Waiting", "kind": "sticky", "key": "sidecars-waiting"}))["ok"], true);
+    h.step();
+    h.step();
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:toastDismiss:sidecars-waiting"}), T)["ok"], true);
+    h.step();
+    h.step();
+    assert!(sticky(&mut h).is_empty(), "the button removes it");
+
+    for bad in [json!({"text": "x", "kind": "sticky"}), json!({"clear": true}), json!({"text": "x", "kind": "sticky", "key": ""})] {
+        assert_eq!(toast(&mut h, bad.clone())["ok"], false, "{bad} is refused");
+    }
+}

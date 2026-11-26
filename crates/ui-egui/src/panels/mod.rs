@@ -189,11 +189,15 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     // a slideshow's playback controls sit at the bottom: the toasts go to the top there, clear of them
     let top = app.ui.slideshow.is_some();
     let mut edge = if top { canvas.top() + 40.0 + action_h } else { canvas.bottom() - 40.0 - action_h };
-    for toast in app.ui.toasts.iter().rev() {
+    let mut dismissed = None;
+    let shown: Vec<_> = app.ui.toasts_shown().into_iter().cloned().collect();
+    for toast in shown.iter().rev() {
         let fade = ((toast.until - now) / 0.25).clamp(0.0, 1.0) as f32;
         let look = crate::toast::look(&t, toast.kind, fade);
-        let galley = painter.layout(toast.text.clone(), t.font(look.font), look.text, wrap);
-        let size = look.size(galley.size());
+        // a sticky message keeps room at its right for the button that dismisses it
+        let button = if toast.key.is_some() { crate::toast::DISMISS_WIDTH } else { 0.0 };
+        let galley = painter.layout(toast.text.clone(), t.font(look.font), look.text, wrap - button);
+        let size = look.size(galley.size()) + vec2(button, 0.0);
         let r = if top {
             Rect::from_min_size(pos2(canvas.center().x - size.x / 2.0, edge), size)
         } else {
@@ -205,8 +209,22 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
         }
         look.paint(&painter, r);
         crate::widgets::register(ctx, format!("toast:{}", toast.kind.id()), r);
-        painter.galley(r.center() - galley.size() / 2.0, galley, look.text);
+        painter.galley(pos2(r.left() + look.pad_x, r.center().y - galley.size().y / 2.0), galley, look.text);
+        if let Some(key) = &toast.key {
+            let b = Rect::from_center_size(pos2(r.right() - look.pad_x / 2.0 - button / 2.0, r.center().y), vec2(button, button));
+            let click = egui::Area::new(egui::Id::new(("toast-dismiss", key))).order(egui::Order::Foreground).fixed_pos(b.min).show(ctx, |ui| {
+                let r = ui.add_sized(b.size(), egui::Button::new(egui::RichText::new("✕").color(look.text)).frame(false));
+                crate::widgets::register(ui.ctx(), format!("button:toastDismiss:{key}"), r.rect);
+                r.clicked()
+            });
+            if click.inner {
+                dismissed = Some(key.clone());
+            }
+        }
         edge = if top { r.bottom() + 8.0 } else { r.top() - 8.0 };
+    }
+    if let Some(key) = dismissed {
+        app.ui.dismiss_toast(&key);
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }

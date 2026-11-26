@@ -1294,7 +1294,8 @@ pub fn crop_mask_alpha(percent: u8) -> u8 {
     (u16::from(percent.min(100)) * 255 / 100) as u8
 }
 
-/// The most toasts on screen at once: a newer one pushes the oldest out.
+/// The most messages that go by themselves on screen at once: a newer one pushes the oldest out. Sticky messages
+/// are not counted (`toasts_shown`).
 pub const MAX_TOASTS: usize = 3;
 
 /// The Masking panel's folding sections, top to bottom (`section:mask:<key>`).
@@ -1984,6 +1985,9 @@ pub struct UiState {
     /// Transient toast text, expiry (seconds of app time), and optional colour-label styling.
     #[serde(skip)]
     pub toasts: Vec<Toast>,
+    /// Sticky messages the person dismissed whose condition has not cleared yet.
+    #[serde(skip)]
+    pub toasts_dismissed: std::collections::HashSet<String>,
     /// The toast with a button, if one is showing ([`ToastAction`]).
     #[serde(skip)]
     pub toast_action: Option<ToastAction>,
@@ -2956,6 +2960,7 @@ impl Default for UiState {
             compare: None,
             reference: None,
             toasts: Vec::new(),
+            toasts_dismissed: std::collections::HashSet::new(),
             toast_action: None,
             last_dng_validation: None,
             last_find_missing: None,
@@ -2997,7 +3002,19 @@ impl UiState {
     /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
     pub fn show_toast(&mut self, mut toast: Toast) {
-        if let Some(at) = self.toasts.iter().position(|t| t.text == toast.text) {
+        if let Some(key) = toast.key.clone() {
+            // a sticky message belongs to its condition: raised again it keeps one place, with the newest text, and
+            // one the person dismissed stays away until the condition clears
+            if self.toasts_dismissed.contains(&key) {
+                return;
+            }
+            match self.toasts.iter_mut().find(|t| t.key.as_deref() == Some(&key)) {
+                Some(shown) => *shown = toast,
+                None => self.toasts.push(toast),
+            }
+            return;
+        }
+        if let Some(at) = self.toasts.iter().position(|t| t.key.is_none() && t.text == toast.text) {
             let older = self.toasts.remove(at);
             toast.until = older.until.max(toast.until);
             // a failure stays a failure when the same text comes again as a plain message
@@ -3006,9 +3023,44 @@ impl UiState {
             }
         }
         self.toasts.push(toast);
-        if self.toasts.len() > MAX_TOASTS {
-            self.toasts.drain(..self.toasts.len() - MAX_TOASTS);
+        // only messages that go by themselves are counted: a sticky one is not pushed out by them
+        let transient = |t: &Toast| t.key.is_none();
+        while self.toasts.iter().filter(|t| transient(t)).count() > MAX_TOASTS {
+            if let Some(at) = self.toasts.iter().position(transient) {
+                self.toasts.remove(at);
+            }
         }
+    }
+
+    /// The sticky condition `key` ended (or the person dismissed its message): its message goes, and a later raise of
+    /// the same key shows again.
+    pub fn clear_toast(&mut self, key: &str) {
+        self.toasts.retain(|t| t.key.as_deref() != Some(key));
+        self.toasts_dismissed.remove(key);
+    }
+
+    /// The person dismissed the sticky message `key`: it goes and stays away until the condition clears.
+    pub fn dismiss_toast(&mut self, key: &str) {
+        self.toasts.retain(|t| t.key.as_deref() != Some(key));
+        self.toasts_dismissed.insert(key.to_string());
+    }
+
+    /// The messages to draw, oldest first: those that go by themselves and as many sticky ones as
+    /// [`crate::toast::sticky_slots`] gives room (the oldest first).
+    pub fn toasts_shown(&self) -> Vec<&Toast> {
+        let stickies = self.toasts.iter().filter(|t| t.key.is_some()).count();
+        let mut room = crate::toast::sticky_slots(self.toasts.len() - stickies, stickies);
+        let mut shown = Vec::with_capacity(self.toasts.len());
+        for t in &self.toasts {
+            if t.key.is_some() {
+                if room == 0 {
+                    continue;
+                }
+                room -= 1;
+            }
+            shown.push(t);
+        }
+        shown
     }
 
     /// Let go of the toasts whose time is over at `now`.
@@ -3398,7 +3450,7 @@ mod toast_tests {
     /// oldest goes; each expires at its own time.
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
-        let message = |text: String, until: f64| Toast { text, until, kind: ToastKind::Message };
+        let message = |text: String, until: f64| Toast { text, until, kind: ToastKind::Message, key: None };
         let mut ui = UiState::default();
         ui.show_toast(message("Red Label".into(), 2.0));
         ui.show_toast(message("Cache cleared".into(), 3.0));
@@ -3421,8 +3473,62 @@ mod toast_tests {
     #[test]
     fn the_same_text_again_keeps_the_error_kind() {
         let mut ui = UiState::default();
-        ui.show_toast(Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error });
-        ui.show_toast(Toast { text: "Disk full".into(), until: 2.0, kind: ToastKind::Message });
-        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error }]);
+        ui.show_toast(Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None });
+        ui.show_toast(Toast { text: "Disk full".into(), until: 2.0, kind: ToastKind::Message, key: None });
+        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None }]);
+    }
+
+    /// A sticky message belongs to its key: raised again it stays one, with the newest text; clearing the key takes it
+    /// down; one the person dismissed stays away until the key is cleared.
+    #[test]
+    fn a_sticky_message_is_one_per_key_until_cleared_or_dismissed() {
+        let mut ui = UiState::default();
+        // a note with a sticky message's text does not merge into it
+        ui.show_toast(Toast::sticky("save-failed", "2 changes not written"));
+        ui.show_toast(Toast::new(ToastKind::Message, "2 changes not written", 0.0));
+        assert!(ui.toasts.iter().any(|t| t.key.is_some()) && ui.toasts.len() == 2, "{:?}", ui.toasts);
+        ui.toasts.retain(|t| t.key.is_some());
+        ui.show_toast(Toast::sticky("save-failed", "3 changes not written"));
+        ui.show_toast(Toast::sticky("sidecars-waiting", "sidecars"));
+        assert_eq!(ui.toasts.len(), 2, "{:?}", ui.toasts);
+        assert_eq!(ui.toasts.iter().find(|t| t.key.as_deref() == Some("save-failed")).map(|t| t.text.as_str()), Some("3 changes not written"));
+        ui.expire_toasts(1e9);
+        assert_eq!(ui.toasts.len(), 2, "a sticky message has no end");
+
+        ui.clear_toast("sidecars-waiting");
+        assert_eq!(ui.toasts.len(), 1);
+        ui.dismiss_toast("save-failed");
+        ui.show_toast(Toast::sticky("save-failed", "still failing"));
+        assert!(ui.toasts.is_empty(), "a dismissed message stays away while its condition lasts: {:?}", ui.toasts);
+        ui.clear_toast("save-failed");
+        ui.show_toast(Toast::sticky("save-failed", "failing again"));
+        assert_eq!(ui.toasts.len(), 1, "the cleared condition can be raised again");
+    }
+
+    /// Sticky messages take the free slots of the stack and one always shows; transient messages are neither pushed
+    /// out by them nor counted with them.
+    #[test]
+    fn a_sticky_message_never_pushes_out_a_transient_one() {
+        let mut ui = UiState::default();
+        for n in 0..MAX_TOASTS {
+            ui.show_toast(Toast::new(ToastKind::Message, format!("note {n}"), 0.0));
+        }
+        for key in ["a", "b", "c"] {
+            ui.show_toast(Toast::sticky(key, format!("sticky {key}")));
+        }
+        let transient = |ui: &UiState| ui.toasts.iter().filter(|t| t.key.is_none()).count();
+        assert_eq!(transient(&ui), MAX_TOASTS, "a full stack keeps its messages");
+        let shown = ui.toasts_shown();
+        assert_eq!(shown.iter().filter(|t| t.key.is_some()).count(), 1, "one slot for the sticky ones: {shown:?}");
+        assert_eq!(shown.iter().filter(|t| t.key.is_none()).count(), MAX_TOASTS);
+
+        // more notes come: the oldest note goes, never a sticky message
+        ui.show_toast(Toast::new(ToastKind::Message, "another", 0.0));
+        assert_eq!(transient(&ui), MAX_TOASTS);
+        assert_eq!(ui.toasts.iter().filter(|t| t.key.is_some()).count(), 3, "the conditions are kept");
+
+        // with the notes gone the sticky ones fill the room
+        ui.expire_toasts(1e9);
+        assert_eq!(ui.toasts_shown().len(), MAX_TOASTS);
     }
 }
