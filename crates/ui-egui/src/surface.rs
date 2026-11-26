@@ -165,7 +165,9 @@ impl Default for SurfaceHost {
 }
 
 /// Unpredictable bytes for pairing codes and tokens (std's per-process random hash keys, the
-/// time and the process id; no extra dependency).
+/// time and, natively, the process id; no extra dependency). `std::process::id` panics on
+/// wasm32 ("no pids on this platform"), and this runs when the app is built, so the browser app
+/// leaves it out (issue #1459: the web build stopped at start-up).
 fn seed() -> Vec<u8> {
     use std::hash::{BuildHasher, Hasher};
     let mut out = Vec::new();
@@ -175,6 +177,7 @@ fn seed() -> Vec<u8> {
         h.write_u128(web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
         out.extend_from_slice(&h.finish().to_le_bytes());
     }
+    #[cfg(not(target_arch = "wasm32"))]
     out.extend_from_slice(&std::process::id().to_le_bytes());
     out
 }
