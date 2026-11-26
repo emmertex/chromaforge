@@ -306,6 +306,7 @@
   "{indexed} indexed": "Đã lập chỉ mục {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Đã lập chỉ mục {indexed}, còn lại {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i}/{n}",
   "{label} (camera default)": "{label} (mặc định của máy ảnh)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: ΔE trung bình {mean:.2}, lớn nhất {max:.2} ({n} ô)",
   "{missing} originals are missing. Their catalog records are available; use Find Missing Photos to relink them.": "Thiếu {missing} ảnh gốc. Bản ghi catalog của chúng vẫn còn; dùng Tìm ảnh bị thiếu để liên kết lại.",

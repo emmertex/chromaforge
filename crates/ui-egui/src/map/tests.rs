@@ -677,3 +677,53 @@ fn photos_dropped_on_a_saved_location_in_the_list_take_its_centre() {
     run(&mut h, "edit.undo", json!({}));
     assert!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.is_none(), "one undo step");
 }
+
+/// Lightroom Classic's card over a hovered pin: the photo, its name, date and exposure, and for a
+/// pin of several photos "1 of N" with arrows. The card stays while the pointer moves onto it.
+#[test]
+fn a_pin_hover_card_steps_through_the_pins_photos_and_selects_one() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": ids}));
+    run(&mut h, "map.geotag", json!({"ids": ids, "lat": 48.85, "lon": 2.35}));
+    run(&mut h, "library.select", json!({"ids": []}));
+    h.settle(SETTLE);
+    let pin = widget(&h, &format!("map:pin:{}", ids[0])).expect("the pin is on screen");
+    h.events.push(egui::Event::PointerMoved(pin.center()));
+    h.step();
+    h.step();
+    assert!(widget(&h, "map:hover").is_some(), "hovering the pin opens the card");
+    let card = h.app.map.hover_card.clone().expect("the card's state");
+    assert_eq!((card.ids.len(), card.index), (3, 0));
+    // over to the card (across the gap) and its arrow: the card stays and shows the next photo
+    let next = widget(&h, "map:hover:next").expect("a pin of three photos has arrows");
+    let r = h.request("ui.clickWidget", json!({"id": "map:hover:next"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.map.hover_card.as_ref().map(|c| c.index), Some(1), "moving onto the card kept it; next: the second photo");
+    assert!(widget(&h, "map:hover").is_some_and(|c| c.contains(next.center())));
+    // back twice: round the start to the last photo
+    for _ in 0..2 {
+        h.request("ui.clickWidget", json!({"id": "map:hover:prev"}), T);
+        h.step();
+    }
+    assert_eq!(h.app.map.hover_card.as_ref().map(|c| c.index), Some(2));
+    // a click on the photo selects that one
+    h.request("ui.clickWidget", json!({"id": "map:hover:photo"}), T);
+    h.step();
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(card.ids[2])]);
+    // away from the pin and the card: it closes
+    let canvas = widget(&h, "map:canvas").expect("the canvas");
+    h.events.push(egui::Event::PointerMoved(canvas.left_bottom() + egui::vec2(40.0, -40.0)));
+    h.step();
+    h.step();
+    assert!(h.app.map.hover_card.is_none() && widget(&h, "map:hover").is_none(), "the card closes");
+    // a pin of one photo: no arrows
+    run(&mut h, "map.geotag", json!({"ids": [ids[2]], "lat": 48.80, "lon": 2.20}));
+    h.settle(SETTLE);
+    let one = widget(&h, &format!("map:pin:{}", ids[2])).expect("the single pin");
+    h.events.push(egui::Event::PointerMoved(one.center()));
+    h.step();
+    h.step();
+    assert!(widget(&h, "map:hover").is_some() && widget(&h, "map:hover:next").is_none());
+}

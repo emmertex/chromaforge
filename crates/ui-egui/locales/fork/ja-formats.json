@@ -252,6 +252,7 @@
   "{indexed} indexed": "{indexed} 枚をインデックス化済み",
   "{indexed} indexed, {unindexed} remaining": "{indexed} 枚をインデックス化済み、残り {unindexed} 枚",
   "{info} · {size}": "{info} ・{size}",
+  "{i} of {n}": "{i} / {n}",
   "{label} (camera default)": "{label}（カメラの既定値）",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}：平均 ΔE {mean:.2}、最大 {max:.2}（{n} パッチ）",
   "{module} Shortcuts": "{module} のショートカット",

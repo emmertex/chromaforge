@@ -261,6 +261,7 @@
   "{indexed} indexed": "Zindeksowane: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Zindeksowane: {indexed}, pozostało: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} z {n}",
   "{label} (camera default)": "{label} (domyślny aparatu)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: średnie ΔE {mean:.2}, największe {max:.2} (pól: {n})",
   "{module} Shortcuts": "Skróty: {module}",

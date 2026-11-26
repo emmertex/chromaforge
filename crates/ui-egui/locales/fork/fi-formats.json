@@ -274,6 +274,7 @@
   "{indexed} indexed": "Indeksoitu: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Indeksoitu: {indexed}, jäljellä: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i}/{n}",
   "{label} (camera default)": "{label} (kameran oletus)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: keskim. ΔE {mean:.2}, suurin {max:.2} ({n} ruutua)",
   "{module} Shortcuts": "{module}: pikanäppäimet",

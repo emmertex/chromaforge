@@ -253,6 +253,7 @@
   "{indexed} indexed": "Проиндексировано: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Проиндексировано: {indexed}, осталось: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} из {n}",
   "{label} (camera default)": "{label} (по умолчанию для камеры)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: средний ΔE {mean:.2}, наибольший {max:.2} ({n} патчей)",
   "{module} Shortcuts": "Сочетания клавиш: {module}",

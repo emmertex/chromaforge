@@ -252,6 +252,7 @@
   "{indexed} indexed": "已建立索引 {indexed} 張",
   "{indexed} indexed, {unindexed} remaining": "已建立索引 {indexed} 張，剩餘 {unindexed} 張",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "第 {i} 張，共 {n} 張",
   "{label} (camera default)": "{label}（相機預設）",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}：平均 ΔE {mean:.2}，最大 {max:.2}（{n} 個色塊）",
   "{module} Shortcuts": "{module} 快速鍵",
