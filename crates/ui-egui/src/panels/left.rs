@@ -2458,6 +2458,7 @@ pub(crate) enum FolderItem {
     AddToMyPhotos,
     AddNew,
     Synchronize,
+    ScanFaces,
     LocateMissing,
     UpdateLocation,
     ExportFolder,
@@ -2484,20 +2485,22 @@ pub(crate) fn folder_menu_groups(row: FolderRow) -> &'static [&'static [FolderIt
     use FolderItem::*;
     match row {
         FolderRow::Library => &[
-            &[ImportHere, AddNew, Synchronize, LocateMissing, UpdateLocation, ExportFolder, ExportFolderWithPreset],
+            &[ImportHere, AddNew, Synchronize, ScanFaces, LocateMissing, UpdateLocation, ExportFolder, ExportFolderWithPreset],
             &[NewFolder, Rename, Move, MovePhotosHere],
             &[ColorLabel],
             &[Reveal, CopyPath, ShowParent],
             &[RemoveFromLibrary],
         ],
         FolderRow::Disk => &[
-            &[AddNew, Synchronize, LocateMissing, ExportFolder, ExportFolderWithPreset],
+            &[AddNew, Synchronize, ScanFaces, LocateMissing, ExportFolder, ExportFolderWithPreset],
             &[NewFolder],
             &[ColorLabel],
             &[Reveal, CopyPath],
             &[RemoveDisk],
         ],
-        FolderRow::Local { .. } => &[&[AddToMyPhotos, Synchronize], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]],
+        FolderRow::Local { .. } => {
+            &[&[AddToMyPhotos, Synchronize, ScanFaces], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]]
+        }
     }
 }
 
@@ -2623,6 +2626,16 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                 synchronize_item(app, ui, held.as_ref().map(|(n, name)| (n, name.as_str())));
             }
         },
+        FolderItem::ScanFaces => {
+            let r = ui.button(crate::i18n::tr("Scan Folder for Faces…"));
+            register(ui.ctx(), "folderScanFaces", r.rect);
+            if r.clicked() {
+                if let Err(e) = app.run("dialog.faceMaintenance", json!({"mode": "detect", "scope": "folder", "folder": path})) {
+                    app.toast_error(ui.ctx(), e);
+                }
+                ui.close();
+            }
+        }
         FolderItem::LocateMissing => {
             if let Some(n) = node {
                 locate_missing_item(app, ui, n);

@@ -15,6 +15,8 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
 - Apply a develop preset, a metadata preset, keywords, and add the photos to a collection.
 - Duplicates are detected and reported; a file in Recently Deleted can be skipped, restored with its edits, or
   imported fresh. Library → Find Duplicates… later finds copies already in the library ([duplicates.md](../duplicates.md)).
+- Plug-ins can join the import ([plugins.md](../plugins.md)): a before-import hook can replace a file as it is
+  prepared (a transcoded twin, say) or skip it, and an after-import hook is told about each imported batch.
 - Auto Import (Settings → Import) can watch subfolders, rename copies and apply a develop preset, metadata preset and
   keywords to arriving photos (`library.autoImport`). Photos in subfolders of the watched folder count only with
   Include subfolders on; a file that couldn't be read when tried (a copy still arriving) is tried again once it changes. On Android the camera roll is added in place and is a watched source (the review's Keep adding new

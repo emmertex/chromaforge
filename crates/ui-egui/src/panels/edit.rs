@@ -105,6 +105,13 @@ pub(crate) fn short_name(id: &str) -> Option<&'static str> {
         "vignette.feather" => "Feather",
         "vignette.roundness" => "Roundness",
         "vignette.highlights" => "Highlights",
+        "glow.amount" => "Amount",
+        "glow.threshold" => "Threshold",
+        "glow.spread" => "Radius",
+        "glow.gain" => "Gain",
+        "glow.gamma" => "Gamma",
+        "glow.ratio" => "H/V",
+        "glow.recovery" => "Recovery",
         "grain.size" => "Size",
         "grain.sizeVariation" => "Variation",
         "grain.roughness" => "Roughness",
@@ -608,6 +615,27 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let enabled = c == "vignette.amount" || d.vignette.amount != 0.0;
             control(app, ui, d, c, enabled);
         }
+        sub_title(ui, crate::i18n::tr("Glow"));
+        if shown_here(app, ui, "option:glowComposite") {
+            use lcc_develop::GlowComposite as G;
+            let modes = [(G::Screen, "glow composite|Screen", "screen"), (G::Add, "glow composite|Add", "add")];
+            let items: Vec<(&str, &str)> = modes.iter().map(|(_, l, k)| (*l, *k)).collect();
+            let active = modes.iter().position(|(v, _, _)| *v == d.glow.mode);
+            let mut chosen = None;
+            egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
+                ui,
+                |ui| {
+                    chosen = crate::widgets::segmented(ui, "glowComposite", &items, active, 2);
+                },
+            );
+            if let Some((mode, ..)) = chosen.and_then(|i| modes.get(i)) {
+                let _ = app.run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
+            }
+        }
+        for c in ["glow.amount", "glow.threshold", "glow.spread", "glow.gain", "glow.gamma", "glow.ratio", "glow.recovery"] {
+            let enabled = c == "glow.amount" || d.glow.amount != 0.0;
+            control(app, ui, d, c, enabled);
+        }
         sub_title(ui, crate::i18n::tr("Grain"));
         // process V7's particle grain has its own controls (OneSlips); earlier processes render the
         // value-noise grain, which only reads Amount, Size and Roughness
@@ -927,9 +955,9 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
 }
 
-/// The Lens Blur section: Apply, the focus picker, Blur Amount, the bokeh shape and the focal range.
+/// The Lens Blur section: Apply, the focus picker, Blur Amount, Boost, the bokeh shape, the focal range and Brush Refinement.
 fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
-    let lb = d.lens_blur;
+    let lb = &d.lens_blur;
     let dim = Tokens::get(ui.ctx()).text_dim;
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
         let mut on = lb.enabled;
@@ -960,6 +988,7 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         }
     });
     control(app, ui, d, "lensBlur.amount", lb.enabled);
+    control(app, ui, d, "lensBlur.boost", lb.enabled);
     sub_title(ui, crate::i18n::tr("Bokeh"));
     let shapes = lcc_develop::BokehShape::ALL;
     let items: Vec<(&str, &str)> = shapes.iter().map(|b| (b.label(), b.name())).collect();
@@ -974,6 +1003,7 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     control(app, ui, d, "lensBlur.focalDistance", lb.enabled && lb.focus.is_none());
     control(app, ui, d, "lensBlur.focalRange", lb.enabled);
     control(app, ui, d, "lensBlur.focusSize", lb.enabled && lb.focus.is_some());
+    super::lens_blur::brush_refinement(app, ui, lb);
     ui.add_space(8.0);
 }
 

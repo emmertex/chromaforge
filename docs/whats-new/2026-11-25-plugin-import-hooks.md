@@ -1,0 +1,2 @@
+### Plug-ins can join an import
+- A before-import hook can replace a file an import prepares (a transcoded twin, say) or skip it; an after-import hook is told about each imported batch and can tag the new photos. A new `library.remove` host call moves photos to Recently Deleted without touching the files on disk. New host features `beforeImport`, `afterImport` and `libraryRemove`; new example plug-in Import Tools.

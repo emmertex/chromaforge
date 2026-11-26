@@ -34,6 +34,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("detail", "detail"),
     ("effects", "effects"),
     ("vignette", "effects"),
+    ("glow", "effects"),
     ("grain", "effects"),
     ("optics", "lens"),
     ("geometry", "geometry"),

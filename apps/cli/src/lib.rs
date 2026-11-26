@@ -1506,6 +1506,21 @@ mod tests {
     // `--library @app` finds the library the app opens: its saved Settings → Open Library…
     // choice, unless the environment names one, else the default; anything else is passed through
     #[test]
+    fn face_maintenance_is_listed_and_runnable_through_the_cli_engine_dispatch() {
+        let mut backend = Headless::demo();
+        let commands = backend.call("engine.commands", json!({})).unwrap();
+        for id in ["faces.maintain", "faces.scanStatus", "faces.reset"] {
+            assert!(commands.as_array().unwrap().iter().any(|command| command["id"] == id), "CLI command list includes {id}");
+        }
+        let status = backend.call("engine.execute", json!({"command": "faces.scanStatus", "params": {}})).unwrap();
+        assert_eq!(status["state"], "idle");
+        assert!(
+            backend.call("engine.execute", json!({"command": "faces.reset", "params": {}})).is_err(),
+            "the CLI dispatch enforces reset confirmation"
+        );
+    }
+
+    #[test]
     fn library_at_app_reads_the_apps_saved_library() {
         let d = std::env::temp_dir().join(format!("cli-app-library-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();

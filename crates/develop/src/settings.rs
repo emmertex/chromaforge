@@ -334,6 +334,10 @@ pub struct DevelopSettings {
     pub hsl_curves: HslCurves,
     pub effects: Effects,
     pub vignette: Vignette,
+    /// Glow, the Resolve-style bloom (beyond Lightroom). Not written while at the default, so
+    /// settings without it keep their JSON and `hash64` (and every cached preview stays valid).
+    #[serde(skip_serializing_if = "Glow::is_default", deserialize_with = "lenient")]
+    pub glow: Glow,
     pub grain: Grain,
     pub detail: Detail,
     pub optics: Optics,
@@ -458,6 +462,7 @@ impl Default for DevelopSettings {
             hsl_curves: HslCurves::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
+            glow: Glow::default(),
             grain: Grain::default(),
             detail: Detail::default(),
             optics: Optics::default(),
@@ -1385,6 +1390,54 @@ pub struct Effects {
     pub dehaze: f64,
 }
 
+/// How Glow composites over the picture (Resolve's Glow offers Screen, its gentler default, and
+/// the hotter Add).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GlowComposite {
+    #[default]
+    Screen,
+    Add,
+}
+
+/// Glow (beyond Lightroom, after DaVinci Resolve's Glow effect): the picture's bright parts,
+/// taken above a threshold and spread as a halo over it. Not written while at the default
+/// (Amount 0), so settings without Glow keep their JSON and `hash64` (and every cached preview
+/// stays valid).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Glow {
+    /// Overall strength, 0..100 (0: off). Resolve's Opacity.
+    pub amount: f64,
+    /// Only pixels brighter than this glow, 0..100. Resolve's Shine Threshold.
+    pub threshold: f64,
+    /// Halo width, 0..100 (relative to the frame, so a preview matches an export). Resolve's Spread.
+    pub spread: f64,
+    /// Brightness of the glow itself, 0..100 (50 = ×1). Resolve's Gain.
+    pub gain: f64,
+    /// Distribution of the glow's falloff, 0..100 (50 = 1). Resolve's Gamma.
+    pub gamma: f64,
+    /// Horizontal/vertical spread ratio, 0..100 (50 = an even halo; lower spreads the glow more
+    /// vertically, higher more horizontally). Resolve's H/V Ratio.
+    pub ratio: f64,
+    /// How much of the bright regions' own detail comes back through the glow, 0..100.
+    /// Resolve's Bright Region Recovery.
+    pub recovery: f64,
+    pub mode: GlowComposite,
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self { amount: 0.0, threshold: 50.0, spread: 25.0, gain: 50.0, gamma: 50.0, ratio: 50.0, recovery: 0.0, mode: GlowComposite::Screen }
+    }
+}
+
+impl Glow {
+    pub fn is_default(&self) -> bool {
+        *self == Glow::default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VignetteStyle {
@@ -1767,6 +1820,17 @@ pub struct LocalAdjustments {
     pub recolor_from_r: f64,
     pub recolor_from_g: f64,
     pub recolor_from_b: f64,
+    /// Lens Blur inside the mask, 0..100 (`lcc_pipeline::lens_blur`): bokeh blur whose radius
+    /// follows the mask's strength. Left out of the JSON while 0, so masks without it keep their
+    /// JSON (and hash). Ported from upstream PR #2661.
+    pub lens_blur: f64,
+    /// Brighter bokeh highlights in the mask's blur, 0..100.
+    pub lens_blur_boost: f64,
+    /// The mask's Lens Blur block switched off (its values kept).
+    pub lens_blur_off: bool,
+    /// Blur what the mask leaves out instead of what it selects (the mask's other adjustments
+    /// still go where it selects).
+    pub lens_blur_outside: bool,
     /// Local vignette/grain are not in Lightroom; we keep the struct extensible.
     pub amount: f64,
 }
@@ -1782,11 +1846,12 @@ pub const LEGACY_LOCAL_HUE_DEG: f64 = 0.6 * 180.0 / std::f64::consts::PI / 100.0
 pub const LOCAL_HUE_STANDARD: f64 = 100.0 * LEGACY_LOCAL_HUE_DEG;
 
 macro_rules! local_wire {
-    ($($f:ident),* $(,)? ; $($z:ident),* $(,)?) => {
+    ($($f:ident),* $(,)? ; $($z:ident),* $(,)? ; $($b:ident),* $(,)?) => {
         /// How [`LocalAdjustments`] is stored. `hue_deg` marks a Hue in degrees; without it (catalogs,
         /// presets and effect files from before the change, partial JSON) `hue` is the old −100..100
         /// slider value and converts to the same angle in degrees. The `$z` fields (Recolor) are
-        /// left out while they are 0, so edits without Recolor save byte for byte as before.
+        /// left out while they are 0, so edits without Recolor save byte for byte as before; so are the
+        /// `$b` switches while they are off.
         #[derive(Clone, Copy, Serialize, Deserialize)]
         #[serde(default)]
         pub struct LocalAdjustmentsWire {
@@ -1795,6 +1860,10 @@ macro_rules! local_wire {
                 #[serde(skip_serializing_if = "wire_is_zero")]
                 $z: f64,
             )*
+            $(
+                #[serde(skip_serializing_if = "std::ops::Not::not")]
+                $b: bool,
+            )*
             hue: f64,
             hue_deg: bool,
         }
@@ -1802,20 +1871,20 @@ macro_rules! local_wire {
         impl Default for LocalAdjustmentsWire {
             fn default() -> Self {
                 let d = LocalAdjustments::default();
-                Self { $($f: d.$f,)* $($z: d.$z,)* hue: d.hue, hue_deg: false }
+                Self { $($f: d.$f,)* $($z: d.$z,)* $($b: d.$b,)* hue: d.hue, hue_deg: false }
             }
         }
 
         impl From<LocalAdjustmentsWire> for LocalAdjustments {
             fn from(w: LocalAdjustmentsWire) -> Self {
                 let hue = if w.hue_deg { w.hue } else { w.hue * LEGACY_LOCAL_HUE_DEG };
-                Self { $($f: w.$f,)* $($z: w.$z,)* hue }
+                Self { $($f: w.$f,)* $($z: w.$z,)* $($b: w.$b,)* hue }
             }
         }
 
         impl From<LocalAdjustments> for LocalAdjustmentsWire {
             fn from(a: LocalAdjustments) -> Self {
-                Self { $($f: a.$f,)* $($z: a.$z,)* hue: a.hue, hue_deg: true }
+                Self { $($f: a.$f,)* $($z: a.$z,)* $($b: a.$b,)* hue: a.hue, hue_deg: true }
             }
         }
     };
@@ -1866,6 +1935,10 @@ local_wire!(
     recolor_from_r,
     recolor_from_g,
     recolor_from_b,
+    lens_blur,
+    lens_blur_boost;
+    lens_blur_off,
+    lens_blur_outside,
 );
 
 impl LocalAdjustments {
@@ -1923,6 +1996,10 @@ impl Default for LocalAdjustments {
             recolor_from_r: 0.0,
             recolor_from_g: 0.0,
             recolor_from_b: 0.0,
+            lens_blur: 0.0,
+            lens_blur_boost: 0.0,
+            lens_blur_off: false,
+            lens_blur_outside: false,
             amount: 100.0,
         }
     }
@@ -2545,7 +2622,7 @@ impl Default for RedEye {
 
 /// Lens Blur: a shallow depth of field added after the fact, from the photo's estimated depth
 /// (`lcc_pipeline::lens_blur`). Distances are `0..100` (0 = nearest, 100 = farthest).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LensBlur {
     pub enabled: bool,
@@ -2564,11 +2641,35 @@ pub struct LensBlur {
     pub focus_size: f64,
     /// The shape of the out-of-focus highlights.
     pub bokeh: BokehShape,
+    /// Boost, `0..100`: how much brighter the out-of-focus highlights get before they are spread
+    /// into bokeh discs. Omitted while 0, so settings without it keep their JSON (and hash).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub boost: f64,
+    /// Brush Refinement, Focus brush: strokes painted in focus whatever the depth says (their
+    /// strength: how far; erase strokes take it back). Omitted while empty. Ported from upstream
+    /// PR #2661.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub focus_strokes: Vec<BrushStroke>,
+    /// Brush Refinement, Blur brush: strokes painted out of focus, over the depth and the Focus
+    /// brush. Omitted while empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blur_strokes: Vec<BrushStroke>,
 }
 
 impl Default for LensBlur {
     fn default() -> Self {
-        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle }
+        Self {
+            enabled: false,
+            amount: 50.0,
+            focal_distance: 0.0,
+            focal_range: 20.0,
+            focus: None,
+            focus_size: 0.0,
+            bokeh: BokehShape::Circle,
+            boost: 0.0,
+            focus_strokes: Vec::new(),
+            blur_strokes: Vec::new(),
+        }
     }
 }
 

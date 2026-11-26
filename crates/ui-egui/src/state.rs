@@ -1804,6 +1804,9 @@ pub struct UiState {
     /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
     /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
     pub brush_auto_range: f32,
+    /// Lens Blur Brush Refinement: how far a stroke refines the focus, 1..100 (size, feather,
+    /// flow, Auto Mask and pressure are the Masking brush's).
+    pub lens_blur_brush_amount: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
@@ -2089,6 +2092,35 @@ impl Dialog {
     pub fn create_preset_folder(parent: Option<String>) -> Dialog {
         Dialog::CreatePresetFolder { name: String::new(), parent }
     }
+    /// A fresh face-maintenance dialog scoped to the user's current selection, album, or folder when possible.
+    pub fn face_maintenance(s: &lcc_engine::Session) -> Dialog {
+        let scope = if !s.selected().is_empty() {
+            "selected"
+        } else {
+            match s.source {
+                lcc_engine::LibrarySource::Album(_) => "album",
+                lcc_engine::LibrarySource::Folder | lcc_engine::LibrarySource::LibraryFolder => "folder",
+                _ => "visible",
+            }
+        };
+        let (folders, album_ids) = match s.source {
+            lcc_engine::LibrarySource::Folder => (s.browse.as_ref().map(|b| b.path.clone()).unwrap_or_default(), Vec::new()),
+            lcc_engine::LibrarySource::LibraryFolder => (s.library_folder.clone().unwrap_or_default(), Vec::new()),
+            lcc_engine::LibrarySource::Album(album) => (String::new(), vec![album.0]),
+            _ => (String::new(), Vec::new()),
+        };
+        Dialog::FaceMaintenance {
+            mode: face_mode_default(),
+            scope: scope.to_string(),
+            folders,
+            album_ids,
+            album_choice: None,
+            include_subfolders: true,
+            min_score: face_score_default(),
+            behavior: face_behavior_default(),
+            confirm_reset: false,
+        }
+    }
 }
 
 /// A face's name being typed in the loupe: which face, and what has been typed so far.
@@ -2320,6 +2352,33 @@ pub enum Dialog {
         /// flagged are left alone).
         #[serde(default)]
         suggest_flags: bool,
+    },
+    FaceMaintenance {
+        /// `detect`, `recognize`, `new`, `rebuild`, `rebuildNamed` or `rescan`.
+        #[serde(default = "face_mode_default")]
+        mode: String,
+        /// `all`, `visible`, `selected`, `folder` or `album`.
+        #[serde(default = "face_scope_default")]
+        scope: String,
+        /// One or more folder paths, separated by newlines or semicolons.
+        #[serde(default)]
+        folders: String,
+        /// Selected regular or smart albums, when `scope` is `album`.
+        #[serde(default)]
+        album_ids: Vec<u64>,
+        /// The album currently highlighted in the picker, before it is added to `album_ids`.
+        #[serde(default)]
+        album_choice: Option<u64>,
+        #[serde(default = "yes")]
+        include_subfolders: bool,
+        #[serde(default = "face_score_default")]
+        min_score: f32,
+        /// `merge` or `replace` earlier automatic detections.
+        #[serde(default = "face_behavior_default")]
+        behavior: String,
+        /// Explicit acknowledgement for the destructive reset action.
+        #[serde(default)]
+        confirm_reset: bool,
     },
     /// Library ▸ Image Quality Scanner… (issue #1313): score photos for technical
     /// quality (blur, noise, exposure, JPEG blockiness) in the background and flag them Pick /
@@ -2660,6 +2719,22 @@ fn yes() -> bool {
     true
 }
 
+fn face_mode_default() -> String {
+    "detect".into()
+}
+
+fn face_scope_default() -> String {
+    "visible".into()
+}
+
+fn face_score_default() -> f32 {
+    0.6
+}
+
+fn face_behavior_default() -> String {
+    "merge".into()
+}
+
 /// How many changes a Synchronize Folder scan found, by kind.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2883,6 +2958,7 @@ impl Default for UiState {
             mask_reset_new: false,
             mask_reset_seen: None,
             brush_auto_range: 0.0,
+            lens_blur_brush_amount: 100.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,

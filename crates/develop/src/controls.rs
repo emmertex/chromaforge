@@ -26,6 +26,8 @@ pub enum Section {
     ToneEq,
     Effects,
     Vignette,
+    /// Glow, the Resolve-style bloom (beyond Lightroom).
+    Glow,
     Grain,
     Detail,
     Optics,
@@ -58,6 +60,7 @@ impl Section {
             Section::ToneEq => "Tone Equalizer",
             Section::Effects => "Effects",
             Section::Vignette => "Vignette",
+            Section::Glow => "Glow",
             Section::Grain => "Grain",
             Section::Detail => "Detail",
             Section::Optics => "Optics",
@@ -373,6 +376,13 @@ controls! {
     "vignette.roundness" => vignette.roundness, "Roundness", Vignette, -100, 100, 0, 1, 0, Centered => CentreLight;
     "vignette.feather" => vignette.feather, "Feather", Vignette, 0, 100, 50, 1, 0, Plain => Ramp;
     "vignette.highlights" => vignette.highlights, "Highlights", Vignette, 0, 100, 0, 1, 0, Plain => Ramp;
+    "glow.amount" => glow.amount, "Glow", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
+    "glow.threshold" => glow.threshold, "Threshold", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
+    "glow.spread" => glow.spread, "Radius", Glow, 0, 100, 25, 1, 0, Plain => Ramp;
+    "glow.gain" => glow.gain, "Gain", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
+    "glow.gamma" => glow.gamma, "Gamma", Glow, 0, 100, 50, 1, 0, Centered;
+    "glow.ratio" => glow.ratio, "H/V Ratio", Glow, 0, 100, 50, 1, 0, Centered;
+    "glow.recovery" => glow.recovery, "Recovery", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
     "grain.amount" => grain.amount, "Grain", Grain, 0, 100, 0, 1, 0, Plain => Ramp;
     "grain.size" => grain.size, "Size", Grain, 0, 100, 25, 1, 0, Plain;
     "grain.sizeVariation" => grain.size_variation, "Size Variation", Grain, 0, 100, 40, 1, 0, Plain;
@@ -382,6 +392,7 @@ controls! {
     "grain.seed" => grain.seed, "Seed", Grain, 0, 99999, 0, 1, 0, Plain;
     "grain.response" => grain.response, "Response", Grain, -100, 100, 0, 1, 0, Centered;
     "lensBlur.amount" => lens_blur.amount, "Blur Amount", LensBlur, 0, 100, 50, 1, 0, Plain => Ramp;
+    "lensBlur.boost" => lens_blur.boost, "Boost", LensBlur, 0, 100, 0, 1, 0, Plain;
     "lensBlur.focalDistance" => lens_blur.focal_distance, "Focal Distance", LensBlur, 0, 100, 0, 1, 0, Plain;
     "lensBlur.focalRange" => lens_blur.focal_range, "Focal Range", LensBlur, 0, 100, 20, 1, 0, Plain;
     "lensBlur.focusSize" => lens_blur.focus_size, "Focus Area", LensBlur, 0, 0.5, 0, 0.01, 2, Plain;

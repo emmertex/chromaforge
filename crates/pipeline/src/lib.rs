@@ -36,6 +36,7 @@ pub mod film_dust;
 pub mod finish;
 pub mod genpatch;
 pub mod geometry;
+pub mod glow;
 pub mod grade;
 pub mod grain;
 pub mod lens_blur;
@@ -734,11 +735,12 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             // and so does the Tone Equalizer, whose mask is smoothed
             let work = if req.depth == OutputDepth::U8 { grow_window(work, tone_eq::reach(s, px_per_long), full_w, full_h) } else { work };
             // and Lens Blur, which gathers from up to its largest radius away
-            let work =
-                if req.depth == OutputDepth::U8 { grow_window(work, lens_blur::reach(&s.lens_blur, px_per_long), full_w, full_h) } else { work };
+            let work = if req.depth == OutputDepth::U8 { grow_window(work, lens_blur::reach(s, px_per_long), full_w, full_h) } else { work };
             // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
             // those reads outside the requested window too, at every depth (cut back below)
             let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
+            // and Glow's halos reach into the window from outside it, at every depth
+            let work = grow_window(work, glow::reach(s, px_per_long), full_w, full_h);
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -827,7 +829,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let noise_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail].map(f64::to_bits), detail_scale.to_bits()));
     // Lens Blur's distance grid (the depth model's, else from the Subject selection)
     let lens_depth = lens_blur::resolve(aux(), info, s);
-    let lens_key = lens_blur::key(&s.lens_blur, lens_depth.as_deref());
+    let lens_key = lens_blur::key(s, lens_depth.as_deref());
     let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s), &lens_key) {
         (None, None, None, None) => nr_key,
         (k, r, t, l) => hash_of((nr_key, k, r, t, l)),
@@ -1548,6 +1550,8 @@ mod tests_dehaze;
 mod tests_draft_nr;
 #[cfg(test)]
 mod tests_geometry;
+#[cfg(test)]
+mod tests_glow;
 #[cfg(test)]
 mod tests_hdr;
 #[cfg(test)]

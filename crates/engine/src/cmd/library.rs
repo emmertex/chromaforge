@@ -169,6 +169,7 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         preset_profile: bool_or(p, "presetProfile", false),
         recipe: super::recipe_param(p, "library.import")?,
         import_duplicates: bool_or(p, "importDuplicates", false),
+        plugin_hooks: bool_or(p, "pluginHooks", true),
     };
     let album_name = str_param(p, "albumName").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     Ok(ImportRequest { paths, opts, album, album_name })
@@ -235,6 +236,12 @@ pub fn import_batch_done(s: &mut Session, report: crate::import::ImportReport, m
     #[cfg(not(target_arch = "wasm32"))]
     s.remote.link_queue.extend(ids.iter().copied());
     crate::cmd::previews::build_after_import(s, &ids);
+    // the plug-ins' afterImport hooks: a failing plug-in never fails the import (its line is in
+    // the result as `pluginResults`)
+    let results = crate::cmd::plugins::after_import(s, &imported);
+    if !results.is_empty() {
+        report["pluginResults"] = Value::Array(results);
+    }
     Ok(report)
 }
 
@@ -338,7 +345,7 @@ fn album_targets_or_err(s: &Session, command: &str, targets: Vec<PhotoId>) -> Re
 
 /// Move to Recently Deleted and drop the photos from stacks so leftover members do not keep
 /// showing `i/n` (issue #1493).
-fn mark_deleted(s: &mut Session, ids: &[PhotoId], label: &str) -> Result<usize> {
+pub(crate) fn mark_deleted(s: &mut Session, ids: &[PhotoId], label: &str) -> Result<usize> {
     let mut ops: Vec<Op> = ids.iter().map(|id| Op::SetDeleted { id: *id, deleted: true }).collect();
     let n = ops.len();
     if n == 0 {

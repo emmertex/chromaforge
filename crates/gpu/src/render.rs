@@ -1379,7 +1379,7 @@ fn pre_nr(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
 fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let s = &*plan.settings;
-    let lens = plan.lens_blur.is_some() && s.lens_blur.active();
+    let lens = lcc_pipeline::lens_blur::renders(s, plan.lens_blur.as_deref());
     if !lcc_pipeline::skin_needs_cpu(s) && !lens {
         return img;
     }

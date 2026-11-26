@@ -2065,6 +2065,11 @@ fn updates_ui(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Val
             actions.push(("plugins.checkUpdates", json!({"id": id})));
         }
     });
+    // from `checkedAt` and the clock, not `plugin.list`'s `checkedAgo`, which is as old as the listing
+    if let Some(at) = u["checkedAt"].as_i64() {
+        let ago = chrono::Utc::now().timestamp().saturating_sub(at);
+        super::update::last_checked_line(ui, &crate::theme::Tokens::get(ui.ctx()), ago);
+    }
     if let Some(err) = u["error"].as_str() {
         ui.colored_label(ui.visuals().warn_fg_color, tr_format!("Couldn't check for updates: {error}", error = err));
     }

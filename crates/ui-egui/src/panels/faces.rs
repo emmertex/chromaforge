@@ -495,6 +495,32 @@ fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if faces > 0 {
         hint(ui, t, &crate::i18n::tr_format!("{n} faces learned.", n = faces));
     }
+    let maintenance = app.session.execute("faces.scanStatus", &json!({})).unwrap_or(Value::Null);
+    let state = maintenance.field("state").as_str().unwrap_or("idle");
+    if matches!(state, "scanning" | "cancelling") {
+        let (done, total) = (maintenance.field("done").as_u64().unwrap_or(0), maintenance.field("total").as_u64().unwrap_or(0));
+        ui.label(crate::i18n::tr(if state == "cancelling" { "Stopping…" } else { "Face scan" }));
+        crate::progress::Progress::new(crate::progress::fraction_of(done, total))
+            .label(format!("{done} / {total}"))
+            .widget("faces:maintenanceProgress")
+            .show(ui);
+        if state == "scanning"
+            && let Some(id) = maintenance.field("taskId").as_u64()
+        {
+            let r = ui.button(crate::i18n::tr("Cancel"));
+            register(ui.ctx(), "button:facesMaintenanceCancel", r.rect);
+            if r.clicked()
+                && let Err(e) = app.session.activity.cancel(id)
+            {
+                app.toast_error(ui.ctx(), e);
+            }
+        }
+    } else {
+        let failed = maintenance.field("failed").as_u64().unwrap_or(0);
+        if failed > 0 {
+            ui.label(RichText::new(format!("{}: {failed}", crate::i18n::tr("Failed photos"))).color(t.caution));
+        }
+    }
 }
 
 fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Option<&Value>, can_run: bool) {

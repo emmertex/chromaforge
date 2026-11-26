@@ -355,3 +355,38 @@ fn an_update_needing_a_missing_feature_is_shown_but_not_installable() {
     assert!(matches!(m.update_offer(ID), Err(Error::Unsupported(missing)) if missing == ["teleport"]));
     assert!(m.install_update(ID, &next, false, false).is_err());
 }
+
+/// AC-1, AC-2: every check that ran leaves one line in the plug-in's log: a clean one says it is
+/// up to date, a failed one and one that found an update log as before, and a check that isn't due
+/// logs nothing.
+#[test]
+fn each_check_that_runs_logs_one_line() {
+    let served = Arc::new(Served::default());
+    let mut m = Manager::in_memory();
+    m.set_fetcher(served.clone());
+    install(&mut m, &signed("1.0.0", 1));
+    m.set_update_check(ID, true).unwrap();
+    let checks = |m: &Manager| m.get(ID).unwrap().log.iter().filter(|l| l.starts_with("update check")).cloned().collect::<Vec<_>>();
+    let before = checks(&m);
+
+    let same = signed("1.0.0", 1);
+    served.put(FEED, feed("1.0.0", &same, json!(["catalog"])));
+    let now = 1_800_000_000;
+    assert_eq!(run_checks(&mut m, None, Some(now), now), 1);
+    assert_eq!(checks(&m)[before.len()..], ["update check: up to date (version 1.0.0)"], "nothing newer: said so");
+    assert_eq!(run_checks(&mut m, None, Some(now + 60), now + 60), 0, "within the day: not due");
+    assert_eq!(checks(&m).len(), before.len() + 1, "a check that didn't run logs nothing");
+
+    served.put(FEED, b"<html>".to_vec());
+    run_checks(&mut m, Some(ID), None, now + DAY);
+    let failed = checks(&m);
+    assert_eq!(failed.len(), before.len() + 2, "{failed:?}");
+    assert!(failed.last().unwrap().starts_with("update check failed"), "{failed:?}");
+
+    let next = signed("1.1.0", 1);
+    served.put(FEED, feed("1.1.0", &next, json!(["catalog"])));
+    run_checks(&mut m, Some(ID), None, now + 2 * DAY);
+    let found = checks(&m);
+    assert_eq!(found.len(), before.len() + 3, "{found:?}");
+    assert_eq!(found.last().unwrap(), "update check: version 1.1.0 is available");
+}
