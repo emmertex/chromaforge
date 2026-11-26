@@ -312,6 +312,7 @@
   "{sel} selected": "已选 {sel}",
   "{sent} sent, {got} received, {files} files": "已发送 {sent}，已接收 {got}，{files} 个文件",
   "{stars} and Higher": "{stars} 及以上",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}：{n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "1 位人物下有 {} 张人脸待处理",

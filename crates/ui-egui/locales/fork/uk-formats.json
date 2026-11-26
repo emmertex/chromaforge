@@ -304,6 +304,7 @@
   "{sel} selected": "Вибрано: {sel}",
   "{sent} sent, {got} received, {files} files": "Надіслано: {sent}, отримано: {got}, файлів: {files}",
   "{stars} and Higher": "{stars} і вище",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} МБ · {format}",
   "{} faces wait under 1 person": "Під 1 людиною чекають обличчя: {}",

@@ -341,6 +341,7 @@
   "{sent} sent, {got} received, {files} files": "{sent} skickade, {got} mottagna, {files} filer",
   "{skipped} catalog images were not imported because their records in the catalog are incomplete.": "{skipped} katalogbilder importerades inte eftersom deras poster i katalogen är ofullständiga.",
   "{stars} and Higher": "{stars} och högre",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "{} ansikten väntar under 1 person",

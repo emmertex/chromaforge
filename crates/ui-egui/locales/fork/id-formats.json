@@ -335,6 +335,7 @@
   "{sent} sent, {got} received, {files} files": "{sent} terkirim, {got} diterima, {files} berkas",
   "{skipped} catalog images were not imported because their records in the catalog are incomplete.": "{skipped} gambar katalog tidak diimpor karena datanya di katalog tidak lengkap.",
   "{stars} and Higher": "{stars} ke atas",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "{} wajah menunggu di bawah 1 orang",

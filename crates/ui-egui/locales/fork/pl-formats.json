@@ -320,6 +320,7 @@
   "{sel} selected": "Zaznaczone: {sel}",
   "{sent} sent, {got} received, {files} files": "Wysłano: {sent}, odebrano: {got}, pliki: {files}",
   "{stars} and Higher": "{stars} i wyżej",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "{} twarzy czeka pod 1 osobą",

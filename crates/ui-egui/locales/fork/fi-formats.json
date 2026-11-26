@@ -336,6 +336,7 @@
   "{sent} sent, {got} received, {files} files": "{sent} lähetetty, {got} vastaanotettu, {files} tiedostoa",
   "{skipped} catalog images were not imported because their records in the catalog are incomplete.": "Katalogin kuvia jäi tuomatta, koska niiden katalogitietueet ovat puutteellisia: {skipped}.",
   "{stars} and Higher": "{stars} ja korkeammat",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} Mt · {format}",
   "{} faces wait under 1 person": "{} kasvoa odottaa 1 henkilön alla",

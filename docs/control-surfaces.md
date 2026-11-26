@@ -60,7 +60,7 @@ What happens then:
   applied to 350 photos*), an undo (*Undo: Exposure*), with the count of photos when Auto Sync or a selection changed
   more than one. Background work never shows. Settings ▸ Notifications ▸ Image and Library edits:
   **Show changes** Off / Control surface only / Always (the default), size (0.5–2×), opacity, display time, position
-  (Down, Down Low, Up, Up High) and background colour, one set for every overlay; each is a command (`osd.settings`,
+  (Down Low, Down, Up, Up High) and background colour, one set for every overlay; each is a command (`osd.settings`,
   `osd.mode` steps to the next mode for a console key, `osd.state`).
 - **The surface** shows each key's icon (TactileBridge's hand-drawn pack), label and live value. A key is lit for one
   of three reasons, each drawn its own way by the plugin: its value is on the dial (`focus`: the white key), it is

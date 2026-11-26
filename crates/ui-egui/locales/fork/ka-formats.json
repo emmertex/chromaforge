@@ -391,6 +391,7 @@
   "{sent} sent, {got} received, {files} files": "გაგზავნილი {sent}, მიღებული {got}, ფაილები {files}",
   "{stars} and Higher": "{stars} და მეტი",
   "{s} s of AV1 video": "{s} წმ AV1 ვიდეო",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what} merge added at {mp}, the largest a panorama can be (its full size is {full})": "{what}: გაერთიანება დაემატა {mp} ზომით, რაც პანორამის მაქსიმუმია (სრული ზომაა {full})",
   "{what} merge added at {mp}: its full size, {full}, needs more memory than this computer has": "{what}: გაერთიანება დაემატა {mp} ზომით: სრულ ზომას ({full}) იმაზე მეტი მეხსიერება სჭირდება, ვიდრე ამ კომპიუტერს აქვს",
   "{what}: {n}": "{what}: {n}",

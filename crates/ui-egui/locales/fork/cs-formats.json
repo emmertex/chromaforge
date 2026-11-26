@@ -320,6 +320,7 @@
   "{sel} selected": "Vybráno: {sel}",
   "{sent} sent, {got} received, {files} files": "{sent} odesláno, {got} přijato, {files} souborů",
   "{stars} and Higher": "{stars} a více",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "Čeká {} obličejů pod 1 osobou",

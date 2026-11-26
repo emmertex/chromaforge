@@ -355,7 +355,9 @@ fn notifications_has_the_overlay_and_message_settings_and_the_other_pages_point_
     for want in ["Image and Library edits", "Messages", "Information", "Confirmation", "Warnings", "Persistent", "In Develop", "Elsewhere"] {
         assert!(text.iter().any(|t| t == want), "{want} is on the page: {text:?}");
     }
-    assert!(text.iter().any(|t| t == "Flash a message for each change: what changed, and how many photos were affected."), "{text:?}");
+    let flash =
+        "Flash a message for each change: what changed, and how many photos were affected.\nControl surfaces are defined in Settings ▸ Controls.";
+    assert!(text.iter().any(|t| t == flash), "the Show changes hint, with where control surfaces are defined, on two lines: {text:?}");
     assert!(!text.iter().any(|t| t.to_lowercase().contains("toast")), "the word toast is not in the UI: {text:?}");
 
     run(&mut h, "app.settings", json!({"page": "interface"}));
@@ -401,10 +403,10 @@ fn the_notifications_page_greys_what_cannot_be_used_and_each_test_button_fires_i
     let fired = run(&mut h, "notifications.testFire", json!({"kind": "develop"}));
     assert_eq!(fired["shown"], false, "and the command says a test shows nothing while Off: {fired}");
     assert!(shown(&mut h).is_null(), "Off shows nothing, even a test");
-    // Control surface only hides the tests of what the app reports too
+    // Control surface only still shows the tests: a sample looks as a surface's would
     click(&mut h, "button:osdMode-1");
     click(&mut h, "button:testFire.elsewhere");
-    assert!(shown(&mut h).is_null(), "control surface only: a change in the app, and so its test, shows nothing");
+    assert!(!shown(&mut h).is_null(), "control surface only: the test shows, as under Always");
     click(&mut h, "button:osdMode-2");
 
     // every kind shows itself through the one command, with its time in the text
@@ -412,6 +414,9 @@ fn the_notifications_page_greys_what_cannot_be_used_and_each_test_button_fires_i
         click(&mut h, &format!("button:testFire.{button}"));
         assert!(!shown(&mut h).is_null(), "{kind} shows the pill");
     }
+    // the messages' rows are below the fold of the window
+    h.request("ui.scroll", json!({"dx": 0.0, "dy": -400.0}), T);
+    h.settle(T);
     click(&mut h, "button:testFire.information");
     click(&mut h, "button:testFire.warning");
     click(&mut h, "button:testFire.confirmation");

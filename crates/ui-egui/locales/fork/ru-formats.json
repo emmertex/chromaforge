@@ -314,6 +314,7 @@
   "{sent} sent, {got} received, {files} files": "Отправлено: {sent}, получено: {got}, файлов: {files}",
   "{size} GB": "{size} ГБ",
   "{stars} and Higher": "{stars} и выше",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} МБ · {format}",
   "{} KB": "{} КБ",

@@ -312,6 +312,7 @@
   "{sel} selected": "{sel} 件選択",
   "{sent} sent, {got} received, {files} files": "送信 {sent}、受信 {got}、ファイル {files}",
   "{stars} and Higher": "{stars} 以上",
+  "{text} ({ms} ms)": "{text} ({ms} ms)",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
   "{} faces wait under 1 person": "1 人のもとに {} 件の顔が待機中",

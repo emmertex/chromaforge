@@ -160,20 +160,20 @@ messages at the bottom of the window. Each kind has a **Test** button that shows
 ### Image and library edits
 - **Show changes**: Off, Control surface only, or Always. Flashes a message for each change: what changed, and how many
   photos were affected. *Control surface only* is for a hardware controller (such as the Logitech MX Creative Console);
-  set one up under **Settings ▸ Controls**. With it Off, everything below it is greyed out.
-- **Size**, **Opacity**, **Shown for**, **Position** and **Background** set how it looks.
+  set one up under **Settings ▸ Controls**. The **Test** buttons show a sample in this mode too. With it Off, everything below it is greyed out.
 - **In Develop** and **Elsewhere** choose which changes get a message: a change to a develop setting, or one to image
   metadata or the library. Turn either off, but never both: the last one on stays on. They apply to a control
   surface's own readout too.
+- **Size**, **Opacity**, **Shown for**, **Position** and **Background** set how it looks.
 
 ### Messages
+- **Information** (updates, such as a finished background process), **Confirmation** (a message with a button, such as
+  a background action you can Undo), **Warnings** (warnings and errors) and **Persistent**. None of them can be
+  switched off.
 - The same **Size**, **Opacity**, **Shown for**, **Position** and **Background** for the messages at the bottom of the
   window. **Shown for** is how long an *Information* message stays; the others follow it: a message with a button stays
   7 times as long, a warning 4 times (at least 6 s), and none longer than 30 s. A long text stays a little longer so it
   can be read. A warning keeps its red whatever the background.
-- **Information** (updates, such as a finished background process), **Confirmation** (a message with a button, such as
-  a background action you can Undo), **Warnings** (warnings and errors) and **Persistent**. None of them can be
-  switched off.
 - **Persistent** messages are about something that is still true: changes that could not be written to disk, XMP
   sidecars waiting for an offline folder, and a control surface asking to pair. They stay until you close them with
   their ✕ or the problem is gone. Once you close one, it stays away until the problem has ended and come back.

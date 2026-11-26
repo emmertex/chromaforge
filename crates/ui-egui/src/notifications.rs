@@ -136,8 +136,8 @@ pub fn test_fire(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 detail: None,
                 live: false,
             };
-            let shown = crate::panels::surface_osd::report_allowed(app, &report);
-            app.surface.action = Some(crate::panels::surface_osd::ActionShown { report, at: app.surface.now() });
+            let shown = app.surface.settings().osd.allows(crate::panels::surface_osd::report_area(&report), true);
+            app.surface.action = Some(crate::panels::surface_osd::ActionShown { report, at: app.surface.now(), test: true });
             Ok(reply(shown, Some(f64::from(app.surface.settings().osd.display_ms) / 1000.0)))
         }
         "information" => {

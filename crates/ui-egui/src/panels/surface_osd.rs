@@ -57,6 +57,9 @@ pub struct Readout {
 pub struct ActionShown {
     pub report: ChangeReport,
     pub at: f64,
+    /// A sample from Settings → Notifications: it shows as a report from a control surface would, so it appears
+    /// under Control surface only too.
+    pub test: bool,
 }
 
 /// The surface's own readout: (readout, since when in s).
@@ -224,7 +227,7 @@ fn take_report(app: &mut LccApp) {
     }
     let report = r.clone();
     let at = app.surface.now();
-    app.surface.action = Some(ActionShown { report, at });
+    app.surface.action = Some(ActionShown { report, at, test: false });
 }
 
 /// What the pill shows now and its age (s): the newest of the surface's readout and the last
@@ -238,7 +241,12 @@ pub fn current(app: &mut LccApp) -> Option<(Readout, f64)> {
 pub fn peek(app: &LccApp) -> Option<(Readout, f64)> {
     let now = app.surface.now();
     let surface = surface_content(app);
-    let action = app.surface.action.as_ref().filter(|a| report_allowed(app, &a.report)).map(|a| (describe(app, &a.report), a.at));
+    let action = app
+        .surface
+        .action
+        .as_ref()
+        .filter(|a| app.surface.settings().osd.allows(report_area(&a.report), a.test))
+        .map(|a| (describe(app, &a.report), a.at));
     let (r, at) = match (surface, action) {
         (Some(s), Some(a)) => {
             if a.1 > s.1 + 0.05 {
@@ -350,7 +358,7 @@ pub fn paint(ctx: &egui::Context, area: Rect, osd: &ls::settings::OsdSettings, r
 pub const MODES: &[(OsdMode, &str)] = &[(OsdMode::Off, "Off"), (OsdMode::Surface, "Control surface only"), (OsdMode::Always, "Always")];
 /// Where it sits (TactileBridge's names).
 pub const POSITIONS: &[(OsdPosition, &str)] =
-    &[(OsdPosition::Bottom, "Down"), (OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
+    &[(OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Bottom, "Down"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
 
 /// The five controls the overlay pill and the messages share (Settings ▸ Notifications): size, opacity, how long,
 /// where, and the background. `messages` picks the ids they register under (`slider:osd.size`, `field:osdBackground`;
