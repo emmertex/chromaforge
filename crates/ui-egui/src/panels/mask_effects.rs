@@ -344,9 +344,8 @@ fn row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: &Mask, name: &str, fav: b
         let r = ui.button(crate::i18n::tr(text));
         register(ui.ctx(), format!("maskEffectRow:{text}"), r.rect);
         if r.clicked() {
-            if let Err(e) = app.run(cmd, p) {
-                app.toast_error(ui.ctx(), e);
-            }
+            let result = app.run(cmd, p);
+            app.report(ui.ctx(), result);
             ui.close();
         }
     };

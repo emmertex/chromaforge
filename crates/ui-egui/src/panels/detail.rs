@@ -1970,7 +1970,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 app.run("mask.component", json!({"id": m.id, "component": comp, "action": "delete"}))
             };
             if let Err(e) = r {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     }
@@ -3326,12 +3326,16 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
 
     if app.ui.right != RightPanel::Crop {
-        // Keyed by the dragged control's id, not the interaction label: a mask's "Exposure" slider
-        // must not bring up the global clipping mask.
+        // Keyed by the dragged control's id, not the interaction label: the interaction only says
+        // "Drag", so the id decides. The Edit panel's tone sliders carry the `light.` prefix; a
+        // mask's tone sliders (the Masking panel's local adjustments) share the bare
+        // `LocalAdjustments` field names and ask for the same clipping previews.
         if alt_held && app.session.interaction.is_some() {
             match app.ui.dragging_control.as_deref() {
-                Some("light.exposure" | "light.highlights" | "light.whites") => return Overlay::Clipping(Some(false)),
-                Some("light.shadows" | "light.blacks") => return Overlay::Clipping(Some(true)),
+                Some("light.exposure" | "light.highlights" | "light.whites" | "exposure" | "highlights" | "whites") => {
+                    return Overlay::Clipping(Some(false));
+                }
+                Some("light.shadows" | "light.blacks" | "shadows" | "blacks") => return Overlay::Clipping(Some(true)),
                 // Sharpening's sliders: each its own black-and-white view of the band it sharpens
                 Some("detail.sharpenAmount") => return Overlay::Sharpen(SharpenView::Amount),
                 Some("detail.sharpenRadius") => return Overlay::Sharpen(SharpenView::Radius),
@@ -4595,7 +4599,7 @@ fn color_range_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map:
         let n = map.norm(q);
         let add = ui.input(|i| i.modifiers.shift);
         if let Err(e) = app.run("mask.sampleColor", json!({"x": n.x, "y": n.y, "add": add})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
 }
@@ -4631,6 +4635,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let n = map.norm(q);
             if let Ok(r) = app.run("mask.pointColorPick", json!({"x": n.x, "y": n.y})) {
                 app.ui.mask_point_color = r.field("index").as_u64().unwrap_or(0) as usize;
+            }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    // the mask's Recolor eyedroppers: one click samples into the active mask's colour ("to") or
+    // its Color to Replace ("from")
+    if let Some(target) = match app.ui.tool.as_str() {
+        "maskRecolor" => Some("to"),
+        "maskRecolorFrom" => Some("from"),
+        _ => None,
+    } {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
+                app.toast(ui.ctx(), e);
             }
             app.ui.tool.clear();
         }
@@ -6834,7 +6859,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         app.run("library.select", json!({"ids": [id.0], "mode": super::grid::click_mode(m, on_picture)}))
                     };
                     if compare && let Err(e) = r {
-                        app.toast(ui.ctx(), e);
+                        app.toast_error(ui.ctx(), e);
                     }
                 }
                 // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,

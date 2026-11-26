@@ -105,6 +105,13 @@ pub(crate) fn short_name(id: &str) -> Option<&'static str> {
         "vignette.feather" => "Feather",
         "vignette.roundness" => "Roundness",
         "vignette.highlights" => "Highlights",
+        "glow.amount" => "Amount",
+        "glow.threshold" => "Threshold",
+        "glow.spread" => "Radius",
+        "glow.gain" => "Gain",
+        "glow.gamma" => "Gamma",
+        "glow.ratio" => "H/V",
+        "glow.recovery" => "Recovery",
         "grain.size" => "Size",
         "grain.sizeVariation" => "Variation",
         "grain.roughness" => "Roughness",
@@ -608,6 +615,27 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             let enabled = c == "vignette.amount" || d.vignette.amount != 0.0;
             control(app, ui, d, c, enabled);
         }
+        sub_title(ui, crate::i18n::tr("Glow"));
+        if shown_here(app, ui, "option:glowComposite") {
+            use lcc_develop::GlowComposite as G;
+            let modes = [(G::Screen, "glow composite|Screen", "screen"), (G::Add, "glow composite|Add", "add")];
+            let items: Vec<(&str, &str)> = modes.iter().map(|(_, l, k)| (*l, *k)).collect();
+            let active = modes.iter().position(|(v, _, _)| *v == d.glow.mode);
+            let mut chosen = None;
+            egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
+                ui,
+                |ui| {
+                    chosen = crate::widgets::segmented(ui, "glowComposite", &items, active, 2);
+                },
+            );
+            if let Some((mode, ..)) = chosen.and_then(|i| modes.get(i)) {
+                let _ = app.run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
+            }
+        }
+        for c in ["glow.amount", "glow.threshold", "glow.spread", "glow.gain", "glow.gamma", "glow.ratio", "glow.recovery"] {
+            let enabled = c == "glow.amount" || d.glow.amount != 0.0;
+            control(app, ui, d, c, enabled);
+        }
         sub_title(ui, crate::i18n::tr("Grain"));
         // process V7's particle grain has its own controls (OneSlips); earlier processes render the
         // value-noise grain, which only reads Amount, Size and Roughness
@@ -676,7 +704,7 @@ fn tool_profile_row(app: &mut LccApp, ui: &mut egui::Ui) {
                 if let Some(pid) = pick
                     && let Err(e) = app.run("view.toolProfile", json!({"id": pid}))
                 {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -936,7 +964,7 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         if super::settings::check(ui, "lensBlur.enabled", &mut on, "Apply")
             && let Err(e) = app.run("lensBlur.set", json!({"enabled": on}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         let note = if lcc_pipeline::depth_model::has_depth_model() {
             "Depth: estimated by the depth model."
@@ -1023,7 +1051,7 @@ pub(crate) fn section_with(
         // ⌥-click opens just this section, as in Lightroom Classic
         let solo = ui.input(|i| i.modifiers.alt);
         if let Err(e) = app.run(&format!("section.{id}"), json!({"solo": solo})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     crate::widgets::context_menu(&resp, |ui| {
@@ -1032,7 +1060,7 @@ pub(crate) fn section_with(
         register(ui.ctx(), "sectionMenu:solo", item.rect);
         if item.clicked() {
             if let Err(e) = app.run("view.soloSections", json!({"on": solo})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -1587,7 +1615,7 @@ fn soft_proofing(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 && let Some(path) = app.services.pick_display_profile.as_mut().and_then(|pick| pick().into_iter().next())
                 && let Err(e) = app.run("view.softProof", json!({"profile": path}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
         if app.ui.proof_profile.is_some() {
@@ -2709,7 +2737,7 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
                             app.ui.tool.clear();
                         } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
                             // the same as W: from Compare, Survey or the grid it opens the photo in Detail
-                            app.toast(ui.ctx(), e);
+                            app.toast_error(ui.ctx(), e);
                         }
                     }
                     if active {
@@ -3736,9 +3764,8 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
     }
     if let Some((c, p)) = run {
         app.ui.vignetting_calibration_info = None;
-        if let Err(e) = app.run(c, p) {
-            app.toast_error(ui.ctx(), e);
-        }
+        let result = app.run(c, p);
+        app.report(ui.ctx(), result);
     }
 }
 

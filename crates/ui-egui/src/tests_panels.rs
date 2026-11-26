@@ -1967,7 +1967,7 @@ fn a_folder_that_cant_be_shown_in_the_file_manager_says_why() {
     right_click(&mut h, "source:libfolder:/pics/trip");
     h.app.ui.toasts.clear();
     click(&mut h, "folderReveal");
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("no file manager")), "{:?}", h.app.ui.toast());
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("no file manager")), "{:?}", h.app.ui.toast());
 }
 
 /// A Local place's menu renames the folder by its own name on disk. A folder inside a place lists
@@ -2042,7 +2042,7 @@ fn copy_path_puts_a_folders_path_on_the_clipboard_from_each_kind_of_row() {
         );
         click(h, "folderCopyPath");
         assert_eq!(h.view.clipboard, native(path), "{row}");
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some(crate::i18n::Locale::En.tr("Path copied")), "{row}");
+        assert_eq!(h.app.ui.toast().map(|t| t.text.as_str()), Some(crate::i18n::Locale::En.tr("Path copied")), "{row}");
         assert!(!popup_open(h), "choosing closes the menu");
     };
     copy_from(&mut h, "source:libfolder:/pics/trip", "/pics/trip");
@@ -2440,7 +2440,7 @@ fn command_toasts_show_after_a_while() {
     assert_eq!(r["ok"], true, "{r}");
     h.step();
     h.step();
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.starts_with("Auto Advance")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.starts_with("Auto Advance")), "{:?}", h.app.ui.toasts);
     // Auto-Tag from Tracklog's toast shows too: it was stamped by a clock of its own, which starts
     // at zero, so a while into a session it had always already expired
     h.app.ui.toasts.clear();
@@ -2449,7 +2449,7 @@ fn command_toasts_show_after_a_while() {
     assert_eq!(r["ok"], true, "{r}");
     h.step();
     h.step();
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.starts_with("Tagged")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.starts_with("Tagged")), "{:?}", h.app.ui.toasts);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2598,7 +2598,7 @@ fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
     h.settle(SETTLE);
     assert!(h.app.session.catalog.album(album_id).unwrap().photos.is_empty(), "nothing invisible was added");
     assert!(h.app.ui.dragging_photos.is_none(), "the drag ended");
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(toast.contains("Add to My Photos first"), "{toast:?}");
 
     // in My Photos: the menu entries come on, the submenu opens, and the album takes the photo

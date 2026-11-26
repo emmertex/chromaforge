@@ -39,6 +39,7 @@ pub mod manager_table;
 pub mod marketplace;
 pub mod mask_effects;
 pub mod mask_pickers;
+pub mod mask_recolor;
 pub mod masking;
 pub mod metadata;
 pub mod ml_models;
@@ -188,12 +189,15 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     // a slideshow's playback controls sit at the bottom: the toasts go to the top there, clear of them
     let top = app.ui.slideshow.is_some();
     let mut edge = if top { canvas.top() + 40.0 + action_h } else { canvas.bottom() - 40.0 - action_h };
-    for (text, until, label) in app.ui.toasts.iter().rev() {
-        let fade = ((until - now) / 0.25).clamp(0.0, 1.0) as f32;
-        let (background, foreground) = label.map(crate::theme::label_toast_colors).unwrap_or((egui::Color32::from_black_alpha(200), t.text));
-        let foreground = foreground.gamma_multiply(fade);
-        let galley = painter.layout(text.clone(), t.font(14.0), foreground, wrap);
-        let size = vec2(galley.size().x + 40.0, (galley.size().y + 22.0).max(40.0));
+    let mut dismissed = None;
+    let shown: Vec<_> = app.ui.toasts_shown().into_iter().cloned().collect();
+    for toast in shown.iter().rev() {
+        let fade = ((toast.until - now) / 0.25).clamp(0.0, 1.0) as f32;
+        let look = crate::toast::look(&t, toast.kind, fade);
+        // a sticky message keeps room at its right for the button that dismisses it
+        let button = if toast.key.is_some() { crate::toast::DISMISS_WIDTH } else { 0.0 };
+        let galley = painter.layout(toast.text.clone(), t.font(look.font), look.text, wrap - button);
+        let size = look.size(galley.size()) + vec2(button, 0.0);
         let r = if top {
             Rect::from_min_size(pos2(canvas.center().x - size.x / 2.0, edge), size)
         } else {
@@ -203,9 +207,24 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
         if r.top() < canvas.top() || r.bottom() > canvas.bottom() {
             break;
         }
-        painter.rect_filled(r, 6.0, background.gamma_multiply(fade));
-        painter.galley(r.center() - galley.size() / 2.0, galley, foreground);
+        look.paint(&painter, r);
+        crate::widgets::register(ctx, format!("toast:{}", toast.kind.id()), r);
+        painter.galley(pos2(r.left() + look.pad_x, r.center().y - galley.size().y / 2.0), galley, look.text);
+        if let Some(key) = &toast.key {
+            let b = Rect::from_center_size(pos2(r.right() - look.pad_x / 2.0 - button / 2.0, r.center().y), vec2(button, button));
+            let click = egui::Area::new(egui::Id::new(("toast-dismiss", key))).order(egui::Order::Foreground).fixed_pos(b.min).show(ctx, |ui| {
+                let r = ui.add_sized(b.size(), egui::Button::new(egui::RichText::new("✕").color(look.text)).frame(false));
+                crate::widgets::register(ui.ctx(), format!("button:toastDismiss:{key}"), r.rect);
+                r.clicked()
+            });
+            if click.inner {
+                dismissed = Some(key.clone());
+            }
+        }
         edge = if top { r.bottom() + 8.0 } else { r.top() - 8.0 };
+    }
+    if let Some(key) = dismissed {
+        app.ui.dismiss_toast(&key);
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
@@ -220,6 +239,7 @@ fn toast_action(app: &mut LccApp, ctx: &egui::Context, now: f64) -> f32 {
     let (Some(a), Some(canvas)) = (app.ui.toast_action.clone(), app.canvas_rect) else { return 0.0 };
     let t = Tokens::get(ctx);
     let fade = ((a.until - now) / 0.25).clamp(0.0, 1.0) as f32;
+    let look = crate::toast::look(&t, crate::ToastKind::Action, fade);
     let top = app.ui.slideshow.is_some();
     let (pivot, anchor) = if top {
         (egui::Align2::CENTER_TOP, pos2(canvas.center().x, canvas.top() + 40.0))
@@ -228,21 +248,19 @@ fn toast_action(app: &mut LccApp, ctx: &egui::Context, now: f64) -> f32 {
     };
     let mut clicked = false;
     let shown = egui::Area::new(egui::Id::new("toast-action")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(anchor).show(ctx, |ui| {
-        egui::Frame::NONE
-            .fill(egui::Color32::from_black_alpha(200).gamma_multiply(fade))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::symmetric(20, 9))
-            .show(ui, |ui| {
-                ui.set_max_width((canvas.width() - 80.0).clamp(200.0, 720.0));
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&a.text).font(t.font(14.0)).color(t.text.gamma_multiply(fade)));
-                    ui.add_space(8.0);
-                    let b = ui.button(egui::RichText::new(&a.button).font(t.semibold(13.0)));
-                    crate::widgets::register(ui.ctx(), "button:toastAction", b.rect);
-                    clicked = b.clicked();
-                });
-            })
+        look.frame().show(ui, |ui| {
+            ui.set_max_width((canvas.width() - 80.0).clamp(200.0, 720.0));
+            ui.set_min_height(look.min_height - 2.0 * look.pad_y);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&a.text).font(t.font(look.font)).color(look.text));
+                ui.add_space(8.0);
+                let b = ui.button(egui::RichText::new(&a.button).font(t.semibold(13.0)));
+                crate::widgets::register(ui.ctx(), "button:toastAction", b.rect);
+                clicked = b.clicked();
+            });
+        })
     });
+    crate::widgets::register(ctx, "toast:action", shown.response.rect);
     if clicked {
         app.ui.toast_action = None;
         match app.run(&a.command, a.params.clone()) {

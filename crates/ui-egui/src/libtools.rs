@@ -352,7 +352,7 @@ pub fn paint_cell(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, id: Ph
     if let Some((cmd, params)) = painter.command(&photo, erase, target)
         && let Err(e) = app.run(cmd, params)
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     true
 }
@@ -397,7 +397,7 @@ pub fn painter_bar(app: &mut LccApp, ui: &mut egui::Ui) {
             if let Some((k, v)) = next
                 && let Err(e) = app.run("tool.painter", json!({"kind": k.id(), "value": v}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
     });

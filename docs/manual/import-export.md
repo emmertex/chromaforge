@@ -37,7 +37,8 @@ Lightroom `.xmp` presets); Import Keywords… reads keyword lists.
 
 Supported files: JPEG, PNG, TIFF, WebP, AVIF/HEIF (also on Android), PSD, DNG and the common raw formats (Sony ARW, Nikon NEF and NEFX, Canon
 CR2/CR3, Fujifilm RAF, Panasonic RW2, Olympus ORF, Pentax PEF, Samsung SRW and more). Per-model status is in the
-[parity tracker](../parity-checklist.md) (`LR-IMP-CAMERA-COVERAGE`).
+[parity tracker](../parity-checklist.md) (`LR-IMP-CAMERA-COVERAGE`). Images over 512 megapixels are refused; the error
+gives the image's size in megapixels and the limit.
 
 ## Export
 

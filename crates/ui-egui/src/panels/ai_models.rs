@@ -95,7 +95,7 @@ fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if r.clicked()
             && let Err(e) = crate::links::open(app, help)
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     super::settings::hint(ui, t, "Changing the folder doesn't move a model already downloaded: copy its files over, or download it again.");

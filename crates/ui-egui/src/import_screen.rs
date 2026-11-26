@@ -162,7 +162,7 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
         match crate::import::start(app, &d) {
             Ok(_) => app.ui.dialog = None,
             // (an unusable folder template, nothing selected: the review stays open)
-            Err(e) => app.toast(ctx, e),
+            Err(e) => app.toast_error(ctx, e),
         }
     }
 }
@@ -270,7 +270,7 @@ fn sources(app: &mut LccApp, ui: &mut egui::Ui, rail: Rect, d: &mut ImportDialog
             // scan it; the review shows what it finds when the scan ends
             d.immich = false;
             if let Err(e) = crate::import::open(app, vec![path]) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
         _ => d.immich = false,

@@ -2301,7 +2301,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.autoStack" => {
-            app.ui.dialog = Some(Dialog::AutoStack { gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32 });
+            app.ui.dialog = Some(Dialog::AutoStack {
+                gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32,
+                top: match p.get("top").and_then(Value::as_str) {
+                    None => lcc_catalog::StackTop::First,
+                    Some("raw") => lcc_catalog::StackTop::Raw,
+                    Some("jpeg") => lcc_catalog::StackTop::Jpeg,
+                    Some(other) => return Some(Err(format!("dialog.autoStack: top: unknown choice {other:?}"))),
+                },
+            });
             Ok(Value::Null)
         }
         "dialog.allMetadata" => {
@@ -2960,7 +2968,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         app.ui.last_find_missing_result = Some(Ok(v));
                     }
                     Err(e) => {
-                        app.toast(ctx, e.clone());
+                        app.toast_error(ctx, e.clone());
                         app.ui.last_find_missing_result = Some(Err(e));
                     }
                 }
@@ -3384,7 +3392,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     app.toast(&ctx, msg);
                 }
-                Err(e) => app.toast(&ctx, e.clone()),
+                Err(e) => app.toast_error(&ctx, e.clone()),
             }
             return Some(r);
         }
@@ -3406,7 +3414,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             };
             let r = app.session.execute("keyword.export", &json!({"path": path})).map_err(|e| e.to_string());
             if let Err(e) = &r {
-                app.toast(&ctx, e.clone());
+                app.toast_error(&ctx, e.clone());
             }
             if let Ok(v) = &r {
                 let n = v["keywords"].as_u64().unwrap_or(0);
@@ -3869,7 +3877,7 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
             let what = crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n);
             app.toast(ctx, crate::i18n::tr_format!("Removed {what} from {name}", what = what, name = name));
         }
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
     true
 }
@@ -3999,7 +4007,7 @@ fn show_in_folders(app: &mut LccApp, id: Option<lcc_catalog::PhotoId>) -> Result
 /// is reported in the result's `failed` (and a toast), not as an error.
 pub(crate) fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
     // every way in (menu, shortcut, context menu, the control channel) says why nothing opened
-    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
+    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
 }
 
 fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
@@ -4050,7 +4058,7 @@ fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: b
     if let Some(e) = failed {
         // the copies are in the library already (one undo step): an error would invite a retry
         // that makes another set, so the result says what failed and the toast says why
-        app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+        app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
         return Ok(r);
     }
     match copies.as_slice() {
@@ -4074,12 +4082,12 @@ const MAX_ORIGINALS: usize = 50;
 fn open_original_in(app: &mut LccApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     let r = open_originals(app, p);
     if let Err(e) = &r {
-        app.toast(ctx, e.clone());
+        app.toast_error(ctx, e.clone());
     }
     let r = r?;
     let opened = r.field("opened").as_array().map_or(0, Vec::len);
     match (r.field("failed").as_str(), r.field("opened")[0].field("path").as_str()) {
-        (Some(e), _) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
+        (Some(e), _) => app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         (None, Some(path)) if opened == 1 => {
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             app.toast(ctx, crate::i18n::tr_format!("{name} opened in the other editor", name = name));

@@ -66,6 +66,7 @@ pub use query::{DateGroup, Filter, MatchOp, Person, RatingOp, Sort, SortKey, Tal
 pub use remote::{PreviewEntry, RemoteIdentity, RemoteKey, RemoteTable, SyncState};
 pub use rules::{Match, Rule, RuleSet};
 use serde::{Deserialize, Serialize};
+pub use stacks::StackTop;
 pub use store::{FsStore, MemStore, Store};
 pub use vignetting_maps::{ReferenceState, VignettingMapRecord, reference_photo};
 pub use xmp_state::{SidecarStat, XmpStamp, XmpStatus};

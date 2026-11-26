@@ -2206,7 +2206,7 @@ mod tests {
         h.step();
         assert_eq!(region(&h, ids[0], 1), (lcc_meta::RegionKind::Face, None), "nothing was suggested, so nothing is named");
         assert_eq!(h.app.session.undo.len(), undo, "and nothing to undo");
-        assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("0 of 1")), "the toast says how many it took: {:?}", h.app.ui.toasts);
+        assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("0 of 1")), "the toast says how many it took: {:?}", h.app.ui.toasts);
         // so does a rejection, which changes no photo either: it leaves the face a face (not ignored), and with nothing
         // remembered there is nothing to undo, so the toast carries no Undo
         put_listing(&mut h);
@@ -2216,7 +2216,7 @@ mod tests {
         h.step();
         assert_eq!(region(&h, ids[1], 1), (lcc_meta::RegionKind::Face, None), "not named, not ignored");
         assert_eq!(h.app.session.undo.len(), undo, "a rejection changes no photo");
-        assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("0 of")), "the toast says how many it took: {:?}", h.app.ui.toasts);
+        assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("0 of")), "the toast says how many it took: {:?}", h.app.ui.toasts);
         assert!(h.app.ui.toast_action.is_none(), "nothing was decided, so there is nothing to undo");
         // a group's own two buttons are the batch decisions, met by the same answer; they leave the listing as it is,
         // since a face whose suggestion the engine no longer gives still has one
@@ -3236,7 +3236,7 @@ mod tests {
         let args = calls.lock().unwrap().clone();
         assert_eq!(args.len(), 1);
         assert_eq!(args[0][args[0].len() - 2..], written[..], "the files written go to Photos");
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert!(toast.contains("2 added to Apple Photos album “Trip “2026””"), "{toast}");
         // Export with Previous repeats it
         assert_eq!(h.app.session.last_export.as_ref().unwrap()["addToPhotos"], true);
@@ -3364,11 +3364,11 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(25), "answered at once: {r}");
         assert_eq!(r["result"]["running"], true, "{r}");
         go.send(()).unwrap();
-        while !h.app.ui.toast().is_some_and(|t| t.0.contains("Apple Photos")) {
+        while !h.app.ui.toast().is_some_and(|t| t.text.contains("Apple Photos")) {
             assert!(t0.elapsed() < Duration::from_secs(90), "the outcome is announced");
             h.step();
         }
-        assert_eq!(h.app.ui.toast().unwrap().0, "1 added to Apple Photos album “Slow”");
+        assert_eq!(h.app.ui.toast().unwrap().text, "1 added to Apple Photos album “Slow”");
         if cfg!(target_os = "macos") {
             let t1 = Instant::now();
             let p = json!({"dir": out.to_string_lossy(), "longEdge": 32, "addToPhotos": true});
@@ -3377,7 +3377,7 @@ mod tests {
             assert_eq!(r["result"]["applePhotos"]["running"], true, "{r}");
             assert_eq!(r["result"]["applePhotos"]["job"], 2, "{r}");
             go.send(()).unwrap();
-            while !h.app.ui.toast().is_some_and(|t| t.0.starts_with("1 added to Apple Photos") && !t.0.contains("Slow")) {
+            while !h.app.ui.toast().is_some_and(|t| t.text.starts_with("1 added to Apple Photos") && !t.text.contains("Slow")) {
                 assert!(t1.elapsed() < Duration::from_secs(20), "the outcome is announced");
                 h.step();
             }
@@ -3644,7 +3644,7 @@ mod tests {
         let r = h.request("ui.clickWidget", json!({"id": "button:reloadPreviewOnly:info"}), t);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
-        assert_eq!(h.app.ui.toast().cloned().map(|x| x.0).as_deref(), Some("This raw variant still can't be decoded"));
+        assert_eq!(h.app.ui.toast().cloned().map(|x| x.text).as_deref(), Some("This raw variant still can't be decoded"));
         // a regular photo: no notice
         h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [other.0]}}), t);
         h.app.ui.right = crate::state::RightPanel::Edit;
@@ -4037,7 +4037,7 @@ mod tests {
         h.settle(SETTLE);
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(h.app.ui.toasts.iter().any(|t| t.0.contains(&*dir.to_string_lossy())), "the unreadable folder is reported: {:?}", h.app.ui.toasts);
+        assert!(h.app.ui.toasts.iter().any(|t| t.text.contains(&*dir.to_string_lossy())), "the unreadable folder is reported: {:?}", h.app.ui.toasts);
     }
 
     /// Local: a kept folder stays a root while its subfolders (and other locations) are
@@ -4994,7 +4994,7 @@ mod tests {
                 h.step();
             }
             assert!(h.app.import.is_none(), "finished");
-            let toast = h.app.ui.toast().cloned().map(|t| t.0).unwrap_or_default();
+            let toast = h.app.ui.toast().cloned().map(|t| t.text).unwrap_or_default();
             let photos = &h.app.session.catalog;
             assert_eq!(photos.photos().filter(|p| !p.deleted).count(), 2, "{choice}");
             let old = photos.photo(lcc_catalog::PhotoId(id));
@@ -6297,7 +6297,7 @@ mod tests {
                 let expected = locale.tr(key);
                 assert_eq!(h.request("ui.key", json!({"key": "i", "cmd": true}), t)["ok"], true);
                 assert_eq!(serde_json::to_value(h.app.ui.info_overlay).unwrap(), json!(mode));
-                assert_eq!(h.app.ui.toast().expect("overlay toast").0, expected);
+                assert_eq!(h.app.ui.toast().expect("overlay toast").text, expected);
                 h.step();
                 let painted = h.painted_text();
                 assert!(painted.iter().any(|text| text == expected), "{painted:?}");

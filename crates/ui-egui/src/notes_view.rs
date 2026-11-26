@@ -284,11 +284,20 @@ pub(crate) fn sections_view(ui: &mut egui::Ui, t: &Tokens, open: u64, all: &[Sec
             continue;
         }
         let title = egui::RichText::new(crate::i18n::tr(section.heading)).font(t.semibold(WHATS_NEW_LOOK.h2.0)).color(t.text);
-        let r = egui::CollapsingHeader::new(title).id_salt((id, n)).default_open(n == 0).show(ui, |ui| {
+        // whether the section is open is kept here, under an id of its own: the header's own state
+        // is keyed by the ui it is drawn in, and the dialog's body is another ui once it scrolls
+        // (closing a section taller than the window would open it again in the body that then fits)
+        let open_id = id.with(("open", n));
+        let is_open = ui.data(|data| data.get_temp::<bool>(open_id)).unwrap_or(n == 0);
+        let r = egui::CollapsingHeader::new(title).id_salt((id, n)).open(Some(is_open)).show(ui, |ui| {
             for line in &section.lines {
                 d.line(ui, line);
             }
         });
+        if r.header_response.clicked() {
+            ui.data_mut(|data| data.insert_temp(open_id, !is_open));
+            ui.ctx().request_repaint();
+        }
         crate::widgets::register(ui.ctx(), format!("disclosure:whatsNew-{n}"), r.header_response.rect);
     }
     let mut now = built;

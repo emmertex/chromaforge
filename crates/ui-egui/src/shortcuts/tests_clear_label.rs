@@ -77,7 +77,7 @@ fn the_key_clears_the_selected_photos_label_in_grid_and_loupe() {
         press(&mut app, &ctx);
         assert_eq!(labels(&app), [Some(ColorLabel::Green), None, Some(ColorLabel::Green)], "{view:?}");
         assert_eq!(app.session.undo.len(), 1);
-        assert_eq!(app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
+        assert!(app.ui.toast().is_none(), "the overlay says it, not a toast");
         app.session.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(labels(&app)[1], Some(ColorLabel::Green));
     }

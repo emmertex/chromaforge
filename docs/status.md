@@ -1,6 +1,6 @@
 # Status
 
-> **Last updated:** 2026-11-25 · **Change:** patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
+> **Last updated:** 2026-11-25 · **Change:** patch (checklist 631 rows after Glow); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
 
 The one tracked place for where Chromaforge stands right now. Agents read it first (see `AGENTS.md`, *Session start*)
 and update it in the commit that changes what it says. The detailed phased plan lives in the gitignored
@@ -17,7 +17,7 @@ and update it in the commit that changes what it says. The detailed phased plan 
 | 2 | Never-crash hardening: fuzz targets, checked indexing, allocation caps, SIL round trips | landed (#1328, #1331, #1334, #1337, #1339, #1340); model-reference job in progress |
 | 3 | Camera colour, CR3 variants, lens data, per-model verification | next |
 
-Checklist breadth: **90.3%** of 630 in-scope rows (P0 98.0%, P1 94.8%, P2 80.3%), from `cargo xtask parity`.
+Checklist breadth: **91.2%** of 634 in-scope rows (P0 98.0%, P1 94.8%, P2 82.7%), from `cargo xtask parity`.
 "Ready for real work" stays an estimate of about 60% (see [target-app-parity.md](target-app-parity.md)).
 
 ## Next task
@@ -56,6 +56,7 @@ Same-machine before/after pairs only (`AGENTS.md`, *Testing & performance*). Bud
 | 2026-11-24 | 4.4: first `cargo xtask bench --save-baseline` (render a7m3 24 MP, grid 100k, TIFF ZIP, keyword tree; release) — baseline, no before | Windows 11, heavily loaded by concurrent builds | — | GPU draft drag 3.9–4.1 ms, GPU loupe exposure 13 ms, CPU draft NR 519 ms (load), grid frame 13.2 ms, TIFF ZIP 960 ms, kept keyword tree 0.6 ms; table in perf.md |
 | 2026-11-24 | Grid wheel-scroll frame, 100k photos, 1600×1000 (`wheel_scroll_100k_frame`, release, median / p95 of 120 frames, 3 runs) | Windows 11 x64 desktop, shared with other builds | 3.3–5.3 / 5.1–7.5 ms (grid panel 0.8–1.4 ms) | unchanged: a prefetch-row shortcut measured 3.7–5.3 / 6.4–21 ms and was dropped |
 | 2026-11-24 | 4.5: draft Luminance NR drag, CPU (`ONLY=drag N=9 render_bench`, release, `<PREFIX>_GPU=0`, a7m3 24 MP, draft 1152×768); paired runs of both binaries alternated, median of 4 | Windows 11, shared with other build agents (loaded; no process CPU time on Windows) | 63.8 ms wall (60.5–66.4); single thread 280 ms (268–506) | **33.4 ms** (31.9–34.6); single thread 200 ms (168–259). Still over the 16 ms budget on this loaded machine |
+| 2026-11-25 | Glow stage cost, 24 MP JPEG export and 1600 px loupe (`<PREFIX>_PROFILE=1` render, release, CPU finish; Glow 60 / Spread 45) | Linux CachyOS x64 desktop | CPU finish without Glow 129.4 ms; GPU finish (no Glow) 21.7 ms | CPU finish with Glow 171 ms (bilinear proxy) / 207 ms (Catmull-Rom); export wall 0.36 → 0.40 s (budget 1 s); loupe finish 15.3 ms (budget 60 ms). Glow forces the CPU finish (no GPU kernel yet) |
 | 2026-11-24 | CPU-only stages at 1920×1280 (4.6, `cpu_only_stage_cost`, release): device proof / Even Out | Windows, 16 cores, heavily loaded | plain CPU render 74 ms | device proof +6–12 ms; Even Out spot 34 ms (size 0.05), 223 ms (size 0.20); see perf.md |
 
 | 2026-11-24 | HDR export of a 6000×4000 synthetic image, quality 90 (gain-map paths: `encode_gain_map_file`; single-layer: `encode_deep`; release, 2 rounds) | Linux x64, AMD RYZEN AI MAX+ PRO 395 w/ Radeon 8060S, 32 threads | — (the single-layer PQ paths' code is unchanged by the gain map export; measured here, not against a main build) | AVIF PQ 27.5 / 27.1 s, 6.82 MB; JPEG XL PQ 1.65 / 1.77 s, 6.49 MB; gain map JPEG 125 / 149 ms, 25.3 MB (noise-like image); **new:** AVIF gain map 10.1 / 10.9 s, 9.82 MB; JPEG XL gain map 0.62 / 0.74 s, 5.59 MB |

@@ -38,6 +38,8 @@ pub enum SettingsGroup {
     Primaries,
     Effects,
     Vignette,
+    /// Glow, the Resolve-style bloom (beyond Lightroom).
+    Glow,
     Grain,
     Detail,
     Optics,
@@ -56,7 +58,7 @@ pub enum SettingsGroup {
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 25] = [
+    pub const ALL: [SettingsGroup; 26] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -70,6 +72,7 @@ impl SettingsGroup {
         SettingsGroup::Primaries,
         SettingsGroup::Effects,
         SettingsGroup::Vignette,
+        SettingsGroup::Glow,
         SettingsGroup::Grain,
         SettingsGroup::Detail,
         SettingsGroup::Optics,
@@ -115,6 +118,7 @@ impl SettingsGroup {
             SettingsGroup::Primaries => "Primaries",
             SettingsGroup::Effects => "Effects",
             SettingsGroup::Vignette => "Vignette",
+            SettingsGroup::Glow => "Glow",
             SettingsGroup::Grain => "Grain",
             SettingsGroup::Detail => "Detail",
             SettingsGroup::Optics => "Optics",
@@ -146,6 +150,7 @@ impl SettingsGroup {
             SettingsGroup::Primaries => &["primaries"],
             SettingsGroup::Effects => &["effects"],
             SettingsGroup::Vignette => &["vignette"],
+            SettingsGroup::Glow => &["glow"],
             SettingsGroup::Grain => &["grain"],
             SettingsGroup::Detail => &["detail", "enhance"],
             SettingsGroup::Optics => &["optics"],
@@ -338,6 +343,7 @@ impl SettingsGroup {
             SettingsGroup::Primaries => "primaries",
             SettingsGroup::Effects => "effects",
             SettingsGroup::Vignette => "vignette",
+            SettingsGroup::Glow => "glow",
             SettingsGroup::Grain => "grain",
             SettingsGroup::Detail => "detail",
             SettingsGroup::Optics => "optics",
