@@ -500,7 +500,7 @@ fn summary_line(finder: &Finder) -> String {
     }
     let n: usize = finder.groups.iter().map(|g| g.members.len().saturating_sub(1)).sum();
     tr_format!(
-        "{groups} group{}: {n} photo{} are copies of another photo. The best copy of each group is first and unmarked; click a photo to change what is marked,.",
+        "{groups} group{}: {n} photo{} are copies of another photo. The best copy of each group is first and unmarked; click a photo to change what is marked.",
         if finder.groups.len() == 1 { "" } else { "s" },
         if n == 1 { "" } else { "s" },
         groups = finder.groups.len(),
