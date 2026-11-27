@@ -264,9 +264,44 @@ fn io(e: std::io::Error) -> CatalogError {
 
 /// One log line (without the newline) for op number `seq`.
 pub fn encode_record(seq: u64, op: &Op) -> String {
-    let body = serde_json::to_string(op).unwrap_or_default();
+    record_with_body(seq, &serde_json::to_string(op).unwrap_or_default())
+}
+
+/// One log line (without the newline) for record `seq` holding the op whose JSON is `body`.
+fn record_with_body(seq: u64, body: &str) -> String {
     let crc = crc32fast::hash(body.as_bytes());
     format!("{{\"seq\":{seq},\"crc\":{crc},\"op\":{body}}}")
+}
+
+/// About the most op JSON one log record holds when a large batch is written as several (issue #1361).
+const SPLIT_BODY: usize = 4 << 20;
+/// About the most bytes of records [`Journal::append`] hands to the log at a time.
+const APPEND_CHUNK: usize = 32 << 20;
+
+/// The JSON of the records `op` is written as, each handed to `out`. Every op is one record, but a batch whose JSON
+/// passes [`SPLIT_BODY`]: it is written as consecutive batches of its ops, each about that size at most, which replay
+/// one after the other to what the whole batch does (issue #1361). A Lightroom import of millions of photos is one
+/// batch; as one record it took several copies of gigabytes to write, was longer than a log open reads, and a crash
+/// while it was written lost all of it. A single op inside the batch is never cut.
+fn record_bodies(op: &Op, out: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
+    let Op::Batch { ops } = op else { return out(&serde_json::to_string(op).unwrap_or_default()) };
+    if ops.len() < 2 {
+        return out(&serde_json::to_string(op).unwrap_or_default());
+    }
+    const OPEN: &str = "{\"op\":\"batch\",\"ops\":[";
+    let mut body = String::new();
+    for sub in ops {
+        let json = serde_json::to_string(sub).unwrap_or_default();
+        if !body.is_empty() && body.len().saturating_add(json.len()) > SPLIT_BODY {
+            body.push_str("]}");
+            out(&body)?;
+            body.clear();
+        }
+        body.push_str(if body.is_empty() { OPEN } else { "," });
+        body.push_str(&json);
+    }
+    body.push_str("]}");
+    out(&body)
 }
 
 /// Parse one log line (without the newline). `None` if it's malformed, the CRC doesn't match, or
@@ -747,44 +782,68 @@ impl Journal {
             return Err(CatalogError::Io(format!("{} change(s) are waiting for a snapshot (a catalog log write failed)", self.lost)));
         }
         let t0 = web_time::Instant::now();
-        let mut buf = String::new();
-        let mut seq = self.seq;
-        for op in ops {
-            // a damaged snapshot can claim the last sequence number: refuse rather than wrap
-            seq = seq
-                .checked_add(1)
-                .ok_or_else(|| CatalogError::Corrupt("the catalog's op sequence is exhausted (restore it from a backup)".into()))?;
-            let record = encode_record(seq, op);
-            // JSON has no NaN or infinity: serde writes them as null, which passes the CRC and then fails
-            // to parse, refusing the library as "newer" on the next open. Such an op is refused here
-            // instead, before the log has it (issue #2140).
-            if decode_record(&record).is_none() {
-                return Err(CatalogError::Invalid("an edit holds a value that can't be saved (not a finite number)".into()));
-            }
-            buf.push_str(&record);
-            buf.push('\n');
-        }
         if self.tail_dirty {
             self.store.truncate(LOG, self.log_bytes).map_err(io)?;
             self.tail_dirty = false;
         }
-        if let Err(e) = self.store.append(LOG, buf.as_bytes()) {
-            // Part of the batch may be in the file. Cut it back to the last whole record, so the
+        // The records are handed to the log [`APPEND_CHUNK`] bytes at a time, so a large batch never sits in memory
+        // as one string (issue #1361); all of them or none stay in the log.
+        let tail0 = self.pending.as_ref().map(|p| p.tail.len());
+        let mut buf = String::new();
+        let mut written = 0u64;
+        let mut seq = self.seq;
+        let mut records = 0u64;
+        let mut appended = Ok(());
+        for op in ops {
+            appended = record_bodies(op, &mut |body| {
+                // a damaged snapshot can claim the last sequence number: refuse rather than wrap
+                seq = seq
+                    .checked_add(1)
+                    .ok_or_else(|| CatalogError::Corrupt("the catalog's op sequence is exhausted (restore it from a backup)".into()))?;
+                let record = record_with_body(seq, body);
+                // JSON has no NaN or infinity: serde writes them as null, which passes the CRC and then fails
+                // to parse, refusing the library as "newer" on the next open. Such an op is refused here
+                // instead, before the log has it (issue #2140).
+                if decode_record(&record).is_none() {
+                    return Err(CatalogError::Invalid("an edit holds a value that can't be saved (not a finite number)".into()));
+                }
+                records += 1;
+                buf.push_str(&record);
+                buf.push('\n');
+                if buf.len() >= APPEND_CHUNK {
+                    self.hand_over(&buf)?;
+                    written += buf.len() as u64;
+                    buf.clear();
+                }
+                Ok(())
+            });
+            if appended.is_err() {
+                break;
+            }
+        }
+        if appended.is_ok() && !buf.is_empty() {
+            appended = self.hand_over(&buf);
+            written += buf.len() as u64;
+        }
+        if let Err(e) = appended {
+            // Part of the ops may be in the file. Cut it back to the last whole record before them, so the
             // retry (same seqs) starts on a clean line instead of after a fragment that would
             // read back as damage.
             if let Err(t) = self.store.truncate(LOG, self.log_bytes) {
                 log::error!("catalog: can't cut the log back after a failed append: {t}");
                 self.tail_dirty = true;
             }
-            return Err(io(e));
+            if let (Some(p), Some(len)) = (self.pending.as_mut(), tail0) {
+                p.tail.truncate(len);
+            }
+            return Err(e);
         }
         if let Some(p) = self.pending.as_mut() {
-            p.tail.extend_from_slice(buf.as_bytes());
-            p.tail_records += ops.len() as u64;
+            p.tail_records += records;
         }
         self.seq = seq;
-        self.log_records += ops.len() as u64;
-        self.log_bytes += buf.len() as u64;
+        self.log_records += records;
+        self.log_bytes += written;
         if self.store.log_progress(LOG).is_some() {
             // acknowledged once the store's log thread has synced it
             self.unacked.push_back((self.log_bytes, seq, self.log_records));
@@ -796,7 +855,16 @@ impl Journal {
         self.stats.last_append_ms = ms;
         self.stats.max_append_ms = self.stats.max_append_ms.max(ms);
         if profiling() {
-            eprintln!("catalog: append {} op(s), {} B: {ms:.2} ms", ops.len(), buf.len());
+            eprintln!("catalog: append {} op(s), {records} record(s), {written} B: {ms:.2} ms", ops.len());
+        }
+        Ok(())
+    }
+
+    /// Hand `records` (whole lines) to the log, and to the background snapshot's tail when one is running.
+    fn hand_over(&mut self, records: &str) -> Result<()> {
+        self.store.append(LOG, records.as_bytes()).map_err(io)?;
+        if let Some(p) = self.pending.as_mut() {
+            p.tail.extend_from_slice(records.as_bytes());
         }
         Ok(())
     }
