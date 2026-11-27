@@ -19,6 +19,8 @@ realesrgan-model = ["lcc-denoise-core/realesrgan-model"]
 [dependencies]
 lcc-brand = { workspace = true }
 lcc-denoise-core = { workspace = true }
+# ONNX Runtime when the build has it (feature `lcc-onnxrt/ort`, desktop); otherwise every load says why not
+lcc-onnxrt = { workspace = true }
 # Safe matrix views over the pure-Rust GEMM backend; no BLAS, cc/build scripts
 # or inner thread pool. Its dependencies include architecture-specific assembly.
 faer = { package = "faer-core", version = "=0.17.1", default-features = false, features = ["std"], optional = true }
@@ -32,4 +34,5 @@ rayon = { workspace = true }
 web-time = { workspace = true }
 
 [dev-dependencies]
+lcc-testkit = { workspace = true }
 proptest = { workspace = true }

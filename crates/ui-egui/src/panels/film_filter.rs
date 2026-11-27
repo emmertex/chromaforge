@@ -1,5 +1,5 @@
 //! The filmstrip's own filter (issue #1296), at the right of its source line as in Lightroom Classic:
-//! "Filter", then the flags (picked, unflagged, rejected), the rating operator and five stars, then the
+//! "Filter", then the flags (picked, unflagged, rejected; several can be on), the rating operator and five stars, then the
 //! five colour labels. Every control narrows what the strip (and the grid) show through `library.filter`,
 //! the same command as the Library filter bar; nothing here rates or flags a photo (the toolbar does).
 //! Widget ids: `filmfilter:pick|none|reject`, `filmfilter:ratingOp`, `filmfilter:star{1..5}`,
@@ -41,6 +41,11 @@ pub(crate) fn star_click(current: u8, n: u8) -> u8 {
     if current == n { 0 } else { n.min(5) }
 }
 
+/// The flag filter after a click on `flag`: it joins the set, or leaves it when it was on; ids in strip order.
+pub(crate) fn flag_click(on: &[Flag], flag: Flag) -> Vec<&'static str> {
+    FLAGS.iter().filter(|(_, f, _)| if *f == flag { !on.contains(f) } else { on.contains(f) }).map(|(id, _, _)| *id).collect()
+}
+
 /// Draws the filter at the right of `head`; returns the x where it begins (the source line keeps left of
 /// it), or `head.right()` when the strip is too narrow to carry it.
 pub(crate) fn show(app: &mut LccApp, ui: &egui::Ui, head: Rect, t: &Tokens) -> f32 {
@@ -72,9 +77,10 @@ pub(crate) fn show(app: &mut LccApp, ui: &egui::Ui, head: Rect, t: &Tokens) -> f
         }
         (r, resp.on_hover_text(crate::i18n::tr(tip)))
     };
-    // flags
+    // flags: several can be on (any of them matches), like the colour labels (#1317)
+    let flags_on: Vec<Flag> = f.flags_shown().unwrap_or_default();
     for (id, flag, tip) in FLAGS {
-        let on = f.flag == Some(flag);
+        let on = flags_on.contains(&flag);
         let (r, resp) = cell(x, id, tip, on);
         let color = match flag {
             Flag::Pick if on => t.pick,
@@ -90,7 +96,7 @@ pub(crate) fn show(app: &mut LccApp, ui: &egui::Ui, head: Rect, t: &Tokens) -> f
         };
         paint(&p, r.shrink(2.0), icon, color);
         if resp.clicked() {
-            patch = Some(json!({"flag": if on { Value::Null } else { json!(id) }}));
+            patch = Some(json!({"flag": Value::Null, "flags": flag_click(&flags_on, flag)}));
         }
         x += STEP;
     }
@@ -169,5 +175,13 @@ mod tests {
         assert_eq!(star_click(0, 3), 3);
         assert_eq!(star_click(3, 3), 0);
         assert_eq!(star_click(2, 200), 5);
+    }
+
+    #[test]
+    fn flag_clicks_add_and_remove_flags_from_the_set() {
+        assert_eq!(flag_click(&[], Flag::Pick), vec!["pick"]);
+        assert_eq!(flag_click(&[Flag::Pick], Flag::None), vec!["pick", "none"]);
+        assert_eq!(flag_click(&[Flag::Pick, Flag::None], Flag::Pick), vec!["none"]);
+        assert!(flag_click(&[Flag::Reject], Flag::Reject).is_empty());
     }
 }

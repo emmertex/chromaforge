@@ -64,6 +64,10 @@ rm -rf "$WORK"
 # The cargo binary has a neutral name (app); packages carry the brand's, and the CLI is a link to it.
 stage_binaries "$BIN" "$STAGE/usr/bin"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/$APP" 2>/dev/null || true
+# ONNX Runtime and its WebGPU plug-in (pinned Microsoft builds) for the AI features on the graphics card; the app finds
+# them in ../lib/<binary>/ and runs its own runners without them (docs/onnxruntime.md). None is pinned for riscv64.
+mkdir -p "$STAGE/usr/lib/$APP"
+(cd "$ROOT" && cargo xtask onnxruntime fetch --dest "$STAGE/usr/lib/$APP" --platform "linux-$ARCH")
 brand_render "$HERE/{app_id}.desktop.in" "$STAGE/usr/share/applications/$APP_ID.desktop"
 brand_render "$HERE/{app_id}.mime.xml.in" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 brand_render "$HERE/{app_id}.metainfo.xml.in" "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"

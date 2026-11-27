@@ -74,7 +74,8 @@ fn the_delete_key_in_an_album_removes_from_the_album_only() {
     exec(&mut h, "library.source", json!({"kind": "all"}));
     assert!(h.app.session.visible_cloned().contains(&photo), "All Photos still shows it");
 
-    // one undo brings it back into the album
+    // the view's change is a step of its own (Undo takes it back first), then one undo brings the photo back into the album
+    exec(&mut h, "edit.undo", json!({}));
     exec(&mut h, "edit.undo", json!({}));
     assert!(in_album(&h, album, photo));
 }
