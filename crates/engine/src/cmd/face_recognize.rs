@@ -463,15 +463,17 @@ fn rename_person(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"faces": faces, "photos": photos, "from": from, "to": to, "merged": other}))
 }
 
-/// Photos to look in, from `scope`: absent, the whole library; `"filter"`, the photos the library filter shows (a year,
-/// a folder, an album picked in the sidebar), any person filter aside, so People and a person's page follow the sidebar.
+/// Photos to look in, from `scope`: absent, the whole library; `"filter"`, the photos the library shows (a year, a
+/// folder, a collection picked in the sidebar), any person filter aside, so People and a person's page follow the sidebar.
 type Scope = Option<std::collections::HashSet<u64>>;
 
 fn scope_of(s: &Session, cmd: &str, p: &Value) -> Result<Scope> {
     match p.get("scope") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(v)) if v == "filter" => {
-            let f = lcc_catalog::Filter { person: None, people: Vec::new(), ..s.filter.clone() };
+            // what the People view shows, the sidebar's source included: a folder or a collection is not in `s.filter`
+            // (issue #685)
+            let f = s.people_filter();
             Ok(Some(s.catalog.query(&f, &lcc_catalog::Sort::default()).into_iter().map(|id| id.0).collect()))
         }
         Some(_) => Err(bad(cmd, "`scope` must be \"filter\" or left out")),
@@ -3034,7 +3036,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unnamed Faces",
             [],
             None,
-            "{limit?: 600, scope?: \"filter\", bySuggestion?: false, budgetMs?: 15} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null, similarity: {name, score} | null}], ordered, ready, rejected, scan: {total, judged, complete}, groups?}: the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `similarity` is the best confirmed-person match, including below-threshold matches. Every unnamed face with an embedding is judged against the named ones, `budgetMs` of that per call at most, so a suggestion does not depend on the page a face falls on: `scan` says how many of the library's faces were judged, and whether all of them were (`budgetMs: 0` only reports). With `bySuggestion: true`, `groups` lists every suggested face in the scope under the person suggested ([{name, total, faces: [{photo, index, rect, view, score}]}], the most faces first), not only the listed page's. `view` is the box to show the face by. Name them with `faces.nameFaces`, ignore them with `faces.ignore`",
+            "{limit?: 600, scope?: \"filter\", bySuggestion?: false, budgetMs?: 15} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null, similarity: {name, score} | null}], ordered, ready, rejected, scan: {total, judged, complete}, groups?}: the faces nobody has named (with `scope: \"filter\"`, only in the photos the library shows: the sidebar's source and the filter, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `similarity` is the best confirmed-person match, including below-threshold matches. Every unnamed face with an embedding is judged against the named ones, `budgetMs` of that per call at most, so a suggestion does not depend on the page a face falls on: `scan` says how many of the library's faces were judged, and whether all of them were (`budgetMs: 0` only reports). With `bySuggestion: true`, `groups` lists every suggested face in the scope under the person suggested ([{name, total, faces: [{photo, index, rect, view, score}]}], the most faces first), not only the listed page's. `view` is the box to show the face by. Name them with `faces.nameFaces`, ignore them with `faces.ignore`",
             super::always,
             unnamed
         ),
@@ -3088,7 +3090,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Faces of a Person",
             [],
             None,
-            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos}: the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library filter shows (any person filter aside); `total` still counts the whole library",
+            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos}: the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library shows (the sidebar's source and the filter, any person filter aside); `total` still counts the whole library",
             super::always,
             person
         ),

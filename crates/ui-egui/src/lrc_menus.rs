@@ -362,7 +362,6 @@ const HELP: &[&str] = &[
     "app.discord",
     "---",
     "app.checkForUpdates=Updates…",
-    "app.installUpdate",
     "app.systemInfo",
     "app.openLogFolder",
     "---",
