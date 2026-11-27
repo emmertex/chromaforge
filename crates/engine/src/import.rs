@@ -1394,12 +1394,15 @@ pub fn import_with(s: &mut Session, paths: &[String], opts: &ImportOptions) -> c
         let mut skipped = 0usize;
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let files = crate::cmd::plugins::before_import_files(s, files, &cancel, &mut skipped);
-        let mut prepared = job.prepare_files(files, &cancel);
+        let mut prepared = job.prepare_all(files, &cancel);
         prepared.skipped = walked;
         prepared.plugin_skipped += skipped;
         prepared
     } else {
-        job.prepare(paths, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        let found = job.expand_report(paths);
+        let mut prepared = job.prepare_all(found.files, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        prepared.skipped = Skipped { unreadable: found.unreadable, unsupported: found.unsupported };
+        prepared
     };
     // probes a scan left for files not imported now stay for a later import
     s.import_probes.extend(std::mem::take(&mut job.cache));
@@ -1681,6 +1684,20 @@ impl ImportJob {
         Some(library)
     }
 
+    /// [`ImportJob::prepare_files`] over every file at once, as one batch (one call's items), with
+    /// the copies of several cards or drives run side by side as they are planned (I/O spec §5.6;
+    /// the browser build: [`ImportJob::prepare_files`] itself).
+    fn prepare_all(&mut self, files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.prepare_whole(crate::io_sched::IoContext::global(), files, cancel)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.prepare_files(files, cancel)
+        }
+    }
+
     /// [`ImportJob::prepare`] for files [`ImportJob::expand`] returned.
     pub fn prepare_files(&mut self, files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         use std::sync::atomic::Ordering::Relaxed;
@@ -1802,6 +1819,7 @@ impl ImportJob {
     /// The content hash a file is checked against before it is read: a browsed (Local) record
     /// that joins the library where it is (no transfer) is a duplicate if a library photo, or a
     /// file earlier in this import, has its content ([`ImportJob::sort_file`]).
+    #[cfg(not(target_arch = "wasm32"))]
     fn promote_hash(&self, f: &str) -> Option<&str> {
         match self.by_path.get(f) {
             Some((_, true, Some(h))) if !self.opts.local && !self.transfers(f) => Some(h.as_str()),

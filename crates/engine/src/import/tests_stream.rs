@@ -235,6 +235,45 @@ fn parity_with(tag: &str, mode: ImportMode, tune: impl Fn(&mut ImportOptions), b
     }
 }
 
+/// `library.import`'s one batch of every file: what one `prepare_files` call gives (copy, move,
+/// rename), in both orders.
+#[test]
+fn one_batch_of_every_file_matches_one_call() {
+    let tunes: [(&str, ImportMode, fn(&mut ImportOptions)); 3] = [
+        ("whole-copy", ImportMode::Copy, |_| {}),
+        ("whole-move", ImportMode::Move, |_| {}),
+        ("whole-rename", ImportMode::Copy, |o| {
+            o.rename = Some("shot-{seq:3}".into());
+            o.organize = Organize::Template("{folder}".into());
+        }),
+    ];
+    for (tag, mode, tune) in tunes {
+        for order in 0..2 {
+            let fresh = |name: &str| {
+                let root = temp_root(&format!("{tag}-{order}-{name}"));
+                let (in_order, mixed) = two_cards(&root);
+                let mut opts = options(&root, mode);
+                tune(&mut opts);
+                (root, if order == 0 { in_order } else { mixed }, opts)
+            };
+            let (root, files, opts) = fresh("old");
+            let want = run_batches(&root, &files, &opts, files.len(), false);
+            let _ = std::fs::remove_dir_all(&root);
+            for i in 0..2 {
+                let (root, files, opts) = fresh(&format!("new{i}"));
+                let ctx = context(&root);
+                let mut s = session(&root, false);
+                let mut job = ImportJob::new(&mut s, opts.clone()).unwrap();
+                let now = job.now().to_string();
+                let p = job.prepare_whole(&ctx, files.clone(), &AtomicBool::new(false));
+                let got = commit(&root, &opts, s, &now, vec![p]);
+                let _ = std::fs::remove_dir_all(&root);
+                assert_eq!(got, want, "{tag}, order {order}, run {i}");
+            }
+        }
+    }
+}
+
 /// Copy into one folder: pairs keep their stems, the backup card's files are duplicates of the
 /// first card's copies, the name on both cards becomes `IMG_0100-1.png`, the unreadable file
 /// fails in its place.

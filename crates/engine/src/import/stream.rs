@@ -190,6 +190,21 @@ impl ImportJob {
         self.prepare_streamed(IoContext::global(), files, cancel, Lookahead::new(), &mut emit);
     }
 
+    /// The stream as one batch of every file: what one [`ImportJob::prepare_files`] call gives (the
+    /// same planning, the same items), its reads all made first as that call makes them, its copies
+    /// run as they are planned (one after another only where a name family or a content needs it)
+    /// instead of in flushes. A cancel before it begins gives an empty batch.
+    pub(crate) fn prepare_whole(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &AtomicBool) -> Prepared {
+        let n = files.len().max(1);
+        let look = Lookahead { batch: n, per_volume: n, batches: 1 };
+        let mut out = None;
+        self.prepare_streamed(ctx, files, cancel, look, &mut |p| {
+            out = Some(p);
+            true
+        });
+        out.unwrap_or_default()
+    }
+
     pub(crate) fn prepare_streamed(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &AtomicBool, look: Lookahead, emit: Emit<'_>) {
         if files.is_empty() {
             return;
