@@ -51,6 +51,11 @@ pub struct LoupeRender {
     pub latency_ms: f64,
 }
 
+/// How a photo's texture is sampled: smoothly when it is drawn smaller than its pixels, but past 100 % each pixel as
+/// a square (#1479), so a zoomed view shows the pixels the export will have rather than a blur between them, and a
+/// crop doesn't change how the same pixels look.
+pub const PHOTO_TEXTURE: egui::TextureOptions = egui::TextureOptions { magnification: egui::TextureFilter::Nearest, ..egui::TextureOptions::LINEAR };
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
     Thumb(PhotoId),
@@ -961,7 +966,7 @@ impl Renderer {
             let (Some(_), Some(frame)) = (t.native, self.native_frames.get(slot)) else { continue };
             let Some(img) = screen.read(frame) else { continue };
             let img = Arc::new(img);
-            t.tex.set(img.clone(), egui::TextureOptions::LINEAR);
+            t.tex.set(img.clone(), PHOTO_TEXTURE);
             t.pixels = Some(img);
             t.native = None;
             done.push(*slot);
@@ -1714,7 +1719,7 @@ impl Renderer {
     fn tile_tex(&self, ctx: &egui::Context, key: crate::region::TileKey, img: &lcc_raster::Rgba8, ms: f64) -> Tex {
         let color = std::sync::Arc::new(color_image(img));
         let pixels = self.keep_pixels.then(|| color.clone());
-        let tex = ctx.load_texture(format!("tile {:?} {:?}", key.tile, key.pane), color, egui::TextureOptions::LINEAR);
+        let tex = ctx.load_texture(format!("tile {:?} {:?}", key.tile, key.pane), color, PHOTO_TEXTURE);
         Tex {
             key: key.look,
             photo: key.photo,
@@ -2258,7 +2263,7 @@ impl Renderer {
             }
             match self.textures.get_mut(&slot) {
                 Some(t) => {
-                    t.tex.set(color, egui::TextureOptions::LINEAR);
+                    t.tex.set(color, PHOTO_TEXTURE);
                     t.native = None;
                     t.pixels = pixels;
                     t.key = r.key;
@@ -2271,7 +2276,7 @@ impl Renderer {
                     t.placement = r.placement;
                 }
                 None => {
-                    let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
+                    let tex = ctx.load_texture(name, color, PHOTO_TEXTURE);
                     self.textures.insert(
                         slot,
                         Tex {
@@ -4375,6 +4380,31 @@ mod stage_budget_tests {
         assert!(m["stageCaches"]["budgetBytes"].as_u64().unwrap() > 0, "{m}");
         assert_eq!(m["stageCaches"]["trimmed"], 0);
         assert!(m["stageCaches"]["sharedSourceBytes"].is_u64(), "the one device copy of a big original is reported: {m}");
+    }
+}
+
+#[cfg(test)]
+mod zoom_sampling_tests {
+    use super::*;
+
+    /// A zoomed-in tile shows each photo pixel as a square past 100 % (#1479): magnified texels are not blended.
+    #[test]
+    fn a_zoomed_tile_is_magnified_without_blending() {
+        let ctx = egui::Context::default();
+        let mut r = Renderer::default();
+        let key = crate::region::TileKey {
+            photo: lcc_catalog::PhotoId(1),
+            pane: 0,
+            full: (64, 64),
+            tile: crate::region::TileId { col: 0, row: 0 },
+            look: 1,
+        };
+        let img = lcc_raster::Rgba8 { width: 2, height: 2, data: vec![255; 16] };
+        r.tile_placeholder(&ctx, key, &img);
+        let tex = r.tiles.values().next().expect("the tile");
+        let meta = ctx.tex_manager().read().meta(tex.tex.id()).cloned().expect("registered");
+        assert_eq!(meta.options.magnification, egui::TextureFilter::Nearest);
+        assert_eq!(meta.options.minification, egui::TextureFilter::Linear, "smooth when drawn smaller");
     }
 }
 
