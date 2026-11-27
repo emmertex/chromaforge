@@ -637,3 +637,41 @@ fn a_reference_replaces_only_the_image_areas_it_covers() {
     assert_eq!((r["replaced"].clone(), r["keptForOtherAreas"].clone()), (json!([]), json!([id(&fx).as_str()])));
     assert_eq!((state(&b.s, &fx), state(&b.s, &dx2)), (Some(false), Some(false)));
 }
+
+/// The reference keeps the SHA-1 its file was measured with only where the SHA-1 back-fill would give
+/// it one (`convert::takes_sha1`: not a virtual copy), queued for the Immich lookup like any other new
+/// SHA-1; a malformed one is left out instead of failing the whole step.
+#[test]
+fn the_reference_keeps_its_sha1_as_the_back_fill_would() {
+    use crate::cmd::vignetting_calibration::{Measured, commit_measured};
+    use lcc_catalog::{Op, PhotoId};
+    let mut b = bench("ref-sha1", false);
+    let pass = lcc_raw::vignetting_plausibility::Plausibility::judge(lcc_raw::vignetting_plausibility::Metrics {
+        level: 0.3,
+        falloff: 1.0,
+        ..Default::default()
+    });
+    let measured = |seed: f64, sha1: Option<&str>| {
+        let mut m = area_map([0, 0, W, H], seed);
+        m.source.sha1 = sha1.map(str::to_string);
+        Measured::for_tests(m, pass.clone())
+    };
+    let hex = "0123456789abcdef0123456789abcdef01234567";
+    let reference = PhotoId(b.reference);
+    b.s.apply_system(Op::SetSha1 { id: reference, sha1: None }).unwrap();
+    // a virtual copy of the reference: the file is its master's
+    let mut copy = (**b.s.catalog.photo(reference).unwrap()).clone();
+    copy.id = PhotoId(9000);
+    copy.copy_of = Some(reference);
+    b.s.apply_system(Op::AddPhoto { photo: Box::new(copy) }).unwrap();
+    b.s.remote.link_queue.clear();
+    commit_measured(&mut b.s, PhotoId(9000), measured(1.0, Some(hex)), false, true).unwrap();
+    assert_eq!(b.s.catalog.photo(PhotoId(9000)).unwrap().sha1, None, "a virtual copy takes none");
+    // malformed: the calibration is still made
+    commit_measured(&mut b.s, reference, measured(1.1, None), false, true).unwrap();
+    assert_eq!(b.s.catalog.photo(reference).unwrap().sha1, None);
+    assert!(b.s.remote.link_queue.is_empty());
+    commit_measured(&mut b.s, reference, measured(1.2, Some(hex)), false, true).unwrap();
+    assert_eq!(b.s.catalog.photo(reference).unwrap().sha1.as_deref(), Some(hex));
+    assert_eq!(b.s.remote.link_queue, [reference], "queued for the Immich checksum lookup");
+}

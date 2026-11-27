@@ -375,7 +375,21 @@ impl LightroomJob {
 }
 
 /// Apply prepared data on the owner thread.  No source, archive or index filesystem work occurs.
-pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+pub fn commit_prepared(s: &mut crate::Session, prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+    // diagnostics (issue #1363): once per catalog import, so `critical` (on disk before it starts); ends with its real
+    // outcome (`cancelled` for a cancel) on every path
+    let photos = prepared.data.photos.len() as u64;
+    lcc_diag::traced(
+        lcc_diag::Level::Critical,
+        lcc_diag::Subsystem::Commit,
+        "lightroom_commit",
+        &[("photos", lcc_diag::Val::U64(photos))],
+        crate::diag_outcome,
+        |_| commit_prepared_inner(s, prepared),
+    )
+}
+
+fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
     if prepared.cancelled {
         prepared.normal.rollback();
         return Err(cancelled());
@@ -433,7 +447,13 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
         report["originalsToRead"] = serde_json::json!(prepared.originals_to_read);
     }
     let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
-    let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
+    let bytes = if path.is_some() {
+        Some(lcc_diag::traced(lcc_diag::Level::Normal, lcc_diag::Subsystem::Commit, "index_json", &[], crate::diag_outcome, |_| {
+            serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))
+        })?)
+    } else {
+        None
+    };
     Ok(LightroomCompletion { report, finalization: LightroomArchiveFinalization { path, bytes } })
 }
 

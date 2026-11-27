@@ -27,6 +27,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **Full size**: the cropped native size; never upscaled.
 - **Resize to**: **Dimensions**, **Width & Height**, **Long Edge**, **Short Edge**, **Megapixels**, **Percentage**.
 - **Don't enlarge** stops small photos growing.
+- A raw exported at less than about half its sensor's size (up to about 3,500 px from a 45 MP camera, 2,600 px from 24 MP) is read at half resolution, two by two photosites averaged, and resized once to the output: as sharp as reading the whole sensor, and much faster. Larger sizes, and tight crops, read the whole sensor.
 - **Resolution (ppi)** is written into the file.
 - Limits: 65,535 px an edge; enlargements stop at 512 megapixels and are refused if memory is short.
 

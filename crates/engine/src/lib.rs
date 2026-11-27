@@ -241,6 +241,11 @@ pub enum EngineError {
     Other(String),
 }
 
+/// The diagnostics outcome of an engine error (issue #1363): a cancel is `cancelled`, anything else `failed`.
+pub(crate) fn diag_outcome(e: &EngineError) -> lcc_diag::Outcome {
+    if matches!(e, EngineError::Cancelled(_)) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Failed }
+}
+
 pub type Result<T> = std::result::Result<T, EngineError>;
 
 /// One undo step: the inverse op and a label.
@@ -2920,6 +2925,8 @@ mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
 #[cfg(test)]
+mod tests_export_binning;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
@@ -3058,6 +3065,8 @@ mod tests_profile_manager;
 mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
+#[cfg(test)]
+mod tests_reload_sha1;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]
