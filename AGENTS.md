@@ -82,7 +82,9 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
   or an FFI helper crate that follows the `unsafe` rules under "Never crash"; every target it doesn't build on (always
   the web build) still builds and works without it, with the feature greyed out and a note saying why; its licence
   passes `deny.toml`; `NOTICE` credits it; and it is listed here. Hostile input reaching it gets the same no-panic,
-  no-crash tests as our own decoders. Approved: LibRaw (raw decode, opt-in), libwebp (lossy WebP export, #1482).
+  no-crash tests as our own decoders. Approved: LibRaw (raw decode, opt-in), libwebp (lossy WebP export, #1482),
+  ONNX Runtime + its WebGPU plug-in (AI models on the GPU, #491: `crates/onnxrt`, feature `ort`, loaded at run time,
+  [`docs/onnxruntime.md`](docs/onnxruntime.md)).
   **Plug-ins are exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)),
   any language that compiles to WASM, own licence, untrusted input to the host.
 - **Layering** (`plan/architecture.md` §3, `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.

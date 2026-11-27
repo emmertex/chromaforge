@@ -1,0 +1,26 @@
+[package]
+name = "lcc-onnxrt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ONNX Runtime (L0): runs .onnx models on the GPU (DirectML, CoreML, CUDA) or ONNX Runtime's CPU kernels, loading the runtime library at run time; without the `ort` feature, or without the library, every call says why it is unavailable and callers use their pure-Rust runners"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# ONNX Runtime through the `ort` crate. The library (onnxruntime.dll / libonnxruntime.so / .dylib, MIT) is loaded when
+# first needed, so the build stays pure Rust and nothing is downloaded at build time. Desktop only.
+ort = ["dep:ort"]
+
+[dependencies]
+lcc-brand = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "api-24", "directml", "coreml", "cuda"] }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
