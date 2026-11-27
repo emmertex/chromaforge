@@ -22,17 +22,59 @@ use serde_json::Value;
 
 use crate::lightroom_catalog::{CatalogImport, CatalogPhoto};
 
-/// Maximum size of one complete archive on disk, including format header.
-pub const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
-/// Maximum total size retained in managed archives.
+/// The least one archive may take on disk, including its format header, wherever it is saved: the fixed limit
+/// every archive had before it was derived from the drive (issue #1312).
+pub const MIN_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
+/// The largest archive when the drive's free space can't be told.
+const ARCHIVE_BYTES_UNKNOWN_DRIVE: u64 = 4 << 30;
+/// How many times its size on disk an archive's JSON may be. Deflate never does better than about 1,000:1, and the
+/// archive's JSON about 10:1; this bounds the time spent compressing, not the disk.
+const MAX_JSON_PER_DISK_BYTE: u64 = 64;
+/// Maximum total size retained in managed archives (the newest is always kept, however big).
 pub const MAX_TOTAL_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 /// Maximum number of managed archives retained.
 pub const MAX_MANAGED_ARCHIVES: usize = 8;
 
-/// Why [`store`] stored no archive.
+/// The most one archive saved in `directory` may take on disk ([`archive_limit`] for this drive).
+pub fn archive_limit_for(directory: &Path) -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEST_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    archive_limit(lcc_sysmem::free_disk_space(directory))
+}
+
+/// The most one archive may take on disk (issue #1312): a quarter of the drive's free space (`free`), so the archive
+/// grows with the catalog instead of being dropped past a fixed size, and never less than [`MIN_ARCHIVE_BYTES`]. The
+/// archive is written from what the import already holds in memory, so the catalog's size bounds it already; this
+/// keeps a huge one from filling the drive.
+pub fn archive_limit(free: Option<u64>) -> u64 {
+    free.map_or(ARCHIVE_BYTES_UNKNOWN_DRIVE, |free| free / 4).max(MIN_ARCHIVE_BYTES)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The archive limit for this test thread, instead of the drive's.
+    static TEST_LIMIT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make [`archive_limit_for`] answer `limit` on this thread until the guard is dropped.
+#[cfg(test)]
+pub(crate) fn test_limit(limit: u64) -> impl Drop {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_LIMIT.with(|cell| cell.set(None));
+        }
+    }
+    TEST_LIMIT.with(|cell| cell.set(Some(limit)));
+    Reset
+}
+
+/// Why no archive was stored.
 #[derive(Debug)]
 pub enum StoreError {
-    /// The archive would pass [`MAX_ARCHIVE_BYTES`], as JSON or on disk.
+    /// The archive would pass its limit ([`archive_limit`]), as JSON or on disk.
     TooBig,
     /// Anything else, such as a folder or file that can't be written.
     Failed(String),
@@ -58,9 +100,9 @@ impl std::fmt::Display for StoreError {
 pub enum Kept {
     /// The whole archive.
     All(Stored),
-    /// The archive without history-step and snapshot settings (`text`): with them it passed [`MAX_ARCHIVE_BYTES`].
+    /// The archive without history-step and snapshot settings (`text`): with them it passed its limit.
     WithoutSettings(Stored),
-    /// No archive: it passed [`MAX_ARCHIVE_BYTES`] even without them.
+    /// No archive: it passed its limit even without them.
     Nothing,
 }
 
@@ -92,27 +134,27 @@ const IO_BUFFER: usize = 16 * 1024;
 /// The operation is safe to call before catalog mutation.  It rejects a
 /// symlink directory, writes only `lightroom-import-<number>.lca`, compares the
 /// complete bounded byte stream with recent managed archives, and retains at
-/// most [`MAX_MANAGED_ARCHIVES`] and [`MAX_TOTAL_ARCHIVE_BYTES`].  Legacy
-/// `lightroom-import-*.json` files are deliberately ignored and preserved for
-/// an explicit caller warning.
+/// most [`MAX_MANAGED_ARCHIVES`] and [`MAX_TOTAL_ARCHIVE_BYTES`] (or just the new one, when it alone is bigger).
+/// Legacy `lightroom-import-*.json` files are deliberately ignored and preserved for an explicit caller warning.
+#[cfg(test)]
 pub fn store(directory: &Path, data: &CatalogImport) -> Result<Stored, StoreError> {
-    store_with(directory, data, true)
+    store_with(directory, data, true, archive_limit_for(directory))
 }
 
-/// [`store`], with the `text` of history steps and snapshots only when `settings`.
-fn store_with(directory: &Path, data: &CatalogImport, settings: bool) -> Result<Stored, StoreError> {
+/// [`store`], with the `text` of history steps and snapshots only when `settings`, within `limit` bytes on disk.
+fn store_with(directory: &Path, data: &CatalogImport, settings: bool, limit: u64) -> Result<Stored, StoreError> {
     prepare_directory(directory)?;
     let mut managed = managed_files(directory)?;
     managed.sort_by_key(|entry| entry.index);
 
     let temporary = temporary_path(directory)?;
-    write_archive(&temporary, data, settings).inspect_err(|_| {
+    write_archive(&temporary, data, settings, limit).inspect_err(|_| {
         let _ = remove_managed_file(&temporary);
     })?;
 
     let recent = managed.iter().rev().take(MAX_MANAGED_ARCHIVES);
     for entry in recent {
-        let same = match same_bounded(&temporary, &entry.path) {
+        let same = match same_bounded(&temporary, &entry.path, limit) {
             Ok(same) => same,
             Err(error) => {
                 let _ = remove_managed_file(&temporary);
@@ -155,7 +197,7 @@ fn store_with(directory: &Path, data: &CatalogImport, settings: bool) -> Result<
     let mut after = managed;
     after.push(new_entry);
     after.sort_by_key(|entry| entry.index);
-    let retirees = match retirement_set(&after) {
+    let retirees = match retirement_set_protected(&after, Some(&destination)) {
         Ok(retirees) => retirees,
         Err(error) => {
             let _ = remove_managed_file(&temporary);
@@ -208,15 +250,15 @@ fn retire(quarantined: &[(PathBuf, PathBuf)]) -> Vec<String> {
 }
 
 /// Store source data when possible, so catalog import can still complete. An archive past
-/// [`MAX_ARCHIVE_BYTES`] is stored again without the history-step and snapshot settings, which
-/// can be most of a catalog's data; one still too big is not stored at all.
-pub fn store_best_effort(directory: &Path, data: &CatalogImport) -> Result<Kept, String> {
-    match store(directory, data) {
+/// `limit` ([`archive_limit_for`] the folder) is stored again without the history-step and snapshot
+/// settings, which can be most of a catalog's data; one still too big is not stored at all.
+pub fn store_best_effort(directory: &Path, data: &CatalogImport, limit: u64) -> Result<Kept, String> {
+    match store_with(directory, data, true, limit) {
         Ok(stored) => return Ok(Kept::All(stored)),
         Err(StoreError::TooBig) => {}
         Err(StoreError::Failed(why)) => return Err(why),
     }
-    match store_with(directory, data, false) {
+    match store_with(directory, data, false, limit) {
         Ok(stored) => Ok(Kept::WithoutSettings(stored)),
         Err(StoreError::TooBig) => Ok(Kept::Nothing),
         Err(StoreError::Failed(why)) => Err(why),
@@ -299,11 +341,11 @@ fn next_destination(directory: &Path, mut index: u64) -> Result<PathBuf, String>
     Err("no safe managed archive name available".into())
 }
 
-fn write_archive(path: &Path, data: &CatalogImport, settings: bool) -> Result<(), StoreError> {
+fn write_archive(path: &Path, data: &CatalogImport, settings: bool, limit: u64) -> Result<(), StoreError> {
     lcc_catalog::safe_file::write_atomic_with(path, &mut |raw| {
-        let mut bounded = BoundedWriter { inner: raw, total: 0 };
+        let mut bounded = BoundedWriter { inner: raw, total: 0, limit };
         bounded.write_all(HEADER)?;
-        let mut compressor = ZlibWriter::new(&mut bounded);
+        let mut compressor = ZlibWriter::new(&mut bounded, limit.saturating_mul(MAX_JSON_PER_DISK_BYTE));
         serde_json::to_writer(&mut compressor, &ArchiveRef(data, settings)).map_err(json_io)?;
         compressor.finish()?;
         Ok(())
@@ -323,12 +365,13 @@ fn json_io(error: serde_json::Error) -> io::Error {
 struct BoundedWriter<'a> {
     inner: &'a mut dyn Write,
     total: u64,
+    limit: u64,
 }
 
 impl Write for BoundedWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let next = self.total.checked_add(bytes.len() as u64).ok_or_else(limit_error)?;
-        if next > MAX_ARCHIVE_BYTES {
+        if next > self.limit {
             return Err(limit_error());
         }
         self.inner.write_all(bytes)?;
@@ -341,13 +384,13 @@ impl Write for BoundedWriter<'_> {
     }
 }
 
-/// The archive writers' error when the archive would pass [`MAX_ARCHIVE_BYTES`].
+/// The archive writers' error when the archive would pass its limit.
 #[derive(Debug)]
 struct TooBig;
 
 impl std::fmt::Display for TooBig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Lightroom archive exceeds {} MiB", MAX_ARCHIVE_BYTES >> 20)
+        f.write_str("Lightroom archive exceeds its size limit")
     }
 }
 
@@ -361,12 +404,14 @@ struct ZlibWriter<'a, 'b> {
     sink: &'a mut BoundedWriter<'b>,
     compressor: CompressorOxide,
     plain: u64,
+    /// The most JSON compressed, at most [`MAX_JSON_PER_DISK_BYTE`] times the archive's limit.
+    plain_limit: u64,
 }
 
 impl<'a, 'b> ZlibWriter<'a, 'b> {
-    fn new(sink: &'a mut BoundedWriter<'b>) -> ZlibWriter<'a, 'b> {
+    fn new(sink: &'a mut BoundedWriter<'b>, plain_limit: u64) -> ZlibWriter<'a, 'b> {
         let flags = create_comp_flags_from_zip_params(6, 15, 0);
-        ZlibWriter { sink, compressor: CompressorOxide::new(flags), plain: 0 }
+        ZlibWriter { sink, compressor: CompressorOxide::new(flags), plain: 0, plain_limit }
     }
 
     fn run(&mut self, input: &[u8], flush: MZFlush) -> io::Result<()> {
@@ -409,7 +454,7 @@ impl Write for ZlibWriter<'_, '_> {
             return Ok(0);
         }
         let next = self.plain.checked_add(bytes.len() as u64).ok_or_else(limit_error)?;
-        if next > MAX_ARCHIVE_BYTES {
+        if next > self.plain_limit {
             return Err(limit_error());
         }
         self.run(bytes, MZFlush::None)?;
@@ -422,7 +467,7 @@ impl Write for ZlibWriter<'_, '_> {
     }
 }
 
-fn same_bounded(left: &Path, right: &Path) -> io::Result<bool> {
+fn same_bounded(left: &Path, right: &Path, limit: u64) -> io::Result<bool> {
     let left_meta = fs::symlink_metadata(left)?;
     let right_meta = fs::symlink_metadata(right)?;
     if left_meta.file_type().is_symlink() || right_meta.file_type().is_symlink() || !left_meta.is_file() || !right_meta.is_file() {
@@ -430,7 +475,7 @@ fn same_bounded(left: &Path, right: &Path) -> io::Result<bool> {
     }
     let left_len = left_meta.len();
     let right_len = right_meta.len();
-    if left_len != right_len || left_len > MAX_ARCHIVE_BYTES {
+    if left_len != right_len || left_len > limit {
         return Ok(false);
     }
     let mut left = File::open(left)?;
@@ -452,6 +497,7 @@ fn same_bounded(left: &Path, right: &Path) -> io::Result<bool> {
     }
 }
 
+#[cfg(test)]
 fn retirement_set(entries: &[Managed]) -> Result<Vec<Managed>, String> {
     retirement_set_protected(entries, None)
 }
@@ -460,8 +506,11 @@ fn retirement_set_protected(entries: &[Managed], protected: Option<&Path>) -> Re
     let mut ordered = entries.to_vec();
     ordered.sort_by_key(|entry| entry.index);
     let mut total = ordered.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.size)).ok_or("archive size overflow")?;
+    // an archive bigger than the total alone is kept: retention retires older archives, never the one it protects
+    let kept = protected.and_then(|path| ordered.iter().find(|entry| entry.path == path)).map_or(0, |entry| entry.size);
+    let most = MAX_TOTAL_ARCHIVE_BYTES.max(kept);
     let mut retirees = Vec::new();
-    while ordered.len() > MAX_MANAGED_ARCHIVES || total > MAX_TOTAL_ARCHIVE_BYTES {
+    while ordered.len() > MAX_MANAGED_ARCHIVES || total > most {
         let Some(position) = ordered.iter().position(|entry| protected.is_none_or(|path| entry.path != path)) else {
             return Err("cannot satisfy archive retention limit".into());
         };
@@ -724,11 +773,15 @@ mod tests {
     #[test]
     fn rejects_oversize_before_creating_archive() {
         let path = tempdir();
-        let input = data("x".repeat((MAX_ARCHIVE_BYTES as usize) + 1));
-        assert!(matches!(store(&path, &input), Err(StoreError::TooBig)), "an oversize archive is told apart by its error");
+        let limit = 64 << 10;
+        let input = data("x".repeat((limit * MAX_JSON_PER_DISK_BYTE) as usize + 1));
+        assert!(matches!(store_with(&path, &input, true, limit), Err(StoreError::TooBig)), "an oversize archive is told apart by its error");
         assert_eq!(managed_count(&path), 0);
         fs::remove_dir_all(path).unwrap();
     }
+
+    /// A limit whose JSON bound (32 MiB) [`large_catalog`] passes with its settings and fits without them.
+    const SMALL_LIMIT: u64 = 512 << 10;
 
     /// 5,000 photos with 8 KiB of history settings each: about 40 MiB of JSON.
     fn large_catalog(history: bool) -> CatalogImport {
@@ -762,7 +815,7 @@ mod tests {
     #[test]
     fn an_archive_too_big_with_its_history_settings_is_kept_without_them() {
         let path = tempdir();
-        let kept = store_best_effort(&path, &large_catalog(true)).unwrap();
+        let kept = store_best_effort(&path, &large_catalog(true), SMALL_LIMIT).unwrap();
         let Kept::WithoutSettings(Stored { path: archive, .. }) = kept else { panic!("the archive should be kept without settings, not {kept:?}") };
         let decoded = crate::lightroom_fixture::read_archive(&archive);
         let photos = decoded["photos"].as_array().unwrap();
@@ -777,7 +830,7 @@ mod tests {
     #[test]
     fn large_catalog_is_best_effort_and_does_not_abort_import() {
         let path = tempdir();
-        assert_eq!(store_best_effort(&path, &large_catalog(false)).unwrap(), Kept::Nothing, "too big even without history settings");
+        assert_eq!(store_best_effort(&path, &large_catalog(false), SMALL_LIMIT).unwrap(), Kept::Nothing, "too big even without history settings");
         assert_eq!(managed_count(&path), 0);
         fs::remove_dir_all(path).unwrap();
     }
@@ -793,7 +846,7 @@ mod tests {
         {
             let _full = lcc_catalog::safe_file::fail_writes_after(0);
             assert!(matches!(store(&folder, &rich_data()), Err(StoreError::Failed(_))), "a full disk while writing");
-            assert!(store_best_effort(&folder, &rich_data()).is_err(), "a failure is an error, not a skipped archive");
+            assert!(store_best_effort(&folder, &rich_data(), SMALL_LIMIT).is_err(), "a failure is an error, not a skipped archive");
         }
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 0, "a failed write leaves nothing behind");
         fs::remove_dir_all(path).unwrap();
@@ -806,7 +859,7 @@ mod tests {
         let bytes = fs::read(archive).unwrap();
         assert!(bytes.starts_with(HEADER));
         assert_eq!(crate::lightroom_fixture::ARCHIVE_HEADER, HEADER, "the fixture reads archives with this module's header");
-        let json = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&bytes[HEADER.len()..], MAX_ARCHIVE_BYTES as usize).unwrap();
+        let json = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&bytes[HEADER.len()..], 1 << 30).unwrap();
         let decoded: Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(decoded["version"], serde_json::json!(FORMAT_VERSION));
         assert_eq!(decoded["source"], serde_json::json!("source.lrcat"));
@@ -840,6 +893,26 @@ mod tests {
         let retirees = retirement_set(&entries).unwrap();
         assert_eq!(retirees.len(), 3);
         assert_eq!(retirees.iter().map(|entry| entry.index).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    /// The newest archive is kept however big it is (issue #1312): retention retires the older ones around it.
+    #[test]
+    fn retention_keeps_a_new_archive_bigger_than_the_total() {
+        let mut entries: Vec<_> =
+            (0..3u64).map(|index| Managed { index, path: PathBuf::from(format!("lightroom-import-{index}.lca")), size: 20 * 1024 * 1024 }).collect();
+        let newest = PathBuf::from("lightroom-import-3.lca");
+        entries.push(Managed { index: 3, path: newest.clone(), size: 3 * MAX_TOTAL_ARCHIVE_BYTES });
+        let retirees = retirement_set_protected(&entries, Some(&newest)).unwrap();
+        assert_eq!(retirees.iter().map(|entry| entry.index).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    /// The limit is a quarter of the drive's free space, never below the old fixed 32 MiB.
+    #[test]
+    fn the_archive_limit_follows_the_drive() {
+        assert_eq!(archive_limit(Some(0)), MIN_ARCHIVE_BYTES, "a full drive still allows the old limit (the write then fails)");
+        assert_eq!(archive_limit(Some(100 << 30)), 25 << 30);
+        assert_eq!(archive_limit(None), ARCHIVE_BYTES_UNKNOWN_DRIVE);
+        assert_eq!(archive_limit(Some(u64::MAX)), u64::MAX / 4);
     }
 
     #[test]

@@ -144,16 +144,25 @@ fn the_filmstrip_header_filters_by_flag_rating_and_label_in_lightroom_order() {
     let r = h.request("ui.clickWidget", json!({"id": "filmfilter:pick"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    assert_eq!(h.app.session.filter.flag, Some(lcc_catalog::Flag::Pick));
+    assert_eq!(h.app.session.filter.flags_shown(), Some(vec![lcc_catalog::Flag::Pick]));
     let vis = h.app.session.visible_cloned();
     assert!(vis.contains(&picked) && !vis.contains(&other), "{vis:?}");
     assert!(vis.iter().all(|id| h.app.session.catalog.photo(*id).unwrap().flag == lcc_catalog::Flag::Pick), "only picks: {vis:?}");
     assert_eq!(h.app.session.catalog.photo(other).unwrap().flag, lcc_catalog::Flag::None, "a filter click flags nothing");
-    // a second click lifts it
-    let r = h.request("ui.clickWidget", json!({"id": "filmfilter:pick"}), T);
+    // a second flag joins the first (#1317): picked or unflagged, the rejected ones hidden
+    let r = h.request("ui.clickWidget", json!({"id": "filmfilter:none"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    assert_eq!(h.app.session.filter.flag, None);
+    let vis = h.app.session.visible_cloned();
+    assert!(vis.contains(&picked) && vis.contains(&other), "{vis:?}");
+    assert!(vis.iter().all(|id| h.app.session.catalog.photo(*id).unwrap().flag != lcc_catalog::Flag::Reject), "{vis:?}");
+    // a second click on each lifts it
+    for id in ["filmfilter:pick", "filmfilter:none"] {
+        let r = h.request("ui.clickWidget", json!({"id": id}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    }
+    assert_eq!(h.app.session.filter.flags_shown(), None);
 
     // three stars or more
     let r = h.request("ui.clickWidget", json!({"id": "filmfilter:star3"}), T);

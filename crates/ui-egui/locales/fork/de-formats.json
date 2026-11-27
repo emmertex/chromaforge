@@ -180,6 +180,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "Geprüft von {reviewer}, Betreuer des Marktplatzes.",
   "Running on the processor: {}.": "Läuft auf dem Prozessor: {}.",
   "Running on {}.": "Läuft auf {}.",
+  "Search online for “{q}”…": "Online nach „{q}“ suchen…",
   "Second graphics card not used: {why}": "Zweite Grafikkarte nicht genutzt: {why}",
   "Select {n} look-alikes": "{n} ähnliche Gesichter auswählen",
   "Selected cell {n}": "Ausgewählte Zelle {n}",

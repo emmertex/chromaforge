@@ -180,6 +180,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "已由市场维护者 {reviewer} 审查。",
   "Running on the processor: {}.": "在处理器上运行：{}。",
   "Running on {}.": "在 {} 上运行。",
+  "Search online for “{q}”…": "在线搜索“{q}”…",
   "Second graphics card not used: {why}": "未使用第二块显卡：{why}",
   "Select {n} look-alikes": "选择 {n} 张相似面孔",
   "Selected cell {n}": "所选单元格 {n}",
