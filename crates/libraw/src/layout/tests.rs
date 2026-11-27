@@ -54,9 +54,9 @@ fn the_pattern_is_anchored_at_the_first_sample_of_the_data() {
 fn an_xtrans_layout_repeats_every_six_pixels() {
     let rows = ["GGRGGB", "GGBGGR", "BRGRBG", "GGBGGR", "GGRGGB", "RBGBRG"];
     let mut f = facts(RGGB);
-    for r in 0..48 {
-        for c in 0..48 {
-            f.pattern[r][c] = match rows[r % 6].as_bytes()[c % 6] {
+    for (r, row) in f.pattern.iter_mut().enumerate() {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = match rows[r % 6].as_bytes()[c % 6] {
                 b'R' => 0,
                 b'G' => 1,
                 _ => 2,
