@@ -68,13 +68,14 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "only photos from files can be relinked"));
     }
     let abs = abs.to_string_lossy().to_string();
-    let mut changed = Vec::new();
-    let ops = relink_ops(s, id, &abs, &mut changed);
+    let (mut changed, mut hashed) = (Vec::new(), Vec::new());
+    let ops = relink_ops(s, id, &abs, &mut changed, &mut hashed);
     let op = match <[Op; 1]>::try_from(ops) {
         Ok([op]) => op,
         Err(ops) => Op::Batch { ops },
     };
     s.commit("Relink Photo", op)?;
+    crate::cmd::convert::queue_link_check(s, &hashed);
     s.media.forget(id);
     for c in changed {
         s.media.forget(c);
@@ -87,13 +88,18 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
 /// a raw that decodes now or not), so its size, dimensions and preview-only state follow it; a
 /// record made without its file (a Lightroom catalog import whose original wasn't there) gets the
 /// camera and exposure fields it never had, and the lens data and as-shot white balance the file
-/// carries (adapted from upstream #3969). `changed` gets the photos whose records change.
-pub(crate) fn relink_ops(s: &Session, id: PhotoId, path: &str, changed: &mut Vec<PhotoId>) -> Vec<Op> {
+/// carries (adapted from upstream #3969). `changed` gets the photos whose records change; `hashed`
+/// gets `id` when it takes the new file's SHA-1, to queue once committed
+/// ([`crate::cmd::convert::queue_link_check`]). Only `id` itself takes any of the new file's facts,
+/// never its family ([`crate::cmd::convert::Reach::Target`]): the family is read before the relink
+/// applies and still names the old file.
+pub(crate) fn relink_ops(s: &Session, id: PhotoId, path: &str, changed: &mut Vec<PhotoId>, hashed: &mut Vec<PhotoId>) -> Vec<Op> {
     let mut ops = vec![relink_op(id, path)];
     if s.media.file_probe.is_some()
         && let Some(Ok(info)) = crate::import::probe_paths(s, std::slice::from_ref(&path.to_string())).pop()
     {
-        crate::cmd::convert::reload_ops(&s.catalog, id, &info, &mut ops, changed);
+        let reach = crate::cmd::convert::Reach::Target;
+        crate::cmd::convert::reload_ops(&s.catalog, id, &info, reach, &mut ops, changed, hashed);
     }
     ops
 }
@@ -457,15 +463,16 @@ fn commit_find(s: &mut Session, plan: FindPlan) -> Result<Value> {
     if !found.is_empty() {
         // a record that was never read gets what its file says; the rest, imported from their
         // files, need only the new path (reading every found file would hash them all)
-        let mut changed = Vec::new();
+        let (mut changed, mut hashed) = (Vec::new(), Vec::new());
         let ops = found
             .iter()
             .flat_map(|f| match s.catalog.photo(f.id) {
-                Some(p) if never_read(p) => relink_ops(s, f.id, &f.to, &mut changed),
+                Some(p) if never_read(p) => relink_ops(s, f.id, &f.to, &mut changed, &mut hashed),
                 _ => vec![relink_op(f.id, &f.to)],
             })
             .collect();
         s.commit("Find Missing Photos", Op::Batch { ops })?;
+        crate::cmd::convert::queue_link_check(s, &hashed);
         for id in found.iter().map(|f| f.id).chain(changed) {
             s.media.forget(id);
         }
