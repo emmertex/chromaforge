@@ -430,21 +430,44 @@ fn ps_single_quoted(s: &str) -> String {
 /// would make Restart Manager defer replacing its files), run the installer passively without a
 /// reboot, and — only when the installer succeeded — start the app again.
 ///
-/// `msiexec` exit codes: `0` is success, `3010` is success with a reboot required (`/norestart`
-/// suppressed it). `3010` deliberately starts nothing: files can still be scheduled for rename at
-/// the reboot, and Windows starts the app on the user's desktop again after it. Every other code
-/// is a failed install, and starting the old program over it would only mislead.
+/// `msiexec` is a GUI program, so PowerShell neither waits for it nor sets `$LASTEXITCODE` when it
+/// is called bare: `Start-Process -Wait -PassThru` does both. Its exit codes: `0` is success,
+/// `3010` is success with a reboot required (`/norestart` suppressed it). `3010` deliberately
+/// starts nothing: files can still be scheduled for rename at the reboot, and Windows starts the
+/// app on the user's desktop again after it. Every other code is a failed install (`1602`: the
+/// permission prompt was declined), and starting the old program over it would only mislead: the
+/// code and where the installer's log (`log`) is are written to `note` ([`FAILURE_NOTE`]) for the
+/// next start to log.
 ///
 /// `relaunch` is the installed program (`None`: its path is not known, so nothing is started — the
 /// installer still runs). An upgrade replaces the exe in place at the same path, so the path this
 /// process runs from is the new version's path once the installer is done.
 #[cfg(any(windows, test))]
-fn msi_update_script(pid: u32, msi: &str, relaunch: Option<&str>) -> String {
+fn msi_update_script(pid: u32, msi: &str, log: &str, note: &str, relaunch: Option<&str>) -> String {
+    // msiexec's own command line: paths in double quotes (a Windows path never contains one)
+    let args = ps_single_quoted(&format!("/i \"{msi}\" /passive /norestart /l*v \"{log}\""));
+    let start = relaunch.map_or(String::new(), |exe| format!(" if ($c -eq 0) {{ Start-Process -FilePath {} }}", ps_single_quoted(exe)));
+    let failed = format!(
+        "('The installer stopped with code ' + $c + ' (1602: the permission prompt was declined); its log is ' + {}) | Out-File -FilePath {} -Encoding utf8",
+        ps_single_quoted(log),
+        ps_single_quoted(note)
+    );
     // Wait-Process on a pid that is already gone is an error, not a stop: SilentlyContinue makes
-    // the helper carry on (the app may have quit before the helper came up).
-    let start = relaunch.map_or(String::new(), |exe| format!(" if ($LASTEXITCODE -eq 0) {{ Start-Process -FilePath {} }}", ps_single_quoted(exe)));
-    format!("Wait-Process -Id {pid} -ErrorAction SilentlyContinue; msiexec /i {} /passive /norestart;{start}", ps_single_quoted(msi))
+    // the helper carry on (the app may have quit before the helper came up). A Start-Process that
+    // throws leaves `$c` empty, a failure like any other code.
+    format!(
+        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; $c = $null; $c = (Start-Process -FilePath 'msiexec.exe' -ArgumentList {args} -Wait -PassThru).ExitCode;{start} if (($c -ne 0) -and ($c -ne 3010)) {{ {failed} }}"
+    )
 }
+
+/// The installer's log, written beside the download.
+#[cfg(any(windows, test))]
+const MSI_LOG: &str = "update-install.log";
+
+/// How long the helper has to show it is alive. It waits for this process to quit, so a helper that
+/// has already ended by then never ran its script.
+#[cfg(windows)]
+const HELPER_START: std::time::Duration = std::time::Duration::from_millis(1500);
 
 #[cfg(windows)]
 fn install_msi(msi: &Path) -> Result<Outcome, UpdateError> {
@@ -456,22 +479,52 @@ fn install_msi(msi: &Path) -> Result<Outcome, UpdateError> {
     // never shows. Instead a small helper runs the whole sequence ([`msi_update_script`]):
     // Windows PowerShell is built into every Windows, and `-Command` runs it whatever the
     // execution policy is (that only governs script files).
-    // DETACHED_PROCESS gives the helper no console of ours to die with, so it outlives this
-    // process; `-WindowStyle Hidden` keeps any console it might make off the screen. Both are
-    // belt and braces: the helper only waits, runs msiexec, maybe starts the app.
+    // CREATE_NO_WINDOW gives the helper a console without a window. Never DETACHED_PROCESS:
+    // Windows PowerShell 5.1 started without any console exits at once, successfully, without
+    // running its command (#1549: the app quit and the installer never ran). A child outlives the
+    // process that started it on Windows; breaking away from a job also keeps it alive when this
+    // process runs in a kill-on-close job (the console launcher's), where the job allows that.
     // `creation_flags` is a safe std API — no `unsafe` here.
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let stage = msi.parent().unwrap_or(Path::new("."));
     let relaunch = std::env::current_exe().map(|exe| exe.to_string_lossy().to_string()).ok();
-    let script = msi_update_script(std::process::id(), &msi.to_string_lossy(), relaunch.as_deref());
-    let child = Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-WindowStyle")
-        .arg("Hidden")
-        .arg("-Command")
-        .arg(&script)
-        .creation_flags(DETACHED_PROCESS)
-        .spawn()
+    let script = msi_update_script(
+        std::process::id(),
+        &msi.to_string_lossy(),
+        &stage.join(MSI_LOG).to_string_lossy(),
+        &stage.join(FAILURE_NOTE).to_string_lossy(),
+        relaunch.as_deref(),
+    );
+    let helper = |flags: u32| {
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+    };
+    let mut child = helper(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| helper(CREATE_NO_WINDOW))
         .map_err(|e| UpdateError::Install(format!("could not start the installer ({}): {e}", msi.display())))?;
+    let started = std::time::Instant::now();
+    while started.elapsed() < HELPER_START {
+        match child.try_wait() {
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Ok(Some(status)) => {
+                return Err(UpdateError::Install(format!(
+                    "the helper that runs the installer ended before the app quit ({status}), so nothing was installed: run {} yourself",
+                    msi.display()
+                )));
+            }
+            Err(e) => {
+                log::warn!("updates: could not tell whether the installer's helper is running: {e}");
+                break;
+            }
+        }
+    }
+    log::info!("updates: the installer's helper (process {}) runs {} once the app has quit", child.id(), msi.display());
     Ok(Outcome {
         message: format!("The installer starts once the app has quit (process {}). The app starts again when the installer is done.", child.id()),
         exit: true,
@@ -526,7 +579,7 @@ fn install_appimage(new: &Path) -> Result<Outcome, UpdateError> {
         return Err(UpdateError::Install(format!("could not make {} runnable: {e}", staged.display())));
     }
     let old = running.with_file_name(format!("{}.old", file_name(&running)));
-    let note = stage.join(linux::FAILURE_NOTE);
+    let note = stage.join(FAILURE_NOTE);
     // A script finishes the swap once this process has exited: writing into a running executable
     // fails (ETXTBSY), but renaming another file over it is allowed, so the new one is renamed
     // into its place (atomically: the path always names a whole AppImage) and started.
@@ -594,8 +647,7 @@ pub fn clean_up_after_update(stage: &Path) {
     {
         zipswap::clean_up(dir, &name.to_string_lossy());
     }
-    #[cfg(unix)]
-    if let Some(note) = linux::take_failure_note(stage) {
+    if let Some(note) = take_failure_note(stage) {
         log::warn!("updates: the last update was not installed: {note}");
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -604,8 +656,34 @@ pub fn clean_up_after_update(stage: &Path) {
         Ok(None) => {}
         Err(e) => log::warn!("updates: could not delete the previous version beside $APPIMAGE: {e}"),
     }
-    #[cfg(not(unix))]
-    let _ = stage;
+}
+
+/// The file in the download folder where an install that did not happen says why: the AppImage
+/// swap script and the Windows installer's helper write it, the next start logs it
+/// ([`clean_up_after_update`]).
+pub(crate) const FAILURE_NOTE: &str = "update-failed.txt";
+
+/// The longest failure note read back (it is one sentence).
+const MAX_NOTE_BYTES: u64 = 4096;
+
+/// The reason an install left in `stage` ([`FAILURE_NOTE`]), read once and deleted.
+pub(crate) fn take_failure_note(stage: &Path) -> Option<String> {
+    use std::io::Read;
+    let path = stage.join(FAILURE_NOTE);
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    let read = std::fs::File::open(&path).and_then(|f| f.take(MAX_NOTE_BYTES).read_to_string(&mut text));
+    if let Err(e) = std::fs::remove_file(&path) {
+        log::warn!("updates: could not delete {}: {e}", path.display());
+    }
+    match read {
+        // Windows PowerShell 5.1 writes UTF-8 with a byte-order mark
+        Ok(_) => Some(text.trim_start_matches('\u{feff}').trim().to_string()).filter(|t| !t.is_empty()),
+        Err(e) => Some(format!("{} could not be read: {e}", path.display())),
+    }
 }
 
 // ---------- anything else: show the file
@@ -673,29 +751,68 @@ mod tests {
     }
 
     /// The MSI helper waits for the app that started it, runs the installer passively without a
-    /// reboot, and starts the app again only when the installer succeeded.
+    /// reboot and waits for it, starts the app again only when the installer succeeded, and leaves
+    /// a note when it failed.
     #[test]
     fn the_msi_helper_waits_installs_and_relaunches() {
-        let script = msi_update_script(1234, r"C:\Updates\app 1.2.3.msi", Some(r"C:\Program Files\app\app.exe"));
+        let script =
+            msi_update_script(1234, r"C:\Updates\app 1.2.3.msi", r"C:\Updates\i.log", r"C:\Updates\n.txt", Some(r"C:\Program Files\app\app.exe"));
         assert!(script.starts_with("Wait-Process -Id 1234 -ErrorAction SilentlyContinue; "), "{script}");
-        assert!(script.contains(r"msiexec /i 'C:\Updates\app 1.2.3.msi' /passive /norestart;"), "{script}");
+        // a GUI program: Start-Process -Wait is what waits for it and gives its exit code
+        assert!(
+            script.contains(r#"(Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i "C:\Updates\app 1.2.3.msi" /passive /norestart /l*v "C:\Updates\i.log"' -Wait -PassThru).ExitCode"#),
+            "{script}"
+        );
         // relaunch on success alone: 3010 (success, reboot required) and every failure start nothing
-        assert!(script.ends_with(r"if ($LASTEXITCODE -eq 0) { Start-Process -FilePath 'C:\Program Files\app\app.exe' }"), "{script}");
+        assert!(script.contains(r"if ($c -eq 0) { Start-Process -FilePath 'C:\Program Files\app\app.exe' }"), "{script}");
+        assert!(script.contains("if (($c -ne 0) -and ($c -ne 3010)) {"), "{script}");
+        assert!(script.contains(r"Out-File -FilePath 'C:\Updates\n.txt'"), "{script}");
         // without a program to start, the installer runs all the same
-        let bare = msi_update_script(7, r"C:\x.msi", None);
-        assert!(bare.ends_with("/norestart;"), "{bare}");
-        assert!(!bare.contains("Start-Process"), "{bare}");
+        let bare = msi_update_script(7, r"C:\x.msi", r"C:\l.log", r"C:\n.txt", None);
+        assert!(bare.contains("'msiexec.exe'") && !bare.contains("($c -eq 0)"), "{bare}");
     }
 
     /// Paths keep their meaning inside the helper script: PowerShell single-quoted strings double
-    /// their quotes and treat nothing else specially, spaces included.
+    /// their quotes and treat nothing else specially, spaces and `$` included.
     #[test]
     fn the_msi_helper_quotes_paths_the_way_powershell_reads_them() {
         assert_eq!(ps_single_quoted(r"C:\plain\path.msi"), r"'C:\plain\path.msi'");
         assert_eq!(ps_single_quoted("it's O'Brien's.msi"), r"'it''s O''Brien''s.msi'");
-        let script = msi_update_script(1, r"C:\Users\O'Brien\app 1.2.3.msi", Some(r"C:\it's me\app.exe"));
-        assert!(script.contains(r"'C:\Users\O''Brien\app 1.2.3.msi'"), "{script}");
+        let script = msi_update_script(
+            1,
+            r"C:\Users\O'Brien\app 1.2.3.msi",
+            r"C:\Users\O'Brien\i.log",
+            r"C:\Users\O'Brien\$n.txt",
+            Some(r"C:\it's me\app.exe"),
+        );
+        assert!(script.contains(r#""C:\Users\O''Brien\app 1.2.3.msi""#), "{script}");
         assert!(script.contains(r"'C:\it''s me\app.exe'"), "{script}");
+        assert!(script.contains(r"'C:\Users\O''Brien\$n.txt'"), "{script}");
+    }
+
+    /// The helper really runs under Windows PowerShell, started the way the app starts it: the
+    /// "installer" (a package that isn't there) fails, nothing is started, and the note says so
+    /// (#1549: started without a console, PowerShell ran nothing at all and nobody noticed).
+    #[cfg(windows)]
+    #[test]
+    fn the_msi_helper_runs_and_reports_a_failed_install() {
+        use std::os::windows::process::CommandExt;
+        let dir = lcc_testkit::TempDir::new("lcc-msi-helper");
+        let note = dir.join(FAILURE_NOTE);
+        let missing = dir.join("it's missing.msi");
+        // no such process (pids are multiples of 4 below 2^31); /quiet: a missing package in
+        // /passive mode shows an error box
+        let script = msi_update_script(0x7FFF_FFFC, &missing.to_string_lossy(), &dir.join(MSI_LOG).to_string_lossy(), &note.to_string_lossy(), None)
+            .replace("/passive", "/quiet");
+        let status = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+            .creation_flags(0x0800_0000)
+            .status()
+            .expect("Windows PowerShell runs");
+        assert!(status.success(), "{status}");
+        let text = take_failure_note(&dir).expect("the failed install leaves a note");
+        assert!(text.starts_with("The installer stopped with code 1619") && text.contains(MSI_LOG), "{text}");
+        assert_eq!(take_failure_note(&dir), None, "the note is deleted once read");
     }
 
     /// A zip copy that can replace its own files plans to; one that can't (its folder can't be
