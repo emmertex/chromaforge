@@ -133,6 +133,7 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["brand", "sysmem"],
     &["brand", "fetch"],
     &["brand", "net"],
+    &["brand", "onnxrt"],
     // the updater reads the release feed over the network crate, for the brand's repository
     &["brand", "net", "updater"],
     // the updater asks Windows Installer whether the MSI installed the running program
