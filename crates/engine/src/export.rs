@@ -1055,6 +1055,10 @@ fn watermark_from_json(v: &serde_json::Value) -> serde_json::Result<Watermark> {
     serde_json::from_value(v)
 }
 
+/// Whether this build can write lossy WebP ([`lcc_codecs::WEBP_LOSSY`]; never the web or Android build), for the UI,
+/// which doesn't link the codecs on every target.
+pub const WEBP_LOSSY: bool = lcc_codecs::WEBP_LOSSY;
+
 impl ExportOptions {
     /// Whether a WebP export is lossy: asked for, and this build has the encoder ([`lcc_codecs::WEBP_LOSSY`]).
     pub fn webp_lossy(&self) -> bool {

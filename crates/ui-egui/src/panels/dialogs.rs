@@ -4039,13 +4039,13 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         }
         if opts.format == F::Webp {
             // lossy WebP needs libwebp, which the web and Android builds don't carry (#1482)
-            let tip = if lcc_codecs::WEBP_LOSSY {
+            let tip = if lcc_engine::export::WEBP_LOSSY {
                 "Every pixel kept exactly (larger files); off: smaller files at the Quality below"
             } else {
                 "This version writes lossless WebP only: lossy WebP is in the desktop app"
             };
-            let mut on = opts.webp_lossless || !lcc_codecs::WEBP_LOSSY;
-            ui.add_enabled_ui(lcc_codecs::WEBP_LOSSY, |ui| {
+            let mut on = opts.webp_lossless || !lcc_engine::export::WEBP_LOSSY;
+            ui.add_enabled_ui(lcc_engine::export::WEBP_LOSSY, |ui| {
                 if crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr("Lossless"))
                     .on_hover_text(crate::i18n::tr(tip))
                     .on_disabled_hover_text(crate::i18n::tr(tip))
