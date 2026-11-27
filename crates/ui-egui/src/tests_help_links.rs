@@ -47,9 +47,20 @@ fn settings_help_links_name_known_topics_and_open_the_manual() {
         }
         shown.extend(on_tab);
     }
-    // And the significant groups have one (a few depend on what this build or computer has)
-    let conditional =
-        ["autoImport", "folderPolling", "xmpSidecars", "importMetadata", "smartPreviews", "sam3", "semanticSearch", "faceScan", "denoiseModels"];
+    // And the significant groups have one (a few depend on what this build or computer has, or, like the raw
+    // decoder, on the library holding raws)
+    let conditional = [
+        "autoImport",
+        "folderPolling",
+        "xmpSidecars",
+        "importMetadata",
+        "smartPreviews",
+        "sam3",
+        "semanticSearch",
+        "faceScan",
+        "denoiseModels",
+        "rawDecoder",
+    ];
     // Getting Started's pages link to the manual, not Settings (`onboarding`)
     let guide = ["gettingStarted", "tourImport", "tourLibrary", "tourDevelop", "tourAi", "tourOutput", "tourExport"];
     for (topic, _) in crate::help_link::TOPICS {

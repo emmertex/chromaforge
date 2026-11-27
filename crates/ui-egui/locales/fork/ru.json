@@ -3672,7 +3672,7 @@
   "When importing a Lightroom or Capture One catalog": "При импорте каталога Lightroom или Capture One",
   "Where the camera software saves shots": "Куда программа камеры сохраняет снимки",
   "Which catalog is kept?": "Какой каталог сохраняется?",
-  "Which decoder reads each camera's raw files. Auto uses {app}'s own decoder, and LibRaw for files it can't read. Either way {app} develops the picture.": "Какой декодер читает RAW-файлы каждой камеры. «Авто» использует собственный декодер {app}, а для файлов, которые он не может прочитать, — LibRaw. В любом случае изображение проявляет {app}.",
+  "Which decoder reads each camera's raw files. Auto uses {app}'s own decoder, and LibRaw for files it can't read. Either way {app} develops the picture.": "Какой декодер читает RAW-файлы каждой камеры. «Авто» использует собственный декодер {app}, а для файлов, которые он не может прочитать, LibRaw. В любом случае изображение проявляет {app}.",
   "Which photos": "Какие фото",
   "While you go through photos in the loupe, the next ones are made ready before you reach them, and when the computer is otherwise idle the previews of every photo in view are built. The photo on screen always comes first; the work shows in the activity list, where it can be stopped.": "Пока вы просматриваете фото в лупе, следующие готовятся заранее, а когда компьютер простаивает, строятся просмотры всех фото в текущем виде. Фото на экране всегда в приоритете; работа видна в списке задач, где её можно остановить.",
   "White": "Белый",
