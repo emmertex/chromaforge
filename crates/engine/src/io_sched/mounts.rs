@@ -4,10 +4,10 @@
 //! it; the process keeps the last list read, which a call whose read times out, and every
 //! single-job call, uses as it is. At most one helper is outstanding: while one is stuck (a mount
 //! of a dead network volume in progress), calls use the cached list at once, so stuck helpers
-//! never pile up; the helper clears its "outstanding" flag through a drop guard, so a panic while
-//! parsing can't freeze the cache.
+//! never pile up; the helper's "outstanding" flag clears however it ends, so a panic while
+//! parsing can't freeze the cache (the one coalesced refresh of [`crate::bg_refresh`], which the
+//! device list uses too).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lcc_catalog::folders::Mounts;
@@ -22,22 +22,13 @@ pub(crate) type MountReader = Arc<dyn Fn() -> Option<Mounts> + Send + Sync>;
 
 pub(crate) struct MountCache {
     last: Arc<Mutex<Option<Arc<Mounts>>>>,
-    outstanding: Arc<AtomicBool>,
+    refresh: crate::bg_refresh::Coalesced,
     reader: MountReader,
-}
-
-/// Clears the "outstanding" flag when the helper ends, however it ends.
-struct Outstanding(Arc<AtomicBool>);
-
-impl Drop for Outstanding {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
 }
 
 impl MountCache {
     pub(crate) fn new(reader: MountReader) -> MountCache {
-        MountCache { last: Arc::default(), outstanding: Arc::default(), reader }
+        MountCache { last: Arc::default(), refresh: crate::bg_refresh::Coalesced::default(), reader }
     }
 
     /// The last list read (no read now); [`Mounts::none`] before any.
@@ -48,14 +39,9 @@ impl MountCache {
     /// A fresh list, read on a helper thread, waiting up to `wait` ns of `clock`; the cached list
     /// when the read takes longer, when a helper is already outstanding, or when none can start.
     pub(crate) fn fresh(&self, clock: &dyn Clock, wait: u64) -> Arc<Mounts> {
-        if self.outstanding.swap(true, Ordering::AcqRel) {
-            return self.cached();
-        }
         let (tx, rx) = std::sync::mpsc::channel();
-        let guard = Outstanding(self.outstanding.clone());
         let (reader, last) = (self.reader.clone(), self.last.clone());
-        let spawned = std::thread::Builder::new().name("lc-io-mounts".into()).spawn(move || {
-            let _guard = guard;
+        let started = self.refresh.spawn("lc-io-mounts", move || {
             if let Some(m) = reader() {
                 if m.truncated() {
                     log::warn!("mount list cut at {} entries", m.len());
@@ -65,10 +51,13 @@ impl MountCache {
                 let _ = tx.send(m);
             }
         });
-        if let Err(e) = spawned {
-            // (the closure, and the guard in it, were dropped: the flag is clear again)
-            log::warn!("can't read the mount list: {e}");
-            return self.cached();
+        match started {
+            crate::bg_refresh::Started::Spawned => {}
+            crate::bg_refresh::Started::Busy => return self.cached(),
+            crate::bg_refresh::Started::Failed(e) => {
+                log::warn!("can't read the mount list: {e}");
+                return self.cached();
+            }
         }
         let start = clock.mono();
         loop {
@@ -88,7 +77,7 @@ impl MountCache {
     /// Whether a helper is outstanding (tests).
     #[cfg(test)]
     pub(crate) fn outstanding(&self) -> bool {
-        self.outstanding.load(Ordering::Acquire)
+        self.refresh.running()
     }
 }
 
