@@ -9,6 +9,11 @@
 //! are an ordinary filtered grid view, and matching, keeping and follow reuse the filter
 //! machinery wholesale.
 //!
+//! A query is one search group (its categories' conditions, combined as [`AdvancedSearch::mode`] says: all, any,
+//! none, or not all of them) plus further groups ([`AdvancedSearch::groups`]), combined as
+//! [`AdvancedSearch::groups_match`] says, as digiKam's Advanced Search does (issue #1135). A query of one group whose
+//! conditions must all match lowers as it always did; any other is lowered entirely into nested rule groups.
+//!
 //! Categories the catalog cannot support yet stay declared in the query ([`MediaCategory`]'s
 //! codec and frame rate): setting them is an actionable error from [`AdvancedSearch::to_filter`],
 //! never a crash, and the panel shows their inputs disabled.
@@ -28,9 +33,40 @@ pub const ASPECTS: &[&str] = &["landscape", "portrait", "square"];
 /// in [`crate::ColorLabel::ALL`] order.
 pub const LABELS: &[&str] = &["red", "yellow", "green", "blue", "purple", "none"];
 
-/// A structured Advanced Search query: global words plus optional rule categories, all
-/// constraints ANDed together. Every field defaults to "no constraint"; a query with none set
-/// matches every photo, like an empty [`Filter`].
+/// How the conditions of one search group combine (issue #1135).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchMatch {
+    /// Every condition is met.
+    #[default]
+    All,
+    /// At least one condition is met.
+    Any,
+    /// No condition is met.
+    None,
+    /// At least one condition is not met.
+    NotAll,
+}
+
+impl SearchMatch {
+    /// Every match, in menu order.
+    pub const ALL: [SearchMatch; 4] = [SearchMatch::All, SearchMatch::Any, SearchMatch::None, SearchMatch::NotAll];
+
+    /// `conditions` combined this way, as one rule group.
+    fn group(self, conditions: Vec<Rule>) -> RuleSet {
+        match self {
+            SearchMatch::All => RuleSet { mode: Match::All, rules: conditions },
+            SearchMatch::Any => RuleSet { mode: Match::Any, rules: conditions },
+            SearchMatch::None => RuleSet { mode: Match::None, rules: conditions },
+            // "not all of them" is "none of (all of them)"
+            SearchMatch::NotAll => RuleSet { mode: Match::None, rules: vec![Rule::Group { group: RuleSet { mode: Match::All, rules: conditions } }] },
+        }
+    }
+}
+
+/// A structured Advanced Search query: global words plus optional rule categories, combined as
+/// [`AdvancedSearch::mode`] says (all of them by default), plus further search groups. Every field
+/// defaults to "no constraint"; a query with none set matches every photo, like an empty [`Filter`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdvancedSearch {
@@ -61,7 +97,36 @@ pub struct AdvancedSearch {
     /// Face regions: a face count and named people.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faces: Option<FacesCategory>,
+    /// How this group's conditions combine: all of them (the default), any, none, or not all (issue #1135). Each
+    /// word, each category field set, and each keyword or people list counts as one condition.
+    #[serde(rename = "match", skip_serializing_if = "is_default")]
+    pub mode: SearchMatch,
+    /// Further search groups, each a query of its own (without groups of its own), combined with this one as
+    /// [`AdvancedSearch::groups_match`] says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<AdvancedSearch>,
+    /// How the search groups combine: a photo matches every group (`all`, the default) or at least one (`any`).
+    #[serde(skip_serializing_if = "is_default")]
+    pub groups_match: GroupsMatch,
 }
+
+/// How the search groups of a query combine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GroupsMatch {
+    /// A photo matches every group.
+    #[default]
+    All,
+    /// A photo matches at least one group.
+    Any,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// Most search groups in one query: a hostile query can't make every photo walk an unbounded list.
+pub const MAX_GROUPS: usize = 64;
 
 /// An inclusive numeric range: both ends optional, `min` may not exceed `max`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -277,6 +342,11 @@ impl FacesCategory {
 impl AdvancedSearch {
     /// Whether the query constrains nothing at all.
     pub fn is_empty(&self) -> bool {
+        self.group_is_empty() && self.groups.iter().all(AdvancedSearch::group_is_empty)
+    }
+
+    /// Whether this group's own categories constrain nothing (its further groups aside).
+    fn group_is_empty(&self) -> bool {
         self.words.trim().is_empty()
             && self.file.as_ref().is_none_or(FileCategory::is_empty)
             && self.properties.as_ref().is_none_or(PropertiesCategory::is_empty)
@@ -293,6 +363,74 @@ impl AdvancedSearch {
     /// whose ends are reversed, or an unsupported audio/video condition — is an actionable error
     /// naming the field, never an empty grid or a panic.
     pub fn to_filter(&self) -> Result<Filter, String> {
+        if self.groups.is_empty() && self.mode == SearchMatch::All {
+            return self.all_of_one_group();
+        }
+        if self.groups.len() > MAX_GROUPS {
+            return Err(format!("search groups: at most {MAX_GROUPS}"));
+        }
+        if self.groups.iter().any(|g| !g.groups.is_empty()) {
+            return Err("search groups: a group can't hold groups of its own".into());
+        }
+        let mut sets = Vec::new();
+        for (n, group) in std::iter::once(self).chain(&self.groups).enumerate() {
+            let conditions = group.conditions().map_err(|e| if n == 0 { e } else { format!("search group {}: {e}", n + 1) })?;
+            // a group with no condition constrains nothing, whatever its match
+            if !conditions.is_empty() {
+                sets.push(Rule::Group { group: group.mode.group(conditions) });
+            }
+        }
+        if sets.is_empty() {
+            return Ok(Filter::default());
+        }
+        let mode = match self.groups_match {
+            GroupsMatch::All => Match::All,
+            GroupsMatch::Any => Match::Any,
+        };
+        Ok(Filter { rule_set: Some(RuleSet { mode, rules: sets }), ..Filter::default() })
+    }
+
+    /// One group's conditions, each one rule (issue #1135): a word, a category field, the keyword or people list
+    /// (combined as its own any / all says), the collection, the face count. Checked as [`Self::to_filter`] checks
+    /// them.
+    fn conditions(&self) -> Result<Vec<Rule>, String> {
+        let mut out: Vec<Rule> = Vec::new();
+        let field = |field: &str, op: &str, value: Value| Rule::Field { field: field.to_string(), op: op.to_string(), value };
+        let list = |op: MatchOp, rules: Vec<Rule>| -> Option<Rule> {
+            match rules.len() {
+                0 => None,
+                1 => rules.into_iter().next(),
+                _ => Some(Rule::Group { group: RuleSet { mode: if op == MatchOp::All { Match::All } else { Match::Any }, rules } }),
+            }
+        };
+        out.extend(self.words.split_whitespace().map(|w| field("text", "contains", json!(w))));
+        if let Some(f) = &self.file {
+            if let Some(album) = f.album {
+                out.push(field("album", "is", json!(album.0)));
+            }
+            let keywords = trimmed(&f.keywords).unwrap_or_default().into_iter().map(|k| field("keywords", "is", json!(k))).collect();
+            out.extend(list(f.keyword_op, keywords));
+        }
+        out.extend(self.field_rules(false)?.into_iter().map(rule_of));
+        if let Some(f) = &self.faces {
+            if let Some(spec) = f.count.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                let spec = crate::query::parse_face_spec(spec).map_err(|e| format!("faces count: {e}"))?;
+                let mut ends = vec![field("faceCount", "gte", json!(spec.min))];
+                if let Some(max) = spec.max {
+                    ends.push(field("faceCount", "lte", json!(max)));
+                }
+                out.extend(list(MatchOp::All, ends));
+            }
+            let people = trimmed(&f.people).unwrap_or_default().into_iter().map(|p| field("person", "is", json!(p))).collect();
+            out.extend(list(f.people_op, people));
+        }
+        Ok(out)
+    }
+
+    /// The categories' field conditions as `{"field", "op", "value"}` triples: everything but the words, the
+    /// collection, the people and the face count, and the keywords only when `keywords` (a group of one search
+    /// whose conditions all match lists them here, as it always has).
+    fn field_rules(&self, keywords: bool) -> Result<Vec<Value>, String> {
         let mut rules: Vec<Value> = Vec::new();
         if let Some(f) = &self.file
             && !f.is_empty()
@@ -309,7 +447,7 @@ impl AdvancedSearch {
             if let Some(rule) = text_rule("folder", &f.folder) {
                 rules.push(rule);
             }
-            if let Some(list) = trimmed(&f.keywords) {
+            if keywords && let Some(list) = trimmed(&f.keywords) {
                 for k in list {
                     rules.push(json!({"field": "keywords", "op": "contains", "value": k}));
                 }
@@ -394,6 +532,13 @@ impl AdvancedSearch {
                 range_rules(&mut rules, "duration", &m.duration_s)?;
             }
         }
+        Ok(rules)
+    }
+
+    /// [`Self::to_filter`] for a query of one group whose conditions must all match: the words, keywords, people,
+    /// collection and face count go to their own filter fields, the rest to one rule set.
+    fn all_of_one_group(&self) -> Result<Filter, String> {
+        let rules = self.field_rules(true)?;
         let mut filter = Filter { text: self.words.trim().to_string(), ..Filter::default() };
         if let Some(f) = &self.file
             && !f.is_empty()
@@ -669,6 +814,81 @@ mod tests {
         let mut query = q();
         query.photograph = Some(PhotographCategory { iso: Range { min: Some(f64::NAN), max: None }, ..Default::default() });
         assert!(query.to_filter().unwrap_err().contains("iso"));
+    }
+
+    /// Issue #1135: a group's conditions combine as its match says (all, any, none, not all), and search groups
+    /// combine as the query's `groupsMatch` says.
+    #[test]
+    fn a_groups_conditions_combine_as_its_match_says() {
+        let c = catalog();
+        // photo 1: 4 stars, Canon, Italy; photo 2: a video, unrated, nowhere
+        let mut query = q();
+        query.properties = Some(PropertiesCategory { rating: Some(4), rating_op: RatingOp::AtLeast, ..Default::default() });
+        query.file = Some(FileCategory { kind: Some("video".into()), ..Default::default() });
+        assert!(matches(&c, &query).is_empty(), "all: no photo is both 4 stars and a video");
+        query.mode = SearchMatch::Any;
+        assert_eq!(matches(&c, &query), vec![PhotoId(1), PhotoId(2)], "any: one or the other");
+        query.mode = SearchMatch::None;
+        assert!(matches(&c, &query).is_empty(), "none: each photo meets one of them");
+        query.mode = SearchMatch::NotAll;
+        assert_eq!(matches(&c, &query), vec![PhotoId(1), PhotoId(2)], "not all: neither meets both");
+        query.file = Some(FileCategory { name: "img_".into(), ..Default::default() });
+        query.mode = SearchMatch::NotAll;
+        assert_eq!(matches(&c, &query), vec![PhotoId(2)], "photo 1 meets both, so only photo 2 misses one");
+        query.mode = SearchMatch::None;
+        assert_eq!(matches(&c, &query), vec![PhotoId(2)]);
+        // words, keywords, people and the face count are conditions like any other
+        let mut query = q();
+        query.mode = SearchMatch::Any;
+        query.words = "harbour".into();
+        query.media = Some(MediaCategory { duration_s: Range { min: Some(10.0), max: None }, ..Default::default() });
+        assert_eq!(matches(&c, &query), vec![PhotoId(1), PhotoId(2)]);
+        query.mode = SearchMatch::None;
+        query.words = String::new();
+        query.media = None;
+        query.file = Some(FileCategory { keywords: vec!["travel".into(), "ocean".into()], keyword_op: MatchOp::Any, ..Default::default() });
+        assert_eq!(matches(&c, &query), vec![PhotoId(2)], "none: photo 1 has one of the keywords (a child of travel)");
+        query.faces = Some(FacesCategory { count: Some("1+".into()), ..Default::default() });
+        query.file = None;
+        assert_eq!(matches(&c, &query), vec![PhotoId(1), PhotoId(2)], "none has a face");
+    }
+
+    #[test]
+    fn search_groups_combine_as_the_query_says() {
+        let c = catalog();
+        let mut query = q();
+        query.photograph = Some(PhotographCategory { camera: "canon".into(), ..Default::default() });
+        let video = AdvancedSearch { file: Some(FileCategory { kind: Some("video".into()), ..Default::default() }), ..q() };
+        query.groups.push(video);
+        assert!(matches(&c, &query).is_empty(), "all groups: no photo is both");
+        query.groups_match = GroupsMatch::Any;
+        assert_eq!(matches(&c, &query), vec![PhotoId(1), PhotoId(2)], "any group");
+        // a group's own match applies inside it
+        query.groups[0].mode = SearchMatch::None;
+        assert_eq!(matches(&c, &query), vec![PhotoId(1)], "canon, or not a video");
+        // an empty group constrains nothing; an empty query of groups matches every photo
+        let mut empty = q();
+        empty.groups.push(q());
+        empty.groups_match = GroupsMatch::Any;
+        assert!(empty.is_empty());
+        assert_eq!(empty.to_filter().unwrap(), Filter::default());
+        // groups don't nest, are bounded, and a problem names its group
+        let mut nested = q();
+        nested.groups.push(AdvancedSearch { groups: vec![q()], ..q() });
+        assert!(nested.to_filter().unwrap_err().contains("groups of its own"));
+        let mut many = q();
+        many.groups = vec![q(); MAX_GROUPS + 1];
+        assert!(many.to_filter().is_err());
+        let mut bad = q();
+        bad.groups.push(AdvancedSearch { faces: Some(FacesCategory { count: Some("lots".into()), ..Default::default() }), ..q() });
+        let e = bad.to_filter().unwrap_err();
+        assert!(e.contains("search group 2") && e.contains("faces count"), "{e}");
+        // the match and the groups travel as JSON
+        let json = serde_json::to_value(&query).unwrap();
+        assert_eq!(json["groupsMatch"], "any");
+        assert_eq!(json["groups"][0]["match"], "none");
+        assert_eq!(serde_json::from_value::<AdvancedSearch>(json).unwrap(), query);
+        assert!(serde_json::to_value(q()).unwrap().get("match").is_none(), "the default is left out");
     }
 
     #[test]
