@@ -968,6 +968,8 @@ impl Session {
             obj.insert("unindexedPhotos".into(), json!(unindexed));
             obj.insert("deviceChoice".into(), json!(device_choice.as_deref().unwrap_or("auto")));
             obj.insert("availableDevices".into(), Value::Array(available_devices));
+            // ONNX Runtime (#491): where the AI models can run on the graphics card; never loaded by this query
+            obj.insert("onnxRuntime".into(), json!(lcc_onnxrt::status()));
         }
         Ok(base)
     }

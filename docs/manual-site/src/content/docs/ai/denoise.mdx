@@ -11,7 +11,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Shot name="ai-denoise-detail" menu="the Detail section of the Develop panels" alt="Detail section: the AI Denoise switch and Amount above Luminance and Color noise reduction" />
 
-- **Where**: Edit ▸ **Detail** ▸ **AI Denoise** (switch) and **Amount** (0 to 100). Turning it on starts at 50.
+- **Where**: Edit ▸ **Detail** ▸ under **AI Denoise**, the **Enable** switch and **Amount** (0 to 100). Turning it on starts at 50.
 - **Works out of the box**: a built-in denoiser (block matching and collaborative filtering after measuring the photo's noise). No download and no weights. It is a classical filter, not a trained network.
 - **Raw only by default**: Bayer raw files. A JPEG, PNG or TIFF is denoised only with a model for finished pictures. X-Trans, Foveon and demosaiced DNG are not supported. The panel says so on photos it cannot handle.
 - **Non-destructive**: the cleaned picture is cached data, made in the background and shown in previews and exports. Your file is never changed. Exports make it if it is missing.
@@ -35,7 +35,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Hardware
 
-- Runs on the GPU (wgpu) where a card agrees with the CPU result and is faster, else on the CPU. Speeds measured: one tile 22 ms on a desktop GPU against about 400 ms on one CPU thread.
+- Runs on the graphics card where it agrees with the CPU result and is faster, else on the CPU. On the graphics card it uses ONNX Runtime when the download includes it ([Models and set-up](../models/#hardware)), else the built-in GPU code (wgpu). Speeds measured with the built-in code: one tile 22 ms on a desktop GPU against about 400 ms on one CPU thread.
 - Tiles can run on another computer's graphics card (advanced; see the project documentation).
 
 ## Limits

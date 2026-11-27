@@ -7,7 +7,7 @@
 //! `<file>.new-<pid>` over the running path in one atomic rename and starts it. The running path
 //! names a whole AppImage at every moment, even if the script is stopped half way. If the app is
 //! still running when the wait ends, or a step fails, the original file stays, the staged file is
-//! deleted, nothing is started, and the reason is written to [`FAILURE_NOTE`] in the download
+//! deleted, nothing is started, and the reason is written to [`super::FAILURE_NOTE`] in the download
 //! folder for the next start to log.
 //!
 //! The script lives in a fresh folder only this user can open (mode 0700, under
@@ -23,7 +23,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -36,14 +36,8 @@ use crate::error::UpdateError;
 /// How long the script waits for the app to quit before it gives up on the update.
 pub(super) const WAIT_FOR_EXIT: Duration = Duration::from_secs(30);
 
-/// The file in the download folder where a swap that did not happen says why.
-pub(super) const FAILURE_NOTE: &str = "update-failed.txt";
-
 /// The script's name inside its private folder.
 const SCRIPT_NAME: &str = "swap.sh";
-
-/// The longest failure note read back (it is one sentence).
-const MAX_NOTE_BYTES: u64 = 4096;
 
 /// `'…'` for a POSIX shell: an embedded `'` is closed, escaped and reopened.
 pub(super) fn sh_quote(text: &str) -> String {
@@ -58,7 +52,7 @@ pub(super) struct Swap<'a> {
     pub staged: &'a Path,
     /// Where the running file is kept once replaced.
     pub old: &'a Path,
-    /// Where a failure is written ([`FAILURE_NOTE`]).
+    /// Where a failure is written ([`super::FAILURE_NOTE`]).
     pub note: &'a Path,
     /// The script's private folder, deleted with the script when it finishes.
     pub folder: &'a Path,
@@ -222,27 +216,10 @@ pub(super) fn remove_previous(appimage: Option<OsString>) -> io::Result<Option<P
     }
 }
 
-/// The reason a swap left in `stage` ([`FAILURE_NOTE`]), read once and deleted.
-pub(super) fn take_failure_note(stage: &Path) -> Option<String> {
-    let path = stage.join(FAILURE_NOTE);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.file_type().is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    let read = fs::File::open(&path).and_then(|f| f.take(MAX_NOTE_BYTES).read_to_string(&mut text));
-    if let Err(e) = fs::remove_file(&path) {
-        log::warn!("updates: could not delete {}: {e}", path.display());
-    }
-    match read {
-        Ok(_) => Some(text.trim().to_string()).filter(|t| !t.is_empty()),
-        Err(e) => Some(format!("{} could not be read: {e}", path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::{FAILURE_NOTE, take_failure_note};
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::process::Child;
     use std::time::Instant;

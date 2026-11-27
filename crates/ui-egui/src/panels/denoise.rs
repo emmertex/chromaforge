@@ -133,11 +133,11 @@ fn watch_downloads(app: &mut LccApp, ctx: &egui::Context) {
     ctx.request_repaint_after(std::time::Duration::from_millis(120));
 }
 
-/// Per-photo AI Denoise switch.
+/// Per-photo AI Denoise switch, under its "AI Denoise" heading: named Enable, so the name is not said twice (issue #449).
 pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool, applicable: bool) {
     let mut enabled = on;
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
-        let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
+        let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, RichText::new(crate::i18n::tr("Enable")).size(11.0)));
         if !applicable && let Some((why, detail)) = not_applicable(app, id) {
             let tip = match detail {
                 Some(d) => format!("{} {d}", tr(why)),

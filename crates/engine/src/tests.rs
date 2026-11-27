@@ -1305,7 +1305,7 @@ fn leaving_an_edited_photo_keeps_an_auto_version() {
     let v = s.catalog.photo(PhotoId(ids[0])).unwrap().versions.clone();
     assert_eq!(v.len(), before + 1);
     assert!(v.last().unwrap().auto && v.last().unwrap().settings.light.exposure == 0.4);
-    assert_eq!(s.undo.len(), undo, "not an undo step");
+    assert_eq!(s.undo.len(), undo + 1, "only the selection is a step: the auto version is not");
     // back and away again without changes: nothing new
     s.execute("library.select", &json!({"ids": [ids[0]]})).unwrap();
     s.execute("library.select", &json!({"ids": [ids[1]]})).unwrap();
@@ -1836,16 +1836,20 @@ fn undo_and_redo_show_the_photo_they_change() {
         s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
         s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
         s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+        // the move to b is a step of its own: Undo takes it back first, then the edit
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.active(), Some(a), "undoing the move shows the photo again");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.active(), Some(a), "undo shows the photo it changed");
         assert_eq!(s.selection.ids, vec![a]);
-        s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+        // (a change of selection that isn't a step: the fallback when its step is gone from the history)
+        s.selection = crate::Selection::single(b);
         s.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(s.active(), Some(a), "so does redo");
         // rating both selected photos is one step over two photos: undoing it leaves the selection
         s.execute("library.select", &json!({"ids": [a.0, b.0], "active": b.0})).unwrap();
         s.execute("photo.rate", &json!({"rating": 3})).unwrap();
-        s.execute("library.select", &json!({"ids": [a.0, b.0], "active": a.0})).unwrap();
+        s.selection = crate::Selection { ids: vec![a, b], active: Some(a) };
         let before = s.selection.clone();
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.selection, before, "a step over several photos keeps the selection");
@@ -1855,7 +1859,7 @@ fn undo_and_redo_show_the_photo_they_change() {
         let mut s = demo();
         let r = s.execute("photo.virtualCopy", &json!({})).unwrap();
         let copy = r["ids"][0].as_u64().unwrap();
-        s.execute("library.select", &json!({"ids": [copy]})).unwrap();
+        s.selection = crate::Selection::single(lcc_catalog::PhotoId(copy));
         s.execute("edit.undo", &json!({})).unwrap();
         assert!(s.selection.ids.iter().all(|&id| s.catalog.photo(id).is_some()), "{:?}", s.selection);
         assert!(s.selection.active.is_none_or(|a| s.selection.ids.contains(&a)));

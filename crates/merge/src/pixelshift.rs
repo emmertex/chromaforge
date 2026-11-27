@@ -602,6 +602,7 @@ mod dng_tests_support {
             frames: (1..=16)
                 .map(|i| SourceFrame { index: i, file_name: format!("synthetic {i}.nef"), captured: String::new(), counter: 100 + u32::from(i) })
                 .collect(),
+            registration: None,
         };
         let lens = vec![Opcode::WarpRectilinear { planes: vec![[1.0, 0.01, 0.0, 0.0, 0.0, 0.0]], center: [0.5, 0.5] }];
         DngSource { metadata, color, orientation: Orientation::Normal, lens, provenance, preview: None }
