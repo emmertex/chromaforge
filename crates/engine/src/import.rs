@@ -1849,13 +1849,25 @@ impl ImportJob {
         (files, Prepared { scanned, plugin_skipped, ..Default::default() })
     }
 
+    /// What the library knows of file `f` before it is read: the one classification that
+    /// [`ImportJob::sort_file`] acts on and the guesses ahead of planning
+    /// ([`ImportJob::promote_hash`], [`ImportJob::may_read`]) read.
+    fn known(&self, f: &str) -> Known<&str> {
+        match self.by_path.get(f) {
+            None => Known::New,
+            Some((id, true, hash)) if !self.opts.local && self.transfers(f) => Known::Follows { id: *id, hash: hash.as_deref() },
+            Some((id, true, hash)) if !self.opts.local => Known::Joins { id: *id, hash: hash.as_deref() },
+            Some((id, _, _)) => Known::Library(*id),
+        }
+    }
+
     /// The content hash a file is checked against before it is read: a browsed (Local) record
     /// that joins the library where it is (no transfer) is a duplicate if a library photo, or a
     /// file earlier in this import, has its content ([`ImportJob::sort_file`]).
     #[cfg(not(target_arch = "wasm32"))]
     fn promote_hash(&self, f: &str) -> Option<&str> {
-        match self.by_path.get(f) {
-            Some((_, true, Some(h))) if !self.opts.local && !self.transfers(f) => Some(h.as_str()),
+        match self.known(f) {
+            Known::Joins { hash, .. } => hash,
             _ => None,
         }
     }
@@ -1864,26 +1876,24 @@ impl ImportJob {
     /// the scan left no probe of it: a guess made ahead of planning (only planning decides).
     #[cfg(not(target_arch = "wasm32"))]
     fn may_read(&self, f: &str) -> bool {
-        let todo = match self.by_path.get(f) {
-            None => true,
-            Some((_, true, _)) => !self.opts.local && self.transfers(f),
-            Some(_) => false,
-        };
-        todo && !self.cache.contains_key(f)
+        matches!(self.known(f), Known::New | Known::Follows { .. }) && !self.cache.contains_key(f)
     }
 
-    /// A file sorted before anything is read: known to the library already (a duplicate by path),
-    /// a browsed (Local) record that joins the library where it is, or a file to do (read, then
-    /// planned). A browsed record whose file is copied or moved follows it (`follow`).
+    /// A file sorted before anything is read, as [`ImportJob::known`] classifies it: known to the
+    /// library already (a duplicate by path), a browsed (Local) record that joins the library
+    /// where it is, or a file to do (read, then planned). A browsed record whose file is copied
+    /// or moved follows it (`follow`).
     fn sort_file(&mut self, f: String, follow: &mut HashMap<String, PhotoId>) -> Sorted {
         use std::sync::atomic::Ordering::Relaxed;
-        match self.by_path.get(f.as_str()).cloned() {
-            Some((id, true, hash)) if !self.opts.local && self.transfers(&f) => {
+        // (owned: sorting the file changes what is known of it)
+        match self.known(&f).owned() {
+            Known::New => Sorted::Todo(f),
+            Known::Follows { id, hash } => {
                 self.by_path.insert(f.clone(), (id, false, hash));
                 follow.insert(f.clone(), id);
                 Sorted::Todo(f)
             }
-            Some((id, true, hash)) if !self.opts.local => {
+            Known::Joins { id, hash } => {
                 // a library photo with the same content comes first, and a file promoted earlier
                 // (here or in a previous batch) counts as the library's from then on
                 if let Some(h) = &hash {
@@ -1898,11 +1908,10 @@ impl ImportJob {
                 self.done.fetch_add(1, Relaxed);
                 Sorted::Item(PreparedItem::Promote(id))
             }
-            Some((id, _, _)) => {
+            Known::Library(id) => {
                 self.done.fetch_add(1, Relaxed);
                 Sorted::Item(PreparedItem::Duplicate { path: f, existing: Some(id), reason: "path", hash: None })
             }
-            None => Sorted::Todo(f),
         }
     }
 
@@ -2082,6 +2091,31 @@ impl ImportJob {
             };
             self.note_transfer(&item);
             out.items.push(item);
+        }
+    }
+}
+
+/// What the library knows of a file before it is read ([`ImportJob::known`]), its content hash
+/// as `H`.
+enum Known<H> {
+    /// Not in the library: read, then planned.
+    New,
+    /// A browsed (Local) record whose file is copied or moved: read and planned, the record
+    /// following the file.
+    Follows { id: PhotoId, hash: Option<H> },
+    /// A browsed (Local) record that joins the library where it is, unread.
+    Joins { id: PhotoId, hash: Option<H> },
+    /// In the library already: a duplicate by path.
+    Library(PhotoId),
+}
+
+impl Known<&str> {
+    fn owned(self) -> Known<String> {
+        match self {
+            Known::New => Known::New,
+            Known::Follows { id, hash } => Known::Follows { id, hash: hash.map(str::to_string) },
+            Known::Joins { id, hash } => Known::Joins { id, hash: hash.map(str::to_string) },
+            Known::Library(id) => Known::Library(id),
         }
     }
 }
@@ -3103,5 +3137,33 @@ mod prepared_tests {
         // at most the files the (up to 8) readers had already started
         assert!(seen.load(Relaxed) <= 8, "read {} files after cancel", seen.load(Relaxed));
         assert!(prepared.items.is_empty());
+    }
+
+    /// The guesses made ahead of planning agree with how planning sorts each kind of file: a
+    /// file is read ahead exactly when sorting makes it a file to do (and the scan left no
+    /// probe of it), and only a browsed record joining where it is has its hash checked first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_guesses_ahead_of_planning_agree_with_sorting() {
+        let dest = std::env::temp_dir().join(format!("lcc-known-{}", std::process::id()));
+        let inside = dest.join("in.jpg").to_string_lossy().into_owned();
+        for local in [false, true] {
+            let mut s = Session::new().with_fs();
+            let opts = ImportOptions { mode: ImportMode::Copy, destination: Some(dest.to_string_lossy().into_owned()), local, ..Default::default() };
+            let mut job = ImportJob::new(&mut s, opts).unwrap();
+            job.by_path.insert("/x/browsed.jpg".into(), (PhotoId(1), true, Some("h1".into())));
+            job.by_path.insert(inside.clone(), (PhotoId(2), true, Some("h2".into())));
+            job.by_path.insert("/x/library.jpg".into(), (PhotoId(3), false, None));
+            job.cache.insert("/x/scanned.jpg".into(), ProbeInfo::default());
+            for f in ["/x/new.jpg", "/x/browsed.jpg", inside.as_str(), "/x/library.jpg", "/x/scanned.jpg"] {
+                let (may_read, hash) = (job.may_read(f), job.promote_hash(f).map(str::to_string));
+                let cached = job.cache.contains_key(f);
+                let sorted = job.sort_file(f.to_string(), &mut HashMap::new());
+                let todo = matches!(sorted, Sorted::Todo(_));
+                assert_eq!(may_read, todo && !cached, "local {local}: {f}");
+                let promoted = matches!(sorted, Sorted::Item(PreparedItem::Promote(_)));
+                assert_eq!(hash.is_some(), promoted, "local {local}: {f}");
+            }
+        }
     }
 }
