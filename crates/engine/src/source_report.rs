@@ -14,7 +14,7 @@ pub fn report(bytes: &[u8], camera: &str) -> Result<Value, String> {
         let format = lcc_codecs::sniff(bytes).map(|f| format!("{f:?}"));
         return Ok(json!({"raw": false, "format": format, "decode": {"kind": "image"}}));
     }
-    let mut raw = match lcc_raw::decode(bytes).map_err(|e| crate::files::preview_reason(bytes, e)) {
+    let mut raw = match crate::raw_decoder::decode(bytes).map_err(|e| crate::files::preview_reason(bytes, e)) {
         Ok(r) => r,
         // shown from the camera's embedded JPEG until the variant is supported
         Err(Ok(why)) => return Ok(json!({"raw": true, "decode": {"kind": "embeddedPreview", "reason": why}})),

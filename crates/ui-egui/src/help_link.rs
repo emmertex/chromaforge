@@ -45,6 +45,7 @@ pub const TOPICS: &[(&str, &str)] = &[
     // Settings ▸ Import
     ("importWindow", "library/import#browse-without-importing"),
     ("rawDefaults", "reference/settings#raw-defaults"),
+    ("rawDecoder", "reference/settings#raw-decoder"),
     ("cameraProfile", "reference/settings#camera-profile"),
     ("importMetadata", "reference/settings#metadata"),
     ("xmpSidecars", "reference/settings#xmp-sidecars"),
