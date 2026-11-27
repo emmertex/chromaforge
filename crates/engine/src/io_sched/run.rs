@@ -13,7 +13,7 @@ use lcc_catalog::folders::{VolumeKey, volume_key};
 
 use super::IoContext;
 use super::job::JobState;
-use super::shared::{AbandonKind, CANCEL_SILENCE, COMPUTING_FACTOR, Shared, WAKE_JUMP};
+use super::shared::{AbandonKind, Admission, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Shared, WAKE_JUMP};
 
 /// One unit of file work: the file it reads (its volume decides its queue) and the work.
 pub(crate) struct IoJob<T> {
@@ -129,6 +129,9 @@ struct Vol {
     dead: bool,
     /// Its recovery job, running.
     recovery: Option<usize>,
+    /// A recovery job of this call answered without data ([`Ended::Answered`]): the next one may
+    /// start at once.
+    answered: bool,
 }
 
 struct Call<'a, T> {
@@ -158,7 +161,8 @@ struct Call<'a, T> {
 /// two or more volumes have work at most `max(2, workers)` at once with each volume held to one
 /// fewer. Results in input order; `done` counts every outcome but [`JobOutcome::NotStarted`] and
 /// [`JobOutcome::Cancelled`]; `succeeded` says whether a job's result shows its volume works (a
-/// probe that returned Ok), for the recovery rules. A single job runs on the calling thread.
+/// probe that returned Ok), for the recovery rules. A single job runs on the calling thread;
+/// once `cancel` is set no job starts, a single one included.
 pub(crate) fn run_jobs<T: Send + 'static>(
     ctx: &Arc<IoContext>,
     jobs: Vec<IoJob<T>>,
@@ -170,7 +174,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
     if jobs.len() == 1 {
         let mut jobs = jobs;
         return match jobs.pop() {
-            Some(job) => run_single(ctx, job, succeeded, done),
+            Some(job) => run_single(ctx, job, succeeded, cancel, done),
             None => Report { outcomes: Vec::new(), metrics: Vec::new() },
         };
     }
@@ -191,6 +195,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
                     cancel_silent: 0,
                     dead: false,
                     recovery: None,
+                    answered: false,
                 });
                 vols.len() - 1
             }
@@ -239,27 +244,38 @@ pub(crate) fn run_jobs<T: Send + 'static>(
 }
 
 /// A single job, on the calling thread as today (no threads, no mount read, no stall rule; cancel
-/// can't end it). It still checks the registry, through the cached mount list: on a blocked
-/// volume it runs as the recovery job if one may run now, else fails at once.
-fn run_single<T: Send + 'static>(ctx: &Arc<IoContext>, job: IoJob<T>, succeeded: fn(&T) -> bool, done: &AtomicUsize) -> Report<T> {
+/// set before it starts means it doesn't start, but can't end it once it runs). It still checks
+/// the registry, through the cached mount list: on a blocked volume it runs as the recovery job if
+/// one may run now, else fails at once. Start and end follow the registry's one rule each
+/// ([`Shared::admission`], [`Shared::job_finished`]), as the call's scheduler does.
+fn run_single<T: Send + 'static>(
+    ctx: &Arc<IoContext>,
+    job: IoJob<T>,
+    succeeded: fn(&T) -> bool,
+    cancel: &AtomicBool,
+    done: &AtomicUsize,
+) -> Report<T> {
+    if cancel.load(Ordering::Relaxed) {
+        return Report { outcomes: vec![JobOutcome::NotStarted], metrics: vec![None] };
+    }
     let shared = &ctx.shared;
     let key = volume_key(&job.source, &ctx.mounts.cached());
     let now = shared.clock.mono();
     let id = shared.next_id();
-    let recovery = shared.blocked(&key, now);
-    if recovery && !shared.try_start_recovery(&key, id, now) {
-        done.fetch_add(1, Ordering::Relaxed);
-        return Report { outcomes: vec![JobOutcome::VolumeNotResponding { volume: key }], metrics: vec![None] };
-    }
+    let recovery = match shared.admission(&key, id, now) {
+        Admission::Free => false,
+        Admission::Recovery => true,
+        Admission::Refused => {
+            done.fetch_add(1, Ordering::Relaxed);
+            return Report { outcomes: vec![JobOutcome::VolumeNotResponding { volume: key }], metrics: vec![None] };
+        }
+    };
     let state = Arc::new(JobState::new(id, key.clone(), shared.clock.clone(), Arc::downgrade(shared)));
     shared.job_started(&key, now);
     let (result, metrics) = execute(job.run, &state);
     let _ = state.try_finish();
     let ok = result.as_ref().is_ok_and(succeeded);
-    shared.job_ended(&key, shared.clock.mono(), metrics.wall.saturating_sub(metrics.gate_wait), metrics.bytes > 0, ok);
-    if recovery {
-        shared.end_recovery(&key, id);
-    }
+    let _ = shared.job_finished(&key, shared.clock.mono(), took(&metrics), metrics.bytes > 0, ok, recovery.then_some(id));
     done.fetch_add(1, Ordering::Relaxed);
     let outcome = match result {
         Ok(t) => JobOutcome::Done(t),
@@ -268,6 +284,11 @@ fn run_single<T: Send + 'static>(ctx: &Arc<IoContext>, job: IoJob<T>, succeeded:
     let metrics = vec![Some(metrics)];
     log_metrics(&metrics);
     Report { outcomes: vec![outcome], metrics }
+}
+
+/// A finished job's time on its volume: its wall time less its wait at the work gate.
+fn took(m: &JobMetrics) -> u64 {
+    m.wall.saturating_sub(m.gate_wait)
 }
 
 /// Whether a tick `dm` ns of the monotonic clock after the last one, `inline` of them spent running
@@ -401,7 +422,9 @@ impl<T: Send + 'static> Call<'_, T> {
             }
             let Some(&i) = vol.queue.front() else { continue };
             let id = self.slots.get(i).map_or(0, |s| s.id);
-            if self.ctx.shared.try_start_recovery(&vol.key, id, now) {
+            let shared = &self.ctx.shared;
+            let may = if vol.answered { shared.continue_recovery(&vol.key, id, now) } else { shared.try_start_recovery(&vol.key, id, now) };
+            if may {
                 self.start_recovery(v, i, now);
             } else {
                 log::info!("io: volume {} is not responding: its files fail", vol.key);
@@ -526,16 +549,11 @@ impl<T: Send + 'static> Call<'_, T> {
         let key = vol.key.clone();
         let moved = f.metrics.bytes > 0;
         let ok = f.result.as_ref().is_ok_and(self.succeeded);
-        self.ctx.shared.job_ended(&key, now, f.metrics.wall.saturating_sub(f.metrics.gate_wait), moved, ok);
-        if recovery {
-            self.ctx.shared.end_recovery(&key, id);
-            if let Some(vol) = self.vols.get_mut(v) {
-                vol.recovery = None;
-            }
-            if !(moved || ok) {
-                log::info!("io: volume {key} is still not responding: its files fail");
-                self.fail_queue(v);
-            }
+        let ended = self.ctx.shared.job_finished(&key, now, took(&f.metrics), moved, ok, recovery.then_some(id));
+        if recovery && let Some(vol) = self.vols.get_mut(v) {
+            vol.recovery = None;
+            // (answered without data: the next queued job goes as the next recovery job)
+            vol.answered |= ended == Ended::Answered;
         }
         let outcome = match f.result {
             Ok(t) => JobOutcome::Done(t),

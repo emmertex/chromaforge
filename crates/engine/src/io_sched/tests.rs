@@ -746,13 +746,24 @@ fn a_slow_volume_moving_bytes_never_stalls() {
 
 // ---------------------------------------------------------------- cancel
 
-/// Cancel before anything starts: every job not started, `done` 0.
+/// Cancel before anything starts: every job not started, `done` 0; a single job too (the
+/// calling thread's path), which then doesn't run.
 #[test]
 fn cancel_before_the_start() {
     let h = H::new();
     let (cancel, done) = (AtomicBool::new(true), AtomicUsize::new(0));
     let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done);
     assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::NotStarted)));
+    assert_eq!(done.load(Ordering::SeqCst), 0);
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran2 = ran.clone();
+    let one = job("/a/one", move || {
+        ran2.store(true, Ordering::SeqCst);
+        Ok(1)
+    });
+    let r = run_jobs(&h.ctx, vec![one], 4, Result::is_ok, &cancel, &done);
+    assert!(matches!(r.outcomes.as_slice(), [JobOutcome::NotStarted]));
+    assert!(!ran.load(Ordering::SeqCst));
     assert_eq!(done.load(Ordering::SeqCst), 0);
 }
 
@@ -934,20 +945,53 @@ fn a_recovery_job_that_reads_ends_the_block() {
     hung.release();
 }
 
-/// A recovery job that fails without moving bytes (a file that has since gone) leaves the block,
-/// and the jobs queued behind it fail "volume not responding".
+/// Jobs on `vol` that fail at once without moving bytes (files that have since gone), recording
+/// how many of `vol`'s jobs ran at once.
+fn gone(vol: &str, n: usize, conc: &Arc<Conc>) -> Vec<IoJob<R>> {
+    (0..n)
+        .map(|i| {
+            let (conc, vol) = (conc.clone(), vol.to_string());
+            job(&format!("{vol}/gone{i}"), move || {
+                conc.enter(&vol);
+                std::thread::sleep(Duration::from_millis(1));
+                conc.leave(&vol);
+                Err("no such file".into())
+            })
+        })
+        .collect()
+}
+
+/// A recovery job that fails without moving bytes (a file that has since gone) shows the volume
+/// answers but not that it works: the block stays, and the jobs queued behind it go one at a time
+/// as the next recovery jobs, each with its own result, never "volume not responding"; the first
+/// that moves bytes ends the block and the rest run at once.
 #[test]
-fn a_recovery_job_without_bytes_leaves_the_block() {
+fn a_recovery_job_without_bytes_hands_on_to_the_next_file() {
     let h = H::new();
     let hung = stall_volume(&h, "/a");
-    let mut jobs = vec![job("/a/gone", || Err("no such file".into()))];
+    let conc = Arc::new(Conc::default());
+    *conc.unfinished.lock().unwrap().entry("/a".into()).or_default() += 2;
+    let mut jobs = gone("/a", 2, &conc);
     jobs.extend(quick("/a", 3));
     jobs.extend(quick("/b", 2));
     let (r, done) = h.run(jobs, 4);
-    assert!(matches!(r.outcomes.first(), Some(JobOutcome::Done(Err(_)))), "the recovery job's own result");
-    assert_eq!(vnr_count(&r), 3);
-    assert_eq!(ok_count(&r), 2);
-    assert_eq!(done, 6);
+    assert!(matches!(r.outcomes.as_slice(), [JobOutcome::Done(Err(_)), JobOutcome::Done(Err(_)), ..]), "each its own result");
+    assert_eq!(vnr_count(&r), 0);
+    assert_eq!(ok_count(&r), 5);
+    assert_eq!(done, 7);
+    assert_eq!(conc.max_vol.lock().unwrap().get("/a").copied(), Some(1), "one recovery job at a time");
+    assert!(!h.ctx.shared.blocked(&key("/a"), h.now()), "a read ended the block");
+    hung.release();
+
+    // every file gone: each runs alone, the block stays
+    let h = H::new();
+    let hung = stall_volume(&h, "/a");
+    let conc = Arc::new(Conc::default());
+    *conc.unfinished.lock().unwrap().entry("/a".into()).or_default() += 4;
+    let (r, done) = h.run(gone("/a", 4, &conc), 4);
+    assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::Done(Err(_)))), "{:?}", r.outcomes);
+    assert_eq!(done, 4);
+    assert_eq!(conc.max_vol.lock().unwrap().get("/a").copied(), Some(1));
     assert!(h.ctx.shared.blocked(&key("/a"), h.now()));
     hung.release();
 }
@@ -959,8 +1003,9 @@ fn recovery_at_most_once_a_minute() {
     for (after, runs) in [(RECOVERY_EVERY - 1, false), (RECOVERY_EVERY, true), (RECOVERY_EVERY + 1, true)] {
         let h = H::new();
         let hung = stall_volume(&h, "/a");
-        let (r, _) = h.run(vec![job("/a/gone", || Err("gone".into())), job("/a/x", || Ok(1))], 2);
-        assert_eq!(vnr_count(&r), 1);
+        let (r, _) = h.run(vec![job("/a/gone", || Err("gone".into())), job("/a/gone2", || Err("gone".into()))], 2);
+        assert_eq!(vnr_count(&r), 0, "each ran as the next recovery job");
+        assert!(h.ctx.shared.blocked(&key("/a"), h.now()));
         h.advance(after);
         let ran = Arc::new(AtomicBool::new(false));
         let ran2 = ran.clone();
@@ -1146,8 +1191,9 @@ fn cancel_abandoned_jobs_block_only_once_stalled() {
         })
         .collect();
     let (r, _) = h.run(jobs, 4);
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "only the recovery job ran");
-    assert_eq!(vnr_count(&r), 2);
+    assert_eq!(ran.load(Ordering::SeqCst), 3, "each as the next recovery job");
+    assert_eq!(vnr_count(&r), 0);
+    assert!(h.ctx.shared.blocked(&key("/a"), h.now()), "nothing showed the volume works");
     latch.release();
 }
 
@@ -1345,12 +1391,24 @@ fn the_probe_wrapper_keeps_todays_strings() {
     assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("not probed")));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 1, &done, &cancel);
     assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("cancelled")));
-    // a stalled volume's files
+    // one file, cancelled before it starts: not probed, as today's single-file path
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran2 = ran.clone();
+    let watched: crate::media::FileProbe = Arc::new(move |_| {
+        ran2.store(true, Ordering::SeqCst);
+        Ok(crate::media::ProbeInfo::default())
+    });
+    let r = crate::import::probe_scheduled(&h.ctx, &watched, &paths[..1], crate::import::workers(1), &done, &cancel);
+    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(String::as_str), Some("cancelled"));
+    assert!(!ran.load(Ordering::SeqCst));
+    // a stalled volume's files, within the minute after its recovery job answered without data
     let _hung = stall_volume(&h, "/c");
     h.advance(1);
-    let paths: Vec<String> = ["/c/1", "/c/2"].iter().map(|s| s.to_string()).collect();
     let bytes_less: crate::media::FileProbe = Arc::new(|_| Err("gone".into()));
     let cancel = AtomicBool::new(false);
+    let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &["/c/0".to_string()], 4, &done, &cancel);
+    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(String::as_str), Some("gone"), "the recovery job's own result");
+    let paths: Vec<String> = ["/c/1", "/c/2"].iter().map(|s| s.to_string()).collect();
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &paths, 4, &done, &cancel);
     assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).map(String::as_str), Some("/c/2: volume not responding (/c)"));
 }

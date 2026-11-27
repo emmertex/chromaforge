@@ -832,7 +832,6 @@ pub(crate) fn probe_all(
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Vec<Result<ProbeInfo, String>> {
-    use std::sync::atomic::Ordering::Relaxed;
     let Some(probe) = probe.cloned() else {
         return paths
             .iter()
@@ -844,10 +843,6 @@ pub(crate) fn probe_all(
             })
             .collect();
     };
-    // a single file, as today: cancelled before it starts, or run on this thread
-    if paths.len() == 1 && cancel.load(Relaxed) {
-        return vec![Err("cancelled".into())];
-    }
     #[cfg(not(target_arch = "wasm32"))]
     let probed = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
     // (no threads: one file after another, R10)
@@ -855,6 +850,7 @@ pub(crate) fn probe_all(
     let probed = paths
         .iter()
         .map(|p| {
+            use std::sync::atomic::Ordering::Relaxed;
             if cancel.load(Relaxed) {
                 return Err("cancelled".into());
             }

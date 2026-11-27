@@ -36,6 +36,33 @@ pub(crate) const RECOVERY_EVERY: u64 = 60 * SEC;
 /// A stuck recovery job stops being "the" recovery job after this long.
 pub(crate) const RECOVERY_STUCK: u64 = 600 * SEC;
 
+/// How a job may start on a volume ([`Shared::admission`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Not blocked: it runs.
+    Free,
+    /// Blocked: it runs as the volume's recovery job.
+    Recovery,
+    /// Blocked, and no recovery job may start now: it fails "volume not responding".
+    Refused,
+}
+
+/// What a finished job says about its volume ([`Shared::job_finished`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// An ordinary job.
+    Job,
+    /// A recovery job that moved bytes or succeeded: the block is over.
+    Works,
+    /// A recovery job that returned without data (a file that has gone, a name refused without
+    /// I/O): the volume answers, so it isn't "not responding", but nothing showed it works either
+    /// (a dead mount may answer from a cached lookup). The block stays, and the volume's next
+    /// queued job goes as the next recovery job: its files run one at a time, each with its own
+    /// result, until one shows the volume works. A recovery job that hangs is abandoned by the
+    /// stall rule, which fails the rest.
+    Answered,
+}
+
 /// Why a job was abandoned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AbandonKind {
@@ -193,6 +220,49 @@ impl Shared {
             h.last_recovery_start = Some(now);
         }
         may
+    }
+
+    /// Make `job_id` the volume's recovery job right after the last one answered without data
+    /// in this call ([`Ended::Answered`]): no wait for the once-a-minute limit (the volume
+    /// answers, and only one job at a time goes to it), but never beside another recovery job.
+    pub(crate) fn continue_recovery(&self, volume: &VolumeKey, job_id: u64, now: u64) -> bool {
+        let mut st = self.lock();
+        let h = st.volumes.entry(volume.clone()).or_default();
+        if h.recovery.is_some() {
+            return false;
+        }
+        h.recovery = Some(Recovery { job_id, started_at: now });
+        h.last_recovery_start = Some(now);
+        true
+    }
+
+    /// Whether job `job_id` may start on `volume` at `now`, and as what: the one admission rule of
+    /// the registry (§5.2, R4d) for a job about to start alone (the single-job path; the call's
+    /// scheduler also holds a blocked volume's queue while its running jobs may show it works).
+    pub(crate) fn admission(&self, volume: &VolumeKey, job_id: u64, now: u64) -> Admission {
+        if !self.blocked(volume, now) {
+            Admission::Free
+        } else if self.try_start_recovery(volume, job_id, now) {
+            Admission::Recovery
+        } else {
+            Admission::Refused
+        }
+    }
+
+    /// A job on `volume` finished at `now` (the one end-of-job rule, §5.2): `took` ns outside the
+    /// gate, `moved` bytes, `ok` if its result shows the volume works; `recovery` its id if it was
+    /// the volume's recovery job, whose slot is freed.
+    pub(crate) fn job_finished(&self, volume: &VolumeKey, now: u64, took: u64, moved: bool, ok: bool, recovery: Option<u64>) -> Ended {
+        self.job_ended(volume, now, took, moved, ok);
+        let Some(id) = recovery else { return Ended::Job };
+        self.end_recovery(volume, id);
+        if moved || ok {
+            log::info!("io: volume {volume} responds again");
+            Ended::Works
+        } else {
+            log::info!("io: volume {volume} answered without data: it stays blocked, its files go one at a time");
+            Ended::Answered
+        }
     }
 
     fn end_recovery_locked(st: &mut State, volume: &VolumeKey, job_id: u64) {
