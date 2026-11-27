@@ -33,12 +33,12 @@ menu. Purple has no default number key, matching Lightroom Classic. Clear Color 
 but it is a command of its own: give it a key in Help → Keyboard Shortcuts and the key clears the label of
 the selected photos, as the Photo → Set Color Label → None row does (which then shows the key). Rejection marks a photo for
 culling; it does not delete the original or remove it from the library.
-Setting a colour label shows the same brief bottom toast as a rating, using the colour or your
-custom label name. Clearing it shows a confirmation too, whether applied by a key, menu or swatch.
+Setting or clearing a colour label, whether by a key, menu or swatch, is reported by the on-screen
+overlay (Settings → Notifications → Image and Library edits, "Show changes"), as ratings and flags are, using the
+colour or your custom label name; no toast repeats it.
 Labelled thumbnails have a translucent matching colour on the square-grid surround, photo-grid
 footer (translucent, over the bottom of the photo) and Detail filmstrip surround. The white active-photo outline remains clear.
-The label confirmation uses a pale matching background with dark text; ratings and errors retain
-their neutral HUD styling. Custom names use the underlying label's colour.
+Custom names use the underlying label's colour.
 
 Bracket ratings use each photo's own starting rating, and the changed photos form one Undo / Redo
 step. AutoWrite uses the normal rating metadata path. In Detail, including Masking and Remove,

@@ -940,7 +940,7 @@ pub fn dialogs(app: &mut LccApp, ctx: &egui::Context) {
                         match res {
                             Ok(v) => app.peer_sync.status = v,
                             Err(e) => {
-                                app.toast(ui.ctx(), e.to_string());
+                                app.toast_error(ui.ctx(), e.to_string());
                                 app.peer_sync.later.insert(album);
                             }
                         }

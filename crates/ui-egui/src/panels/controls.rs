@@ -200,7 +200,6 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         "readout" => {
             egui::ScrollArea::vertical().id_salt("surfaceReadout").max_height(max_h).show(ui, |ui| {
                 timing_and_readout(app, ui, t);
-                super::surface_osd::settings_section(app, ui, t);
             });
         }
         "setup" => {
@@ -1676,7 +1675,15 @@ fn timing_and_readout(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "surface.echo", &mut s.transport.echo_suppression, "Keep the surface's readout steady while turning");
     heading(ui, t, "On-Screen Readout");
     check(ui, "surface.osdCommands", &mut s.osd.show_commands, "Also for key presses");
-    hint(ui, t, "Its look is set under On-Screen Overlay below (also in Settings, Interface).");
+    hint(
+        ui,
+        t,
+        &crate::i18n::tr_format!(
+            "The on-screen overlay is set up in {settings} ▸ {notifications}.",
+            settings = tr("Settings"),
+            notifications = tr("Notifications")
+        ),
+    );
     heading(ui, t, "Keys");
     check(ui, "surface.showValues", &mut s.look.show_values, "Show values on the keys and the dial display");
     check(ui, "surface.haptics", &mut s.look.haptics, "Haptic feedback (where the device has it)");

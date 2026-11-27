@@ -33,6 +33,7 @@ pub const FIELDS: &[&str] = &[
     "noise",
     "moire",
     "defringe",
+    "lens_blur",
     "color_hue",
     "color_sat",
     "recolor",
@@ -136,7 +137,7 @@ impl Default for MaskEffect {
 
 /// Field `k` of `a` (0 for an unknown name).
 pub fn get(a: &LocalAdjustments, k: &str) -> f64 {
-    // (the Recolor fields directly: a 0 one is left out of the JSON, so a lookup by name misses it)
+    // (the Recolor and Lens Blur fields directly: a 0 one is left out of the JSON, so a lookup by name misses it)
     let direct = match k {
         "recolor" => Some(a.recolor),
         "recolor_r" => Some(a.recolor_r),
@@ -146,6 +147,8 @@ pub fn get(a: &LocalAdjustments, k: &str) -> f64 {
         "recolor_from_r" => Some(a.recolor_from_r),
         "recolor_from_g" => Some(a.recolor_from_g),
         "recolor_from_b" => Some(a.recolor_from_b),
+        "lens_blur" => Some(a.lens_blur),
+        "lens_blur_boost" => Some(a.lens_blur_boost),
         _ => None,
     };
     direct.unwrap_or_else(|| serde_json::to_value(a).ok().and_then(|v| v.get(k).and_then(Value::as_f64)).unwrap_or(0.0))
@@ -163,6 +166,8 @@ pub fn set(a: &LocalAdjustments, k: &str, v: f64) -> LocalAdjustments {
         "recolor_from_r" => Some(&mut out.recolor_from_r),
         "recolor_from_g" => Some(&mut out.recolor_from_g),
         "recolor_from_b" => Some(&mut out.recolor_from_b),
+        "lens_blur" => Some(&mut out.lens_blur),
+        "lens_blur_boost" => Some(&mut out.lens_blur_boost),
         _ => None,
     };
     if let Some(slot) = direct {

@@ -117,7 +117,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if r.on_hover_text(crate::i18n::tr("Reset the selected photos' edits")).clicked()
         && let Err(e) = app.run("develop.reset", json!({}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
 }
 
@@ -125,10 +125,10 @@ fn quick_set(app: &mut LccApp, ui: &egui::Ui, p: serde_json::Value) {
     match app.run("develop.quickSet", p) {
         Ok(r) => {
             if let Some(e) = r.field("errors").as_array().and_then(|a| a.first()).and_then(|e| e.as_str()) {
-                app.toast(ui.ctx(), e.to_string());
+                app.toast_error(ui.ctx(), e.to_string());
             }
         }
-        Err(e) => app.toast(ui.ctx(), e),
+        Err(e) => app.toast_error(ui.ctx(), e),
     }
 }
 
@@ -181,7 +181,7 @@ fn steps(app: &mut LccApp, ui: &mut egui::Ui, rows: &[(&str, &str, f64, f64)]) {
                     .clicked()
                     && let Err(e) = app.run("develop.quickAdjust", json!({"control": ctl, "delta": d}))
                 {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
             }
         });

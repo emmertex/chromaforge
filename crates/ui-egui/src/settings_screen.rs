@@ -89,6 +89,13 @@ const SECTIONS: &[Section] = &[
         tabs: &["interface"],
         words: "layout classic modern appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
     },
+    Section {
+        key: "notifications",
+        label: "Notifications",
+        icon: Icon::Chat,
+        tabs: &["notifications"],
+        words: "notifications messages overlay pill flash changes information confirmation warnings persistent test duration opacity size position background",
+    },
     Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
     Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"], words: "faces people recognition" },
     Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"], words: "profiles hide camera body serial" },

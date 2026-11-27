@@ -407,7 +407,7 @@ fn a_batch_row_folds_its_photos_and_says_how_it_went() {
     drop(photo);
     drop(b);
     h.step();
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert_eq!(toast, "AI Denoise: 1 done, 1 failed: IMG_0002.CR3: the file is damaged");
     h.app.ui.toasts.clear();
     h.step();
@@ -562,7 +562,7 @@ fn import_cancelled_by_command_reports_cancelled() {
     h.app.session.activity.cancel(tasks[0].id).unwrap();
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
     assert!(h.app.session.activity.list().is_empty());
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.starts_with("Import cancelled")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.starts_with("Import cancelled")), "{:?}", h.app.ui.toasts);
     assert!(h.app.session.catalog.len() < n, "stopped part-way");
     assert_eq!(h.app.session.undo.len(), undo0 + 1, "one undo step");
     let _ = std::fs::remove_dir_all(&dir);
@@ -646,7 +646,7 @@ fn final_merge_shows_a_row_and_cancels() {
         assert!(h.app.merge.last_result.is_none(), "{command}: nothing merged");
         assert_eq!(h.app.session.catalog.len(), before, "{command}: no photo added");
         assert!(h.app.session.activity.list().is_empty());
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert_eq!(toast, cancelled);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -829,13 +829,13 @@ fn rows_added_later_grow_the_list_and_long_detail_stays_inside() {
 fn immediate_library_commands_and_auto_sync_show_completion() {
     let mut h = demo();
     assert!(h.app.run("library.clearPreviews", json!({})).is_ok());
-    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("✓ Discard Preview Cache"));
+    assert_eq!(h.app.ui.toast().map(|t| t.text.as_str()), Some("✓ Discard Preview Cache"));
 
     assert_eq!(h.app.run("develop.autoSync", json!({"on": true})).unwrap()["on"], true);
-    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Auto Sync: On"));
+    assert_eq!(h.app.ui.toast().map(|t| t.text.as_str()), Some("Auto Sync: On"));
 
     assert_eq!(h.app.run("develop.autoSync", json!({"on": false})).unwrap()["on"], false);
-    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Auto Sync: Off"));
+    assert_eq!(h.app.ui.toast().map(|t| t.text.as_str()), Some("Auto Sync: Off"));
 
     // This demo has no on-disk library to optimize. A failed command must not
     // report completion (or accidentally keep its preceding success toast).

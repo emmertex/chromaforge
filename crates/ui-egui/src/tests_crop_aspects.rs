@@ -59,7 +59,7 @@ fn type_into(h: &mut Headless, field: &str, text: &str) {
 }
 
 fn toast(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 fn custom_names(h: &Headless) -> Vec<String> {

@@ -684,6 +684,8 @@ fn swap(app: &mut LccApp, to: ModuleId, full: bool) {
     app.ui.layouts.insert(from, saved);
     app.ui.previous_module = Some(from);
     app.ui.module = to;
+    // a step of the history, as in Lightroom (Edit ▸ Undo Module Change)
+    app.session.module_switched(to.key());
     if let Some(l) = app.ui.layouts.get(&to).cloned() {
         apply(app, &l, full);
     }
@@ -697,6 +699,14 @@ fn swap(app: &mut LccApp, to: ModuleId, full: bool) {
 /// Follow the view: opening an editing panel from Library enters Develop, returning to a grid
 /// enters Library. Placeholder modules stay until a view or panel changes under them.
 pub fn sync(app: &mut LccApp) {
+    // an Undo or a Redo brought another module back; any other change of module the session just follows
+    if let Some(key) = app.session.take_module_request()
+        && let Some(to) = ModuleId::parse(&key)
+        && to != app.ui.module
+    {
+        let _ = switch(app, to);
+    }
+    app.session.follow_module(app.ui.module.key());
     let now = (app.ui.view, app.ui.right);
     if app.ui.module.is_placeholder() {
         match app.ui.placeholder_from {

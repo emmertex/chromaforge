@@ -64,7 +64,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, ix: &Indexer, statu
     let mut ran = false;
     let mut run = |app: &mut LccApp, ui: &egui::Ui, cmd: &str| {
         if let Err(e) = app.run(cmd, json!({})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         ran = true;
     };

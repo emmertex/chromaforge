@@ -138,6 +138,7 @@ fn virtual_copies_are_independent_and_persist() {
     assert_eq!(found["total"], 3);
     // undo removes a copy completely
     s.execute("edit.undo", &json!({})).unwrap(); // exposure
+    s.execute("edit.undo", &json!({})).unwrap(); // selecting the copy
     s.execute("edit.undo", &json!({})).unwrap(); // third copy
     assert!(s.catalog.photo(c3.id).is_none());
     let expect = s.catalog.to_snapshot();
