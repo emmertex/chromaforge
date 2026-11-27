@@ -391,6 +391,47 @@ fn jobs_that_move_no_bytes_leave_the_limit() {
     assert_eq!(super::tests::ok_count(&call.join()), 2000);
 }
 
+/// A window open across a wake from sleep (detected by a late step, where the monotonic clock
+/// counts the sleep, as on Windows) measured the sleep: it is dropped and starts again. The same
+/// 10 s gap with no wake detected completes the window (six jobs in 3 s, the gap, two more).
+#[test]
+fn a_wake_drops_the_open_windows() {
+    for wake in [true, false] {
+        let mut h = H::new();
+        if let Some(ctx) = Arc::get_mut(&mut h.ctx) {
+            ctx.late_tick_is_wake = wake;
+        }
+        assert_eq!(h.ctx.late_tick_is_wake, wake, "the context is not shared yet");
+        let dev = Arc::new(Device::default());
+        let call = start(&h, jobs("/a", None, 2000, &dev, false), 2);
+        let finish_one = || {
+            wait_until(|| dev.waiting() >= 2, "the volume's slots to fill");
+            let done = call.done.load(Ordering::SeqCst);
+            dev.finish(1);
+            wait_until(|| call.done.load(Ordering::SeqCst) > done, "the finished job's outcome");
+        };
+        // the first baseline's window opens; six of its eight jobs finish in 3 s
+        wait_until(|| dev.waiting() >= 2, "the volume's slots to fill");
+        ticks(&h, 2);
+        for _ in 0..6 {
+            finish_one();
+            ticks(&h, 2);
+            h.advance(SEC / 2);
+        }
+        // one step 10 s late (under the 30 s stall time), then the last two jobs
+        h.advance(10 * SEC);
+        ticks(&h, 3);
+        for _ in 0..2 {
+            finish_one();
+        }
+        ticks(&h, 3);
+        let l = learned(&h, "/a");
+        assert_eq!(l.windows, if wake { 0 } else { 1 }, "wake detected {wake}: {l:?}");
+        dev.finish(usize::MAX / 2);
+        assert_eq!(super::tests::ok_count(&call.join()), 2000);
+    }
+}
+
 /// A call too short to complete a window leaves its volume as it was, and the pool's limit for
 /// a later call is still the calls' `workers()`.
 #[test]

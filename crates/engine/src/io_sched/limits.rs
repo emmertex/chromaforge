@@ -345,6 +345,15 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         }
     }
 
+    /// The computer slept: every open window spans the sleep (where the monotonic clock counts
+    /// it, as on Windows), so none is a measurement. Each starts again at its volume's next tick
+    /// at its limit; the phases, the stored limits and the token stay.
+    pub(crate) fn discard_windows(&mut self) {
+        for s in self.vols.values_mut() {
+            s.win = None;
+        }
+    }
+
     /// Volume `k` has jobs (`busy`) or not at `now`: a volume with none for [`FORGET`] is
     /// forgotten first, so a later call on it starts afresh. Call before [`Controller::tick`].
     pub(crate) fn note_busy(&mut self, now: f64, k: &K, busy: bool) {

@@ -479,6 +479,8 @@ impl Sched {
         if dw > dm.saturating_add(WAKE_JUMP) || late {
             log::info!("io: the computer woke from sleep: every volume gets a grace period");
             self.shared.note_wake(now);
+            // (a window open across the sleep measured the sleep: §5.7's windows start again)
+            self.ctl.discard_windows();
         }
         // (a call with every outcome is forgotten below: the tick sees its volumes go idle first,
         // so what the controller learned, and the probe it held, are settled and published)
