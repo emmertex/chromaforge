@@ -2917,10 +2917,9 @@ fn merge_rules(
 /// disk) that the folder does not lie in. Such a folder (`/Volumes`, `/mnt`…) is not a folder of
 /// one disk but a way to reach several.
 pub(crate) fn covers_other_disks(s: &Session, path: &str, ids: &[PhotoId]) -> bool {
-    ids.iter()
-        .filter_map(|id| s.catalog.photo(*id))
-        .filter_map(|p| lcc_catalog::folders::volume_of(p))
-        .any(|v| v != "/" && !lcc_catalog::query::folder_within(path, &v))
+    // (one rule of volume identity, the I/O scheduler's: `volume_of` is `volume_key` without a list)
+    let here = lcc_catalog::folders::volume_key(path, &lcc_catalog::folders::Mounts::none());
+    ids.iter().filter_map(|id| s.catalog.photo(*id)).filter_map(|p| lcc_catalog::folders::volume_of(p)).any(|v| v.id() != "/" && v != here)
 }
 
 /// The current view (source + filter) as smart-album rules. Viewing a smart album starts from

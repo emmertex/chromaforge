@@ -1219,6 +1219,26 @@ fn a_cut_mountinfo_says_so_and_drops_its_partial_line() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// macOS `/Volumes`: the startup disk's own entry (a link to `/`) is no volume of its own, so a
+/// file read through it shares the startup disk's queue; the other entries are volumes.
+#[cfg(unix)]
+#[test]
+fn the_startup_disk_link_in_volumes_keys_as_the_startup_disk() {
+    let dir = std::env::temp_dir().join(format!("lcc-io-volumes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("CARD")).unwrap();
+    std::os::unix::fs::symlink("/", dir.join("Macintosh HD")).unwrap();
+    std::os::unix::fs::symlink("/elsewhere", dir.join("other link")).unwrap();
+    let m = super::mounts::mounts_from_volumes_dir(&dir).unwrap();
+    let k = |p: &str| lcc_catalog::folders::volume_key(p, &m);
+    assert_eq!(k("/Volumes/Macintosh HD/Users/me/a.jpg"), k("/Users/me/a.jpg"));
+    assert_eq!(k("/Volumes/Macintosh HD/Users/me/a.jpg").id(), "/");
+    assert_eq!(k("/Volumes/CARD/DCIM/a.jpg").id(), "/volumes/card");
+    assert_eq!(k("/Volumes/other link/a.jpg").id(), "/volumes/other link", "a link elsewhere stays a volume, as listed");
+    assert_eq!(m.len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A helper that panics while parsing clears its flag: the next call reads again.
 #[test]
 fn a_panicking_mount_helper_clears_its_flag() {

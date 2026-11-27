@@ -162,3 +162,40 @@ fn none_is_unread() {
     assert!(!m.is_read());
     assert_eq!(volume_key("/Volumes/x/a", &m).name(), "/Volumes/x");
 }
+
+/// Another name of the startup disk (macOS `/Volumes/Macintosh HD`, a link to `/`) keys as the
+/// path without it, matched by whole names and without case; a longer mount point inside still
+/// wins (`/Volumes/Macintosh HD/Volumes/card`).
+#[test]
+fn a_startup_disk_alias_keys_as_the_startup_disk() {
+    let m = Mounts::from_volume_entries(["card", "Photo"], ["Macintosh HD"]);
+    assert_eq!(m.len(), 2, "the alias is no volume of its own");
+    assert_eq!(id("/Volumes/Macintosh HD/Users/me/a.jpg", &m), "/");
+    assert_eq!(id("/Volumes/macintosh hd/Users/me/a.jpg", &m), "/");
+    assert_eq!(id("/Volumes/Macintosh HD", &m), "/");
+    assert_eq!(id("/Volumes/Macintosh HD/Volumes/card/a.jpg", &m), "/volumes/card");
+    assert_eq!(id("/Volumes/Macintosh HD 2/a.jpg", &m), "/volumes/macintosh hd 2", "whole names only");
+    assert_eq!(id("/Volumes/Photo/a.jpg", &m), "/volumes/photo");
+    // hostile alias names are left out
+    let m = Mounts::from_volume_entries(Vec::<String>::new(), ["", ".", "..", "a/b"]);
+    assert_eq!(id("/Volumes/a/b/c", &m), "/volumes/a");
+}
+
+/// `volume_of` (the folder tree's "covers other disks") and `volume_key` share one rule of volume
+/// identity: the same key for every file path, so two spellings of one volume that differ in case
+/// are one volume to both where the platform folds case.
+#[test]
+fn volume_of_is_volume_key_without_a_list() {
+    use crate::{Photo, PhotoId, Source};
+    let photo = |path: &str| Photo::new(PhotoId(1), Source::File { path: path.into() }, "a.jpg", "JPEG", 3, 2, "2026-10-01T00:00:00");
+    for path in
+        ["/Volumes/Photo/2024/a.jpg", "/Volumes/photo/a.jpg", "/Users/me/a.jpg", "D:\\photos\\a.jpg", "//nas/share/x/a.jpg", "/mnt/disk/a.jpg"]
+    {
+        let dir = &path[..path.rfind(['/', '\\']).unwrap()];
+        assert_eq!(crate::folders::volume_of(&photo(path)), Some(volume_key(dir, &Mounts::none())), "{path}");
+    }
+    let (a, b) = (crate::folders::volume_of(&photo("/Volumes/Photo/a.jpg")), crate::folders::volume_of(&photo("/Volumes/photo/b.jpg")));
+    assert_eq!(a == b, Mounts::platform_folds_case());
+    assert_eq!(crate::folders::volume_of(&photo("relative/a.jpg")), None);
+    assert_eq!(crate::folders::volume_of(&Photo::new(PhotoId(2), Source::Demo { scene: 0 }, "a.jpg", "JPEG", 3, 2, "2026-10-01T00:00:00")), None);
+}

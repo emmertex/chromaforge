@@ -98,6 +98,35 @@ pub(crate) fn mounts_from_mountinfo(path: &std::path::Path, cap: u64) -> Option<
     Some(m)
 }
 
+/// The volumes named in a macOS `/Volumes` folder (`dir`), each mounted at `/Volumes/<name>`:
+/// names and entry types only, from the listing itself (no `stat` of a volume). An entry that is
+/// a link to `/` (the startup disk's `Macintosh HD`) is another name of the startup disk, read
+/// with `readlink` on the link itself (the folder holding it, never a volume).
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn mounts_from_volumes_dir(dir: &std::path::Path) -> Option<Mounts> {
+    let listing = std::fs::read_dir(dir).map_err(|e| log::debug!("{}: {e}", dir.display())).ok()?;
+    let (mut names, mut startup) = (Vec::new(), Vec::new());
+    let mut failed = 0usize;
+    for entry in listing.take(lcc_catalog::folders::MAX_MOUNTS.saturating_add(1)) {
+        let Ok(e) = entry else {
+            failed = failed.saturating_add(1);
+            continue;
+        };
+        let name = e.file_name().to_string_lossy().into_owned();
+        let to_root = e.file_type().is_ok_and(|t| t.is_symlink()) && std::fs::read_link(e.path()).is_ok_and(|t| t == std::path::Path::new("/"));
+        if to_root {
+            startup.push(name);
+        } else {
+            names.push(name);
+        }
+    }
+    if failed > 0 {
+        log::debug!("{}: {failed} entries unreadable", dir.display());
+    }
+    Some(Mounts::from_volume_entries(names, startup))
+}
+
 /// This platform's mount list: Linux from `/proc/self/mountinfo` (procfs, no volume touched),
 /// macOS from the names in `/Volumes` (names only, no `stat` of the entries); elsewhere none.
 pub(crate) fn read_platform_mounts() -> Option<Mounts> {
@@ -107,19 +136,7 @@ pub(crate) fn read_platform_mounts() -> Option<Mounts> {
     }
     #[cfg(target_os = "macos")]
     {
-        let dir = std::fs::read_dir("/Volumes").map_err(|e| log::debug!("/Volumes: {e}")).ok()?;
-        let mut names = Vec::new();
-        let mut failed = 0usize;
-        for entry in dir.take(lcc_catalog::folders::MAX_MOUNTS.saturating_add(1)) {
-            match entry {
-                Ok(e) => names.push(e.file_name().to_string_lossy().into_owned()),
-                Err(_) => failed = failed.saturating_add(1),
-            }
-        }
-        if failed > 0 {
-            log::debug!("/Volumes: {failed} entries unreadable");
-        }
-        Some(Mounts::from_volume_names(names))
+        mounts_from_volumes_dir(std::path::Path::new("/Volumes"))
     }
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
     {

@@ -158,11 +158,15 @@ fn place(dir: &str) -> Option<Placed> {
 }
 
 /// The disk or share (`/Volumes/nas`, `D:`, `/` for the startup disk) a file-backed photo is on,
-/// from its stored path alone.
-pub fn volume_of(p: &crate::Photo) -> Option<String> {
+/// from its stored path alone: its [`volume_key`] with no mount list, so this and the I/O
+/// scheduler share one rule of volume identity (names compared without case where the platform's
+/// are, [`Mounts::platform_folds_case`]). `None` for a photo with no file, or a path that names no
+/// volume.
+pub fn volume_of(p: &crate::Photo) -> Option<VolumeKey> {
     let Source::File { path } = &p.source else { return None };
     let dir = path.rfind(['/', '\\']).and_then(|i| path.get(..i.max(1)))?;
-    place(dir).map(|pl| folder_key(&pl.mount))
+    place(dir)?;
+    Some(volume_key(dir, &Mounts::none()))
 }
 
 /// The volume a file is read from, for the engine's I/O scheduler: files on one key share that
@@ -232,6 +236,9 @@ pub struct Mounts {
     truncated: bool,
     /// Lines of a mountinfo listing that had no mount point field (malformed), left out.
     skipped: usize,
+    /// Other names of the startup disk (macOS `/Volumes/Macintosh HD`, a link to `/`), as
+    /// `points`: a path through one keys as the same path without it.
+    root_aliases: Vec<Vec<String>>,
 }
 
 impl Mounts {
@@ -302,6 +309,26 @@ impl Mounts {
         Mounts::from_points(points, true)
     }
 
+    /// The volumes listed in macOS `/Volumes` as [`Mounts::from_volume_names`], where the names
+    /// in `startup_disk` are links to `/` (the startup disk's own entry, `Macintosh HD`): those
+    /// are not volumes of their own, and a path through one keys as the startup disk.
+    pub fn from_volume_entries<S: AsRef<str>, T: AsRef<str>>(
+        names: impl IntoIterator<Item = S>,
+        startup_disk: impl IntoIterator<Item = T>,
+    ) -> Mounts {
+        let aliases: Vec<String> = startup_disk.into_iter().map(|n| n.as_ref().to_string()).collect();
+        let mut m = Mounts::from_volume_names(names.into_iter().filter(|n| !aliases.iter().any(|a| a == n.as_ref())));
+        for a in aliases {
+            if a.is_empty() || a.contains(['/', '\\']) || a == "." || a == ".." {
+                continue;
+            }
+            let sp = split_path(&format!("/Volumes/{a}"), false);
+            let fold = m.fold_case;
+            m.root_aliases.push(sp.parts.into_iter().map(|p| if fold { p.to_lowercase() } else { p }).collect());
+        }
+        m
+    }
+
     /// Add one mount point; `false` once [`MAX_MOUNTS`] are held (the rest are cut).
     fn push(&mut self, point: &str) -> bool {
         if self.points.len() >= MAX_MOUNTS {
@@ -351,8 +378,15 @@ impl Mounts {
 /// `/media`, `/run/media`, `/mnt`, gvfs, `/net`, `/Network/Servers`, `//server/share`, drive
 /// letters, else `/`). Drive letters and Windows shares compare without case, as do other paths
 /// where [`Mounts`] says so (macOS); `\\?\X:\` and `\\?\UNC\server\share` reduce to `X:` and
-/// `//server/share`. A path that names no volume (relative, empty) gets one shared key.
+/// `//server/share`. A path through another name of the startup disk that the list knows
+/// ([`Mounts::from_volume_entries`]: `/Volumes/Macintosh HD/Users/me`) keys as the same path
+/// without it (`/Users/me`). A path that names no volume (relative, empty) gets one shared key.
 pub fn volume_key(path: &str, mounts: &Mounts) -> VolumeKey {
+    key_in(path, mounts, true)
+}
+
+/// [`volume_key`], following [`Mounts`]' other names of the startup disk when `aliases`.
+fn key_in(path: &str, mounts: &Mounts, aliases: bool) -> VolumeKey {
     let sp = split_path(path, false);
     if !sp.prefix.is_empty() {
         // a drive letter or `//server/share` (a server alone keys as itself)
@@ -364,7 +398,13 @@ pub fn volume_key(path: &str, mounts: &Mounts) -> VolumeKey {
     }
     let fold = |s: &str| if mounts.fold_case { s.to_lowercase() } else { s.to_string() };
     let folded: Vec<String> = sp.parts.iter().map(|p| fold(p)).collect();
-    let best = mounts.points.iter().filter(|m| m.len() <= folded.len() && m.iter().zip(&folded).all(|(a, b)| a == b)).max_by_key(|m| m.len());
+    // another name of the startup disk: the same path without it
+    let within = |m: &Vec<String>| m.len() <= folded.len() && m.iter().zip(&folded).all(|(a, b)| a == b);
+    if aliases && let Some(alias) = mounts.root_aliases.iter().find(|a| within(a)) {
+        let rest: Vec<&str> = sp.parts.iter().skip(alias.len()).map(String::as_str).collect();
+        return key_in(&format!("/{}", rest.join("/")), mounts, false);
+    }
+    let best = mounts.points.iter().filter(|m| within(m)).max_by_key(|m| m.len());
     if let Some(m) = best {
         let id = format!("/{}", m.join("/"));
         let name = format!("/{}", sp.parts.iter().take(m.len()).cloned().collect::<Vec<_>>().join("/"));
