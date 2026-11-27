@@ -17,9 +17,11 @@
 //! Within a volume, calls take turns (the call that started a job on it longest ago goes first);
 //! within a call, jobs start in input order.
 //!
-//! What the controller measures: a probe's bytes on its source volume, a copy's on its
-//! destination only (§5.4: a copy's source read mostly comes from the page cache), counted as
-//! they move (at each tick) and when the job ends; a job's completion likewise.
+//! What the controller measures ([`measured_bytes`]): a probe's bytes read, on its source volume;
+//! a copy's bytes written, on its destination only (§5.4: the rate a destination is judged on is
+//! what it wrote; a copy's source read mostly comes from the page cache, and its verify read-back
+//! would count the copy twice), counted as they move (at each tick) and when the job ends; a job's
+//! completion likewise.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -30,7 +32,7 @@ use std::time::Duration;
 use lcc_catalog::folders::VolumeKey;
 
 use super::IoContext;
-use super::job::{JobState, Side};
+use super::job::{JobState, Moved, Side};
 use super::limits::{AbortReason, Controller, Counters, Demand, Event, Phase};
 use super::run::JobMetrics;
 use super::shared::{AbandonKind, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Learned, Shared, WAKE_JUMP};
@@ -200,6 +202,8 @@ struct Slot {
     vol: usize,
     /// A copy's destination volume, when not the source's.
     dest: Option<usize>,
+    /// It is a copy (its destination may be on its source's volume): measured on what it wrote.
+    copy: bool,
     skippable: bool,
     id: u64,
     task: Option<Box<dyn PoolTask>>,
@@ -209,8 +213,7 @@ struct Slot {
     /// Bytes seen at the last tick: every byte of a job on one volume, else a copy's bytes on its
     /// source and on its destination.
     seen: [u64; 2],
-    /// Bytes metered for the limit controller so far (every byte the job moved, on its measured
-    /// volume: §5.4).
+    /// Bytes metered for the limit controller so far ([`measured_bytes`], on its measured volume).
     metered: u64,
     /// When it started (monotonic ns).
     started: u64,
@@ -554,6 +557,7 @@ impl Sched {
         }
         for j in jobs {
             let vol = self.vol_index(j.source);
+            let copy = j.dest.is_some();
             let dest = j.dest.map(|d| self.vol_index(d)).filter(|&d| d != vol);
             let Some(c) = self.calls.get_mut(&call) else { return };
             let pos = c.next_pos;
@@ -573,6 +577,7 @@ impl Sched {
                 index: j.index,
                 vol,
                 dest,
+                copy,
                 skippable: j.skippable,
                 id: j.id,
                 task: Some(j.task),
@@ -939,8 +944,9 @@ impl Sched {
         };
         // (what it moved since the last tick, and its completion, count for its measured volume)
         let (home, dest) = (slot.vol, slot.dest);
-        let unseen = ran.metrics.bytes.saturating_sub(slot.metered);
-        slot.metered = slot.metered.max(ran.metrics.bytes);
+        let measured = measured_bytes(slot.copy, ran.metrics.moved);
+        let unseen = measured.saturating_sub(slot.metered);
+        slot.metered = slot.metered.max(measured);
         self.measured_total = self.measured_total.saturating_add(unseen);
         if let Some(pv) = self.vols.get_mut(dest.unwrap_or(home)) {
             pv.meter.bytes = pv.meter.bytes.saturating_add(unseen);
@@ -1066,36 +1072,31 @@ impl Sched {
         // reads on its source, its writes and read-back on its destination); a job that isn't
         // silent there without them ([`held`]) pauses the clocks: the stall clock (every call's
         // jobs on the volume) and cancel's (each call's own)
-        // (bytes by measured volume; a job's time, and its time at the gate, likewise)
-        let mut metered: Vec<(usize, u64, bool)> = Vec::new();
-        for pv in &self.vols {
+        // what the controller measures, from the running jobs only (a queued job has moved
+        // nothing): each on its measured volume, the bytes it moved since the last tick
+        // ([`measured_bytes`]), its time, and its time at the work gate
+        for v in 0..self.vols.len() {
+            let Some(pv) = self.vols.get(v) else { continue };
+            let mut m = pv.meter;
             for &(c, i) in &pv.running {
                 let Some(slot) = self.calls.get_mut(&c).and_then(|call| call.slots.get_mut(&i)) else { continue };
+                // (a copy is listed on both of its volumes: measured on its destination)
+                if slot.dest.unwrap_or(slot.vol) != v {
+                    continue;
+                }
                 let Some(st) = &slot.state else { continue };
-                let b = st.bytes();
-                if b > slot.metered {
-                    metered.push((slot.dest.unwrap_or(slot.vol), b - slot.metered, false));
-                    slot.metered = b;
-                }
-            }
-        }
-        for call in self.calls.values() {
-            for slot in call.slots.values() {
-                if let Some(st) = &slot.state {
-                    metered.push((slot.dest.unwrap_or(slot.vol), 0, st.at_gate()));
-                }
-            }
-        }
-        for (v, bytes, at_gate) in metered {
-            let Some(pv) = self.vols.get_mut(v) else { continue };
-            self.measured_total = self.measured_total.saturating_add(bytes);
-            let m = &mut pv.meter;
-            m.bytes = m.bytes.saturating_add(bytes);
-            if bytes == 0 {
+                let measured = measured_bytes(slot.copy, st.moved());
+                let new = measured.saturating_sub(slot.metered);
+                slot.metered = slot.metered.max(measured);
+                self.measured_total = self.measured_total.saturating_add(new);
+                m.bytes = m.bytes.saturating_add(new);
                 m.busy = m.busy.saturating_add(dt);
-                if at_gate {
+                if st.at_gate() {
                     m.gate = m.gate.saturating_add(dt);
                 }
+            }
+            if let Some(pv) = self.vols.get_mut(v) {
+                pv.meter = m;
             }
         }
         let mut silent: Vec<(u64, usize)> = Vec::new();
@@ -1301,6 +1302,13 @@ impl Sched {
             log::debug!("{line}");
         }
     }
+}
+
+/// The bytes of a job the controller measures (§5.4, §5.7), decided here only: a copy's bytes
+/// written (its source read and its verify read-back don't count: the destination is judged on
+/// what it wrote), any other job's every byte (a probe reads).
+fn measured_bytes(copy: bool, moved: Moved) -> u64 {
+    if copy { moved.written } else { moved.total() }
 }
 
 /// MB/s from bytes/s.

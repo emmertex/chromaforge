@@ -10,9 +10,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use lcc_catalog::folders::{Mounts, VolumeKey, volume_key};
 
 use super::clock::SEC;
+use super::job::ByteKind;
 use super::run::IoJob;
 use super::shared::Learned;
-use super::tests::{Call, H, R, bytes, job, wait_until};
+use super::tests::{Call, H, R, bytes, job, wait_until, wrote};
 
 /// Jobs the test finishes: each waits for a permit.
 #[derive(Default)]
@@ -45,9 +46,11 @@ impl Device {
     }
 }
 
-/// `n` jobs on `vol` (copies into `dest` when given) that wait for the device, then count 1 MB;
-/// `gate`: they say they wait at the work gate meanwhile.
+/// `n` jobs on `vol` (copies into `dest` when given) that wait for the device, then count 1 MB
+/// read (a copy also 1 MB written and 1 MB read back, as `copy_verified` counts them); `gate`:
+/// they say they wait at the work gate meanwhile.
 fn jobs(vol: &str, dest: Option<&str>, n: usize, dev: &Arc<Device>, gate: bool) -> Vec<IoJob<R>> {
+    let copy = dest.is_some();
     (0..n)
         .map(|i| {
             let dev = dev.clone();
@@ -61,12 +64,40 @@ fn jobs(vol: &str, dest: Option<&str>, n: usize, dev: &Arc<Device>, gate: bool) 
                     s.set_at_gate(false);
                 }
                 bytes(1_000_000);
+                if copy {
+                    wrote(1_000_000);
+                    read_back(1_000_000);
+                }
                 Ok(i as u32)
             };
             match dest {
                 Some(d) => IoJob { source: format!("{vol}/f{i}"), dest: Some(format!("{d}/out")), skippable: false, run: Box::new(run) },
                 None => job(&format!("{vol}/f{i}"), run),
             }
+        })
+        .collect()
+}
+
+/// `n` bytes read back from the thread's job's destination (a copy's verify).
+fn read_back(n: usize) {
+    if let Some(j) = crate::memory::current_job() {
+        j.add(ByteKind::ReadBack, n);
+    }
+}
+
+/// `n` copies from `vol` into `dest` that wait for the device, then read 1 MB from the source and
+/// read 1 MB back from the destination, writing nothing.
+fn copies_writing_nothing(vol: &str, dest: &str, n: usize, dev: &Arc<Device>) -> Vec<IoJob<R>> {
+    (0..n)
+        .map(|i| {
+            let dev = dev.clone();
+            let run = move || {
+                dev.enter();
+                bytes(1_000_000);
+                read_back(1_000_000);
+                Ok(i as u32)
+            };
+            IoJob { source: format!("{vol}/f{i}"), dest: Some(format!("{dest}/out")), skippable: false, run: Box::new(run) }
         })
         .collect()
 }
@@ -183,6 +214,31 @@ fn copies_are_measured_on_their_destination() {
     assert_eq!((a.windows, a.probing), (0, false), "the card is not: {a:?}");
     dev.finish(usize::MAX / 2);
     assert_eq!(super::tests::ok_count(&call.join()), 400);
+}
+
+/// A copy is measured on the bytes it wrote (§5.4), not on its source read or its verify
+/// read-back: copies that read 1 MB and read 1 MB back but write nothing give their destination no
+/// measurement (every window moved no byte); the same copies writing 1 MB each do.
+#[test]
+fn a_copy_is_measured_on_what_it_wrote() {
+    for write in [false, true] {
+        let h = H::new();
+        let dev = Arc::new(Device::default());
+        let jobs = if write { jobs("/a", Some("/b"), 400, &dev, false) } else { copies_writing_nothing("/a", "/b", 400, &dev) };
+        let call = start(&h, jobs, 2);
+        for _ in 0..30 {
+            step(&h, &call, &dev, |w| w);
+        }
+        let b = learned(&h, "/b");
+        if write {
+            assert!(b.windows >= 1, "writes are measured: {b:?}");
+        } else {
+            assert_eq!(b.windows, 0, "reads and read-back aren't: {b:?}");
+            assert!(b.discarded >= 1, "{b:?}");
+        }
+        dev.finish(usize::MAX / 2);
+        assert_eq!(super::tests::ok_count(&call.join()), 400);
+    }
 }
 
 /// A window whose jobs wait at the work gate (memory, not the volume, holds them up) is discarded:
