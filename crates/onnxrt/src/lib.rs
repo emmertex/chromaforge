@@ -2,9 +2,9 @@
 //! Runtime's execution providers, or on ONNX Runtime's own CPU kernels. The graphics card is reached through ONNX
 //! Runtime's WebGPU plug-in (Dawn: Direct3D 12 on Windows, Vulkan on Linux, Metal on macOS; MIT/BSD, open source),
 //! which works with any card; Core ML (macOS), CUDA (NVIDIA, when the user has it installed) and DirectML (only when
-//! the loaded library has it built in; Chromaforge doesn't ship the closed `DirectML.dll`) are used when present.
+//! the loaded library has it built in; the packages don't ship the closed `DirectML.dll`) are used when present.
 //!
-//! Chromaforge is Rust first: every model also has a pure-Rust runner, which stays the reference and the fallback, and
+//! The app is Rust first: every model also has a pure-Rust runner, which stays the reference and the fallback, and
 //! is all the web and Android builds have. This crate is the one place ONNX Runtime (C++, MIT) enters the product:
 //!
 //! - **Feature `ort`** (desktop builds only) pulls in the [`ort`](https://crates.io/crates/ort) wrapper with
@@ -127,7 +127,7 @@ pub struct Runtime {
     pub version: String,
     /// The library file it was loaded from.
     pub library: PathBuf,
-    /// Providers this build of the library was compiled with, or registered as plug-ins, of those Chromaforge uses.
+    /// Providers this build of the library was compiled with, or registered as plug-ins, of those the app uses.
     pub providers: Vec<Provider>,
     /// The WebGPU plug-in's file, when one was registered.
     pub webgpu: Option<PathBuf>,
