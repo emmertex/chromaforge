@@ -228,6 +228,20 @@ impl Reader {
         required: bool,
         kept: bool,
         cancel: &AtomicBool,
+        f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.each_row_with(name, required, kept, None, cancel, f)
+    }
+
+    /// [`Self::each_row`] that, given `large`, also reads records past the reader's size limit, their large values
+    /// through `large`'s filter for the column (named) they are in (issue #1311).
+    pub(crate) fn each_row_with(
+        &self,
+        name: &str,
+        required: bool,
+        kept: bool,
+        large: Option<&dyn Fn(&str, bool) -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>>>,
+        cancel: &AtomicBool,
         mut f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
     ) -> Result<(), String> {
         let Some(t) = self.db.live_table(name, cancel)? else {
@@ -253,8 +267,11 @@ impl Reader {
             }
             f(row, blobs)
         };
+        let by_index = large.map(|large| move |i: usize, text: bool| columns.get(i).and_then(|c| large(c, text)));
         let walked = if kept {
             self.db.for_each_kept_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
+        } else if let Some(by_index) = &by_index {
+            self.db.for_each_row_with_large(t.rootpage, columns.len(), cancel, by_index, &mut sink)
         } else {
             self.db.for_each_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
         };
@@ -499,7 +516,12 @@ impl Reader {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
         let mut unkeyed = 0usize;
-        let read = self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
+        // a record past the reader's limit (a packet carrying a camera profile's table data) is read in pieces, its
+        // `xmp` without those tables (issue #1311)
+        let large = |column: &str, text: bool| -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>> {
+            (column == "xmp").then(|| Box::new(XmpPacketFilter::new(!text, max_packet)) as Box<dyn crate::lightroom_sqlite::ValueFilter>)
+        };
+        let read = self.each_row_with("Adobe_AdditionalMetadata", false, false, Some(&large), cancel, |mut r, blobs| {
             let Some(image) = image_of(&r) else {
                 unkeyed += 1;
                 return Ok(());
@@ -512,7 +534,9 @@ impl Reader {
                 // the declared size (the decode checks it) against what is left, before inflating
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
                 let over = |n: usize| n > max_packet;
-                let decoded = if over(declared) { Ok(None) } else { decode_compressed(&bytes, "XMP").map(Some) };
+                // a packet declared past the bound is read without its camera-profile tables, which are most of it
+                let decoded =
+                    if over(declared) { strip_packet(&bytes, true, max_packet).map(Some) } else { decode_compressed(&bytes, "XMP").map(Some) };
                 match decoded {
                     Ok(Some(packet)) if !over(packet.len()) => {
                         r.insert(column.to_string(), Value::String(packet));
@@ -521,13 +545,18 @@ impl Reader {
                     Err(error) => warnings.push(format!("image {image}: {error}")),
                 }
             }
-            // a text packet is held to the same bound as a decoded one
+            // a text packet is held to the same bound as a decoded one (its tables taken out first)
             if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
                 && !blobs_had_xmp
                 && len > max_packet
             {
-                r.remove("xmp");
-                warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20));
+                let text = r.remove("xmp");
+                match text.as_ref().and_then(Value::as_str).map(|t| strip_packet(t.as_bytes(), false, max_packet)) {
+                    Some(Ok(packet)) => {
+                        r.insert("xmp".into(), Value::String(packet));
+                    }
+                    _ => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
+                }
             }
             out.insert(image, r);
             Ok(())
@@ -740,6 +769,170 @@ fn compressed_len(bytes: &[u8]) -> Option<usize> {
 /// Lightroom's compressed text (`Adobe_AdditionalMetadata.xmp`, and history-step and snapshot settings since Lightroom
 /// Classic 13): the decoded length as 4 big-endian bytes, then a zlib stream, at most 16 MiB decoded. Errors name it
 /// `what`.
+/// The name Lightroom gives the attributes carrying a camera profile's table data in a photo's cached XMP
+/// (`crs:Table_<digest>="…"`, up to about 120 MB each): nothing the import reads, and nearly all of such a packet.
+const XMP_TABLE_ATTRIBUTE: &[u8] = b"crs:Table_";
+
+/// A photo's cached XMP packet read a piece at a time (issue #1311): zlib-compressed after a 4-byte length (`blob`) or
+/// plain text, with every `crs:Table_<digest>` attribute left out, held to `max` bytes. Constant memory beyond what
+/// it keeps.
+struct XmpPacketFilter {
+    blob: bool,
+    max: usize,
+    /// The compressed stream's 4-byte length prefix, while it is read.
+    prefix: usize,
+    inflate: Option<Box<miniz_oxide::inflate::stream::InflateState>>,
+    strip: TableStripper,
+}
+
+impl XmpPacketFilter {
+    fn new(blob: bool, max: usize) -> Self {
+        let inflate = blob.then(|| miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Zlib));
+        XmpPacketFilter { blob, max, prefix: 0, inflate, strip: TableStripper::default() }
+    }
+
+    fn text(&mut self, text: &[u8]) -> Result<(), String> {
+        self.strip.feed(text);
+        if self.strip.out.len() > self.max {
+            return Err(format!("the XMP packet exceeds {} MiB even without its camera-profile tables", self.max >> 20));
+        }
+        Ok(())
+    }
+}
+
+impl crate::lightroom_sqlite::ValueFilter for XmpPacketFilter {
+    fn feed(&mut self, mut piece: &[u8]) -> Result<(), String> {
+        if !self.blob {
+            return self.text(piece);
+        }
+        if self.prefix < 4 {
+            let skip = (4 - self.prefix).min(piece.len());
+            self.prefix += skip;
+            piece = piece.get(skip..).unwrap_or_default();
+        }
+        let mut out = [0u8; 64 * 1024];
+        while !piece.is_empty() {
+            let Some(state) = self.inflate.as_mut() else { return Ok(()) };
+            let r = miniz_oxide::inflate::stream::inflate(state, piece, &mut out, miniz_oxide::MZFlush::None);
+            let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+            self.text(&written)?;
+            piece = piece.get(r.bytes_consumed..).unwrap_or_default();
+            match r.status {
+                Ok(miniz_oxide::MZStatus::StreamEnd) => {
+                    self.inflate = None;
+                }
+                Ok(_) if r.bytes_consumed == 0 && r.bytes_written == 0 => return Err("invalid compressed XMP".into()),
+                Ok(_) => {}
+                Err(_) => return Err("invalid compressed XMP".into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<crate::lightroom_sqlite::Value, String> {
+        // what the inflater still holds
+        if let Some(mut state) = self.inflate.take() {
+            let mut out = [0u8; 64 * 1024];
+            loop {
+                let r = miniz_oxide::inflate::stream::inflate(&mut state, &[], &mut out, miniz_oxide::MZFlush::Finish);
+                let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+                self.text(&written)?;
+                match r.status {
+                    Ok(miniz_oxide::MZStatus::StreamEnd) => break,
+                    Ok(_) if r.bytes_written > 0 => {}
+                    _ => return Err("truncated compressed XMP".into()),
+                }
+            }
+        }
+        let text = self.strip.finish();
+        String::from_utf8(text).map(crate::lightroom_sqlite::Value::Text).map_err(|e| format!("XMP not UTF-8: {e}"))
+    }
+}
+
+/// A packet already in memory read as [`XmpPacketFilter`] reads one in pieces.
+fn strip_packet(bytes: &[u8], blob: bool, max: usize) -> Result<String, String> {
+    use crate::lightroom_sqlite::ValueFilter;
+    let mut f = Box::new(XmpPacketFilter::new(blob, max));
+    for piece in bytes.chunks(1 << 20) {
+        f.feed(piece)?;
+    }
+    match f.finish()? {
+        crate::lightroom_sqlite::Value::Text(t) => Ok(t),
+        _ => Err("XMP is not text".into()),
+    }
+}
+
+/// Copies XML text, leaving out each `crs:Table_<digest>="…"` attribute (name, `=` and quoted value), fed in pieces
+/// that may split anywhere.
+#[derive(Default)]
+struct TableStripper {
+    out: Vec<u8>,
+    /// How much of [`XMP_TABLE_ATTRIBUTE`] the latest bytes matched (held back until it is known).
+    matched: usize,
+    state: StripState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum StripState {
+    #[default]
+    Text,
+    /// In a table attribute's name, until `=`.
+    Name,
+    /// After its `=`, before the quote.
+    Equals,
+    /// In its value, until this quote.
+    Value(u8),
+}
+
+impl TableStripper {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match self.state {
+                StripState::Text => {
+                    if XMP_TABLE_ATTRIBUTE.get(self.matched) == Some(&b) {
+                        self.matched += 1;
+                        if self.matched == XMP_TABLE_ATTRIBUTE.len() {
+                            self.matched = 0;
+                            self.state = StripState::Name;
+                        }
+                        continue;
+                    }
+                    // a partial match that failed is text after all
+                    self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+                    self.matched = 0;
+                    if XMP_TABLE_ATTRIBUTE.first() == Some(&b) {
+                        self.matched = 1;
+                    } else {
+                        self.out.push(b);
+                    }
+                }
+                StripState::Name => {
+                    if b == b'=' {
+                        self.state = StripState::Equals;
+                    }
+                }
+                StripState::Equals => {
+                    if b == b'"' || b == b'\'' {
+                        self.state = StripState::Value(b);
+                    }
+                }
+                StripState::Value(q) => {
+                    if b == q {
+                        self.state = StripState::Text;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.state == StripState::Text {
+            self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+        }
+        self.out
+    }
+}
+
 fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
     if bytes.len() < 4 {
         return Err(format!("truncated {what} header"));
@@ -6206,5 +6399,38 @@ pub(crate) mod tests {
             assert_eq!(image(bad.clone()), None, "{bad}");
         }
         assert_eq!(image_of(&row(json!({"tag": 1}))), None);
+    }
+}
+
+#[cfg(test)]
+mod xmp_table_tests {
+    use super::*;
+
+    /// Issue #1311: a packet's camera-profile tables are left out however the text is split, quotes of either kind,
+    /// and everything else is kept; a compressed packet reads the same; one still too large without them is refused.
+    #[test]
+    fn camera_profile_tables_are_left_out_of_a_packet() {
+        let table = "x".repeat(300_000);
+        let packet = format!(
+            r#"<rdf:Description crs:CameraProfile="Adobe Standard" crs:Table_ABC123="{table}" dc:creator="Jo" crs:Table_9='{table}' photoshop:Credit="crs:Tab"/>"#
+        );
+        let want = r#"<rdf:Description crs:CameraProfile="Adobe Standard"  dc:creator="Jo"  photoshop:Credit="crs:Tab"/>"#;
+        for split in [1usize, 7, 4096, packet.len()] {
+            let mut s = TableStripper::default();
+            for piece in packet.as_bytes().chunks(split) {
+                s.feed(piece);
+            }
+            assert_eq!(String::from_utf8(s.finish()).unwrap(), want, "split {split}");
+        }
+        assert_eq!(strip_packet(packet.as_bytes(), false, 1 << 20).unwrap(), want);
+        // compressed as Lightroom stores it: a 4-byte length, then zlib
+        let mut blob = (packet.len() as u32).to_be_bytes().to_vec();
+        blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(packet.as_bytes(), 6));
+        assert_eq!(strip_packet(&blob, true, 1 << 20).unwrap(), want);
+        // still past the bound without its tables
+        assert!(strip_packet(format!("{table}{table}").as_bytes(), false, 1000).is_err());
+        // damaged compressed data: an error, never a panic
+        assert!(strip_packet(&[0, 0, 0, 9, 1, 2, 3, 4, 5], true, 1000).is_err());
+        assert!(strip_packet(blob.get(..blob.len() / 2).unwrap(), true, 1 << 20).is_err());
     }
 }
