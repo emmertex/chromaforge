@@ -64,6 +64,10 @@ contents:
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
+  # ONNX Runtime and its WebGPU plug-in for the AI features on the graphics card (docs/onnxruntime.md)
+  - src: ${STAGE}/usr/lib/{{binary}}/
+    dst: /usr/lib/{{binary}}/
+    type: tree
   - src: ${STAGE}/usr/lib/udev/rules.d/
     dst: /usr/lib/udev/rules.d/
     type: tree

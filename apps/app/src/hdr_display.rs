@@ -497,10 +497,10 @@ impl WindowHdr {
             let mut r = self.state.renderer.write();
             let id = match self.textures.remove(&slot) {
                 Some((_, id, _)) => {
-                    r.update_egui_texture_from_wgpu_texture(device, &view, wgpu::FilterMode::Linear, id);
+                    r.update_egui_texture_from_wgpu_texture_with_sampler_options(device, &view, photo_sampler(), id);
                     id
                 }
-                None => r.register_native_texture(device, &view, wgpu::FilterMode::Linear),
+                None => r.register_native_texture_with_sampler_options(device, &view, photo_sampler()),
             };
             self.textures.insert(slot, (tex, id, size));
         }
@@ -521,6 +521,17 @@ impl Drop for WindowHdr {
         for (_, (_, id, _)) in self.textures.drain() {
             r.free_texture(&id);
         }
+    }
+}
+
+/// How a photo's texture on the GPU is sampled, as `lcc_ui_egui::render::PHOTO_TEXTURE` samples the others: smoothly
+/// when drawn smaller than its pixels, each pixel a square past 100 % (#1479).
+pub(crate) fn photo_sampler() -> wgpu::SamplerDescriptor<'static> {
+    wgpu::SamplerDescriptor {
+        label: Some("photo"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
     }
 }
 

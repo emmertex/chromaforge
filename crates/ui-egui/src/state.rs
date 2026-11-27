@@ -647,6 +647,10 @@ pub struct AppSettings {
     /// mask Hue so far: ±180° instead of about ±34°). Off: the standard range; values already past
     /// it are kept, never rewritten.
     pub expanded_sliders: bool,
+    /// Masking: the mask list in a window of its own over the photo instead of in the panel (#1251;
+    /// Settings ▸ Develop, `view.masksDetached`). The selected mask's Feather, Refine Edges and sliders stay
+    /// in the panel.
+    pub masks_detached: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
@@ -877,6 +881,7 @@ impl Default for AppSettings {
             film_names: true,
             film_badges: true,
             expanded_sliders: false,
+            masks_detached: false,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             lock_zoom: true,
@@ -1846,6 +1851,9 @@ pub struct UiState {
     pub film_dust_view: u8,
     /// The library filter bar above the grid.
     pub filter_bar: bool,
+    /// The filter bar over Develop's loupe (#1317): Develop's own, off until asked for, so filtering there keeps the
+    /// photo instead of going to the Library grid.
+    pub develop_filter_bar: bool,
     /// The filter bar's Metadata columns (issue #218): the field each column lists; empty = hidden.
     pub filter_columns: Vec<String>,
     /// The search box at the top of each Metadata column, by column: the text narrows that
@@ -3029,6 +3037,7 @@ impl Default for UiState {
             window_fullscreen: None,
             // Lightroom Classic shows the Library Filter bar over the Grid (the fork's default)
             filter_bar: true,
+            develop_filter_bar: false,
             filter_columns: Vec::new(),
             filter_column_search: Vec::new(),
             people_search: String::new(),
@@ -3068,6 +3077,16 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Whether this view is Develop's loupe, which carries its own filter bar (#1317).
+    pub fn develop_filter_shown_here(&self) -> bool {
+        self.module == crate::module::ModuleId::Develop && self.view == ViewMode::Detail
+    }
+
+    /// Whether the filter bar this view would show is on: Develop's own over its loupe, else the Library's.
+    pub fn filter_bar_shown(&self) -> bool {
+        if self.develop_filter_shown_here() { self.develop_filter_bar } else { self.filter_bar }
+    }
+
     /// The newest toast on screen.
     pub fn toast(&self) -> Option<&Toast> {
         self.toasts.last()
