@@ -19,7 +19,7 @@ text, the shot-info strip with the pixel size included), `G` returns to the grid
 - **Metadata:** Info and Keywords panels, metadata presets, hierarchical keywords with import/export (File →
   Import/Export Keywords…), the Painter (`Cmd+Alt+K`), Save Metadata to File (`Cmd+S`).
 - **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns (including Aperture and Shutter Speed); save it as a smart collection.
-  Library → Advanced Search… (`Cmd+Shift+F`) filters by structured fields; codec and frame rate are not supported yet.
+  Library → Advanced Search… (`Cmd+Shift+F`) filters by structured fields, dates included; codec, frame rate, exposure program, metering mode, white balance, subject distance and colour depth are not supported yet.
 - **Clean up:** Library → Find Duplicates… groups exact and look-alike copies (raw + JPEG pairs are offered as stacks, not
   removals; [duplicates.md](../duplicates.md)); Validate DNG Files checks the DNGs' checksums; Photo → Reset Export Status
   clears the exported badge; Metadata → Update DNG Preview & Metadata refreshes a DNG's preview and XMP.

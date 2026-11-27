@@ -28,6 +28,14 @@ pub struct NumEdits {
     pub shutter: [String; 2],
     /// The face-count condition as typed (a count, `3+`, `<=4`, `1-5`, `none`, `any`).
     pub face_count: String,
+    /// File size, MB.
+    pub file_size: [String; 2],
+    /// Exposure bias, EV (negative values allowed).
+    pub exposure_bias: [String; 2],
+    /// Date spans as typed (a year, a month or a day each end): taken, imported, last edited.
+    pub captured: [String; 2],
+    pub imported: [String; 2],
+    pub edited: [String; 2],
 }
 
 /// The Advanced Search panel's draft: the structured query's text and choice fields, plus the
@@ -38,7 +46,8 @@ pub struct NumEdits {
 #[serde(default)]
 pub struct Search {
     pub query: Box<lcc_catalog::advanced_search::AdvancedSearch>,
-    pub num: NumEdits,
+    /// Boxed, so an open dialog's draft stays small beside the other dialogs.
+    pub num: Box<NumEdits>,
     /// Which collection the File category names (`None` = any).
     pub album: Option<u64>,
     /// The search groups after the first.
@@ -102,12 +111,19 @@ fn draft_group(
     props.width = num_range("Width (pixels)", &num.width)?;
     props.height = num_range("Height (pixels)", &num.height)?;
     props.megapixels = num_range("Megapixels", &num.megapixels)?;
+    props.file_size_mb = num_range("File size (MB)", &num.file_size)?;
     let photo = q.photograph.get_or_insert_with(Default::default);
+    photo.exposure_bias = num_range("Exposure bias (EV)", &num.exposure_bias)?;
     photo.focal_mm = num_range("Focal length (mm)", &num.focal)?;
     photo.iso = num_range("ISO speed", &num.iso)?;
     photo.aperture = num_range("Aperture (f-number)", &num.aperture)?;
     let trim = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
     photo.shutter = lcc_catalog::advanced_search::ShutterRange { min: trim(&num.shutter[0]), max: trim(&num.shutter[1]) };
+    let span = |edits: &[String; 2]| lcc_catalog::advanced_search::DateSpan { from: trim(&edits[0]), to: trim(&edits[1]) };
+    let dates = q.dates.get_or_insert_with(Default::default);
+    dates.captured = span(&num.captured);
+    dates.imported = span(&num.imported);
+    dates.edited = span(&num.edited);
     let media = q.media.get_or_insert_with(Default::default);
     media.duration_s = num_range("Duration (seconds)", &num.duration)?;
     if let Some(faces) = q.faces.as_mut() {
@@ -208,6 +224,25 @@ fn group_body(
             &mut p.aspect,
             &[(None, "Any aspect"), (Some("landscape"), "Landscape (wide)"), (Some("portrait"), "Portrait (tall)"), (Some("square"), "Square")],
         );
+        choice(
+            ui,
+            &k("field:asFlag"),
+            "Pick flag",
+            &mut p.flag,
+            &[(None, "Any flag"), (Some("pick"), "Picked"), (Some("reject"), "Rejected"), (Some("none"), "Unflagged")],
+        );
+        range_row(ui, &k("asFileSize"), "File size (MB)", &mut num.file_size);
+    });
+
+    section(ui, &k("asDates"), "Date & Time", &mut q.dates, |ui, d| {
+        range_row(ui, &k("asCaptured"), "Capture date", &mut num.captured);
+        number_choice(ui, &k("field:asMonth"), "Capture month", &mut d.month, "Any month", &MONTH_NAMES.map(tr));
+        let days: Vec<String> = (1..=31).map(|n| n.to_string()).collect();
+        let days: Vec<&str> = days.iter().map(String::as_str).collect();
+        number_choice(ui, &k("field:asDay"), "Day of the month", &mut d.day, "Any day", &days);
+        range_row(ui, &k("asImported"), "Import date", &mut num.imported);
+        range_row(ui, &k("asEdited"), "Edit date", &mut num.edited);
+        dialog_frame::help(ui, tr("A date is a year (2026), a month (2026-05) or a day (2026-05-14); leave an end empty to leave it open."));
     });
 
     section(ui, &k("asDesc"), "Caption & Title", &mut q.description, |ui, d| {
@@ -226,6 +261,17 @@ fn group_body(
         range_row(ui, &k("asAperture"), "Aperture (f-number)", &mut num.aperture);
         range_row(ui, &k("asShutter"), "Shutter speed (e.g. 1/250)", &mut num.shutter);
         range_row(ui, &k("asIso"), "ISO speed", &mut num.iso);
+        range_row(ui, &k("asBias"), "Exposure bias (EV)", &mut num.exposure_bias);
+        flash_row(ui, &k("asFlash"), &mut p.flash);
+        unsupported_row(ui, "Exposure program");
+        unsupported_row(ui, "Metering mode");
+        unsupported_row(ui, "White balance");
+        unsupported_row(ui, "Subject distance");
+        unsupported_row(ui, "Color depth");
+        dialog_frame::help(
+            ui,
+            tr("Filtering by exposure program, metering mode, white balance, subject distance or color depth is not supported yet."),
+        );
     });
 
     section(ui, &k("asLocation"), "Location", &mut q.location, |ui, l| {
@@ -374,6 +420,36 @@ fn gps_row(ui: &mut egui::Ui, id: &str, l: &mut lcc_catalog::advanced_search::Lo
                 ui.radio_value(&mut l.has_gps, Some(true), tr("Has GPS"));
                 ui.radio_value(&mut l.has_gps, Some(false), tr("No GPS"));
             });
+        });
+    });
+}
+
+/// The month names the Capture month list shows, January first.
+const MONTH_NAMES: [&str; 12] =
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// A numbered choice (a month, a day of the month) as a combo box: `any` clears it, `names[n - 1]` names `n`.
+fn number_choice(ui: &mut egui::Ui, id: &str, label: &str, value: &mut Option<u8>, any: &str, names: &[&str]) {
+    dialog_frame::form_row(ui, tr(label), |ui| {
+        let name = |n: u8| usize::from(n).checked_sub(1).and_then(|i| names.get(i)).copied();
+        let shown = value.and_then(name).unwrap_or_else(|| tr(any));
+        egui::ComboBox::from_id_salt(id).width(180.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(value, None, tr(any));
+            for (n, l) in (1u8..).zip(names) {
+                ui.selectable_value(value, Some(n), *l);
+            }
+        });
+    });
+}
+
+/// Whether the flash fired: any, fired or did not fire.
+fn flash_row(ui: &mut egui::Ui, id: &str, value: &mut Option<bool>) {
+    dialog_frame::form_row(ui, tr("Flash"), |ui| {
+        ui.horizontal(|ui| {
+            for (v, l, n) in [(None, "Any", "any"), (Some(true), "Fired", "fired"), (Some(false), "Did not fire", "notFired")] {
+                let r = ui.radio_value(value, v, tr(l));
+                crate::widgets::register(ui.ctx(), format!("field:{id}:{n}"), r.rect);
+            }
         });
     });
 }
@@ -602,6 +678,28 @@ mod group_tests {
         search.groups[0].num.width = ["9".into(), "x".into()];
         let e = draft_query(&search).unwrap_err();
         assert!(e.contains('2'), "the group is named: {e}");
+    }
+
+    /// Dates, file size and exposure bias are typed as text and read at Search: a negative bias is fine, a date the
+    /// rules can't read is an error naming the field.
+    #[test]
+    fn the_draft_reads_dates_file_size_and_exposure_bias() {
+        let mut search = Search::default();
+        search.num.captured = ["2026-05".into(), String::new()];
+        search.num.edited = [String::new(), " 2026 ".into()];
+        search.num.file_size = ["10".into(), "50".into()];
+        search.num.exposure_bias = ["-1".into(), "-0.3".into()];
+        search.query.dates = Some(lcc_catalog::advanced_search::DatesCategory { month: Some(5), ..Default::default() });
+        let q = draft_query(&search).unwrap();
+        let dates = q.dates.as_ref().unwrap();
+        assert_eq!((dates.captured.from.as_deref(), dates.captured.to.as_deref()), (Some("2026-05"), None));
+        assert_eq!(dates.edited.to.as_deref(), Some("2026"));
+        assert_eq!(dates.month, Some(5));
+        assert_eq!(q.properties.as_ref().unwrap().file_size_mb.max, Some(50.0));
+        assert_eq!(q.photograph.as_ref().unwrap().exposure_bias.min, Some(-1.0));
+        search.num.imported = ["last spring".into(), String::new()];
+        let e = draft_query(&search).unwrap_err();
+        assert!(e.contains("last spring"), "{e}");
     }
 
     /// The panel adds a group, takes a second group's match, removes the group and resets, by its buttons; Search
