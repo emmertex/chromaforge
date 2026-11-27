@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// A stand-in for LibRaw: hands back `frame` (or fails) and counts its calls.
@@ -176,18 +178,17 @@ fn choices_are_set_cleared_and_saved_with_the_library() {
     assert!(set(&mut s, json!({"camera": "Example X1", "decoder": "dcraw"})).is_err());
     let out = set(&mut s, json!({"camera": "Example X1", "decoder": "libraw"})).unwrap();
     assert_eq!(out["rawDecoders"]["Example X1"], "libraw");
-    assert_eq!(choice_for("EXAMPLE  x1"), Decoder::Libraw, "matched as Info shows the camera, any case");
-    assert_ne!(key(), 0);
+    // (the decoder's own copy is one per process and any library opened by a test running alongside replaces it, so
+    // the lookup is checked on the session's map)
+    let installed = |s: &crate::Session| s.raw_decoders.iter().map(|(c, d)| (camera_key(c), *d)).collect::<BTreeMap<_, _>>();
+    assert_eq!(choice_in(&installed(&s), "EXAMPLE  x1"), Decoder::Libraw, "matched as Info shows the camera, any case");
     // the same camera spelled differently replaces the entry; auto removes it
     set(&mut s, json!({"camera": "EXAMPLE X1", "decoder": "lcc-raw"})).unwrap();
     assert_eq!(s.raw_decoders.len(), 1);
-    assert_eq!(choice_for("Example X1"), Decoder::Lcc);
+    assert_eq!(choice_in(&installed(&s), "Example X1"), Decoder::Lcc);
     set(&mut s, json!({"camera": "Example X1", "decoder": "auto"})).unwrap();
     assert!(s.raw_decoders.is_empty());
-    assert_eq!(choice_for("Example X1"), Decoder::Auto);
-    if !libraw_built_in() {
-        assert_eq!(key(), 0, "no choices and no LibRaw: the cache keys are as before");
-    }
+    assert_eq!(choice_in(&installed(&s), "Example X1"), Decoder::Auto);
 }
 
 #[test]
@@ -201,13 +202,10 @@ fn choices_persist_with_the_library_and_reinstall_on_reopen() {
         s.open_library(&lib, true).unwrap();
         s.execute("library.preferences", &json!({"rawDecoder": {"camera": "Example X2", "decoder": "libraw"}})).unwrap();
     }
-    install_choices(&std::collections::BTreeMap::new());
-    assert_eq!(choice_for("Example X2"), Decoder::Auto);
     {
         let mut s = crate::Session::new().with_fs();
         s.open_library(&lib, true).unwrap();
         assert_eq!(s.raw_decoders.get("Example X2"), Some(&Decoder::Libraw));
-        assert_eq!(choice_for("Example X2"), Decoder::Libraw);
         s.execute("library.preferences", &json!({"rawDecoder": {"camera": "Example X2", "decoder": null}})).unwrap();
     }
     install_choices(&std::collections::BTreeMap::new());

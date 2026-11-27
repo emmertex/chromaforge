@@ -295,7 +295,12 @@ fn libraw() -> Option<Arc<dyn Backend>> {
 
 /// The choice for a camera label (`Auto` when it has none).
 pub fn choice_for(camera: &str) -> Decoder {
-    choices().read().unwrap_or_else(PoisonError::into_inner).get(&camera_key(camera)).copied().unwrap_or_default()
+    choice_in(&choices().read().unwrap_or_else(PoisonError::into_inner), camera)
+}
+
+/// The choice for a camera label in a map keyed by [`camera_key`].
+fn choice_in(map: &BTreeMap<String, Decoder>, camera: &str) -> Decoder {
+    map.get(&camera_key(camera)).copied().unwrap_or_default()
 }
 
 /// Changes whenever a choice or the backend changes: part of the decode and render cache keys, so pictures read by
