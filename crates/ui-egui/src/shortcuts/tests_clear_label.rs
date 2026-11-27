@@ -26,6 +26,8 @@ fn app() -> lcc_engine::Result<LccApp> {
     }
     s.execute("library.sort", &json!({"key": "fileName", "ascending": true}))?;
     s.execute("library.select", &json!({"ids": [2]}))?;
+    // a fresh history: these tests look at the steps of the keys, not at the selecting above
+    s.undo.clear();
     let mut app = LccApp::new(s, crate::Services { png: None, ..Default::default() });
     super::assign(&mut app.ui.settings.keymap, "photo.clearLabel", Some(KEY)).unwrap();
     Ok(app)
@@ -77,7 +79,7 @@ fn the_key_clears_the_selected_photos_label_in_grid_and_loupe() {
         press(&mut app, &ctx);
         assert_eq!(labels(&app), [Some(ColorLabel::Green), None, Some(ColorLabel::Green)], "{view:?}");
         assert_eq!(app.session.undo.len(), 1);
-        assert_eq!(app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
+        assert!(app.ui.toast().is_none(), "the overlay says it, not a toast");
         app.session.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(labels(&app)[1], Some(ColorLabel::Green));
     }

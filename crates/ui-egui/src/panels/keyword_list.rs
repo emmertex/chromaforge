@@ -179,7 +179,7 @@ fn drop_keyword(app: &mut LccApp, ctx: &egui::Context, keyword: &str, parent: Op
     }
     match app.run("keyword.move", json!({"keyword": keyword, "parent": parent})) {
         Ok(_) => follow(app, keyword, &to),
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
@@ -367,23 +367,10 @@ fn drop_target(app: &mut LccApp, ui: &mut egui::Ui, rect: Rect, path: &str) {
     } else if let Some(ids) = app.ui.dragging_photos.clone() {
         outline(ui);
         if released {
-            // only the photos that didn't have it get it
-            let lacking = |id: &u64| {
-                app.session.catalog.photo(PhotoId(*id)).is_some_and(|p| !p.meta.keywords.iter().any(|k| same(&lcc_catalog::keywords::clean(k), path)))
-            };
-            let n = ids.iter().filter(|id| lacking(id)).count();
             app.ui.dragging_photos = None;
-            match app.run("photo.setMeta", json!({"ids": ids, "addKeywords": [path]})) {
-                Ok(_) => app.toast(
-                    ui.ctx(),
-                    crate::i18n::tr_format!(
-                        "Added “{keyword}” to {n} photo{}",
-                        if n == 1 { "" } else { "s" },
-                        keyword = path.replace('|', " › "),
-                        n = n
-                    ),
-                ),
-                Err(e) => app.toast(ui.ctx(), e),
+            // the overlay says what changed and how many photos; only a refusal is a toast
+            if let Err(e) = app.run("photo.setMeta", json!({"ids": ids, "addKeywords": [path]})) {
+                app.toast_error(ui.ctx(), e);
             }
         }
     }

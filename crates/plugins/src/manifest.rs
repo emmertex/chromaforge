@@ -67,6 +67,15 @@ pub const HOST_FEATURES: &[&str] = &[
     // collection (`collection: {album, name, folder}`), and `publish.upload` the photo's title,
     // caption and keywords
     "publishServices",
+    // `libraryRemove` in the permissions and the `library.remove` host call (soft-delete into
+    // Recently Deleted; files are never touched)
+    "libraryRemove",
+    // `beforeImport` in `hooks`: asked about each file while it is being prepared for import;
+    // may replace the file's path or skip it, and (on an attended import only) start granted
+    // programs
+    "beforeImport",
+    // `afterImport` in `hooks`: told about each imported batch after it is committed
+    "afterImport",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.
@@ -247,6 +256,14 @@ pub struct Hooks {
     /// Suggest metadata and keywords for photos (`{"hook": "metadata"}`).
     #[serde(default)]
     pub metadata: bool,
+    /// Asked about each file as it is prepared for import (`{"hook": "beforeImport"}`): may
+    /// replace the file's path or skip it (host features `beforeImport`).
+    #[serde(default)]
+    pub before_import: bool,
+    /// Told about each imported batch after it is committed (`{"hook": "afterImport"}`; host
+    /// feature `afterImport`).
+    #[serde(default)]
+    pub after_import: bool,
 }
 
 /// A publish service.

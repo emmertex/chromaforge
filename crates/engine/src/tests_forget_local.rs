@@ -251,7 +251,7 @@ fn browsing_again_forgets_untouched_records_of_deleted_files() {
     assert_eq!(local_paths(&s), vec!["a2.png", "a3.png"], "the untouched record of a1 is forgotten, the rated a2 stays");
     assert!(s.catalog.photo(a4).is_some_and(|p| !p.local), "a library photo of a deleted file stays");
     assert!(a.join("a3.png").exists());
-    assert!(s.undo.is_empty(), "not an undo step");
+    assert!(s.undo.iter().all(|e| e.view.is_some()), "no step of the catalog: only the view moved");
     // browsing once more changes nothing
     let r = s.execute("library.browse", &json!({"path": a.to_string_lossy()})).unwrap();
     assert_eq!(r["forgotten"], 0, "{r}");

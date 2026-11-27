@@ -316,7 +316,7 @@ fn library_sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             if crate::widgets::text_button_wide(ui, "syncMetadata", crate::i18n::tr("Sync Metadata"), false, w).clicked()
                 && let Err(e) = app.run("photo.syncMetadata", json!({}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             if crate::widgets::text_button_wide(ui, "syncSettings", crate::i18n::tr("Sync Settings"), false, w).clicked() {
                 let _ = app.run("dialog.syncSettings", json!({}));

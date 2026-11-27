@@ -437,9 +437,10 @@ fn the_settings_in_the_dialog_are_saved() {
     ask(&mut h, "ui.clickWidget", json!({"id": "check:updateAtStartup"}));
     h.step();
     assert!(h.app.session.updater.prefs().check_at_startup, "turning it on is saved");
+    // (the dialog's rows settle before the next click: on a busy machine one can still be moving)
+    let _ = h.settle(T);
     ask(&mut h, "ui.clickWidget", json!({"id": "check:updatePrerelease"}));
-    h.step();
-    assert!(h.app.session.updater.prefs().prerelease);
+    assert!(h.step_until(T, |h| h.app.session.updater.prefs().prerelease), "turning pre-releases on is saved");
     assert!(h.app.session.updater.options().prerelease);
     // the dialog is still usable after a settings change
     assert_eq!(h.app.ui.dialog, Some(Dialog::Update));
@@ -860,7 +861,7 @@ impl Drop for ReadOnly {
 
 #[cfg(unix)]
 fn toast_text(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 #[cfg(unix)]

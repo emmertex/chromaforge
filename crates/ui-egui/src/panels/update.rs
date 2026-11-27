@@ -267,7 +267,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
             && button(ui, "button:updateReleasePage", tr("Open the Release Page"))
             && let Err(e) = app.run("app.openReleasePage", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         if check == "found" && can_verify && !ready && !downloading && button(ui, "button:updateDownload", tr("Download")) {
             let _ = app.session.execute("update.download", &json!({}));
@@ -351,7 +351,7 @@ fn install(app: &mut LccApp, ctx: &egui::Context) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        Err(e) => app.toast(ctx, e.to_string()),
+        Err(e) => app.toast_error(ctx, e.to_string()),
     }
 }
 

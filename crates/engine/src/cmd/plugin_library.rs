@@ -1,6 +1,7 @@
 //! What plug-ins learn of the Library and add to it: the `source` a command was started from
-//! (the Library source the session shows), and `library.add`, which adds a file a tool made from
-//! a photo to the library, stacked on that photo or in an album that holds it.
+//! (the Library source the session shows), `library.add`, which adds a file a tool made from
+//! a photo to the library, stacked on that photo or in an album that holds it, and
+//! `library.remove`, which moves photos to Recently Deleted (files untouched).
 
 use std::path::Path;
 
@@ -8,6 +9,8 @@ use lcc_catalog::{AlbumId, Op, PhotoId, Source};
 use serde_json::{Value, json};
 
 use crate::{LibrarySource, Session};
+
+use super::library::mark_deleted;
 
 /// The kinds of `source` a plug-in can be given.
 const KINDS: &[&str] = &["album", "smartAlbum", "folder", "allPhotos", "other"];
@@ -156,6 +159,29 @@ pub(super) fn add(s: &mut Session, p: &Value) -> std::result::Result<Value, Stri
     r
 }
 
+/// `library.remove {ids}` (see `lcc_plugins::HostApi::library_remove`): moves the photos to
+/// Recently Deleted, like the app's own delete — the files on disk are never touched, one undo
+/// step, the user's selection is left as it was. Unknown ids fail before anything changes; ids
+/// already in Recently Deleted are skipped. → `{removed, skipped}`
+pub(super) fn remove(s: &mut Session, p: &Value) -> std::result::Result<Value, String> {
+    let ids = p.get("ids").and_then(Value::as_array).filter(|a| !a.is_empty()).ok_or("`ids` must be a non-empty array of photo ids")?;
+    let mut targets: Vec<PhotoId> = Vec::with_capacity(ids.len());
+    for v in ids {
+        let id = PhotoId(id_of(Some(v), "ids")?);
+        let ph = s.catalog.photo(id).ok_or_else(|| format!("photo {} is not in the catalog", id.0))?;
+        if !ph.in_library() {
+            continue; // already deleted (or only browsed): nothing to do, not an error
+        }
+        if !targets.contains(&id) {
+            targets.push(id);
+        }
+    }
+    let selection = s.selection.clone();
+    let r = mark_deleted(s, &targets, "Remove from Plug-in").map(|n| json!({"removed": n, "skipped": ids.len() - n})).map_err(|e| e.to_string());
+    s.selection = selection;
+    r
+}
+
 /// How many undo steps were added since [`Session::undo_mark`] was `mark` (as many as the undo
 /// history still holds).
 fn steps_since(s: &Session, mark: u64) -> usize {
@@ -173,7 +199,7 @@ pub(crate) fn take_back(s: &mut Session, steps: usize) -> std::result::Result<()
 
 fn add_checked(s: &mut Session, path: &str, from: PhotoId, stack: bool, album: Option<AlbumId>) -> std::result::Result<Value, String> {
     // a copy of a file the library has at another path is still the tool's own result
-    let report = s.execute("library.import", &json!({"paths": [path], "importDuplicates": true})).map_err(|e| e.to_string())?;
+    let report = s.execute("library.import", &json!({"paths": [path], "importDuplicates": true, "pluginHooks": false})).map_err(|e| e.to_string())?;
     let first = |k: &str| report[k].get(0).and_then(Value::as_u64);
     // (photo, new to the library, read before now: a duplicate or one back from Recently Deleted)
     let (photo, added, known) = if let Some(id) = first("imported") {

@@ -203,7 +203,7 @@ pub(crate) fn after_edit_saved(app: &mut LccApp, ctx: &egui::Context, ids: &[u64
             }),
             Ok(r) if r.field("started") == true => app.toast(ctx, crate::i18n::tr("Uploading the edited version to Immich…")),
             Ok(_) => {}
-            Err(e) => app.toast(ctx, e.to_string()),
+            Err(e) => app.toast_error(ctx, e.to_string()),
         }
     }
 }
@@ -212,10 +212,14 @@ pub(crate) fn after_edit_saved(app: &mut LccApp, ctx: &egui::Context, ids: &[u64
 fn versions_ui(app: &mut LccApp, ctx: &egui::Context) {
     if let Ok(v) = app.session.execute("immich.versionResults", &json!({})) {
         for r in v.field("results").as_array().into_iter().flatten() {
-            let text = match r["error"].as_str() {
-                Some(e) => trf!("Immich: {}", e),
-                None if r["trashed"].is_string() => crate::i18n::tr("The edited version replaced the previous one on Immich").to_string(),
-                None => crate::i18n::tr("The edited version is on Immich, stacked on the original").to_string(),
+            if let Some(e) = r["error"].as_str() {
+                app.toast_error(ctx, trf!("Immich: {}", e));
+                continue;
+            }
+            let text = if r["trashed"].is_string() {
+                crate::i18n::tr("The edited version replaced the previous one on Immich").to_string()
+            } else {
+                crate::i18n::tr("The edited version is on Immich, stacked on the original").to_string()
             };
             app.toast(ctx, text);
         }
@@ -252,11 +256,11 @@ fn versions_ui(app: &mut LccApp, ctx: &egui::Context) {
         if ask.remember
             && let Err(e) = app.session.execute("immich.versionSettings", &json!({"resave": choice}))
         {
-            app.toast(ctx, e.to_string());
+            app.toast_error(ctx, e.to_string());
         }
         match app.session.execute("immich.uploadVersion", &json!({"id": ask.photo, "resave": choice})) {
             Ok(_) => app.toast(ctx, crate::i18n::tr("Uploading the edited version to Immich…")),
-            Err(e) => app.toast(ctx, e.to_string()),
+            Err(e) => app.toast_error(ctx, e.to_string()),
         }
     }
     RESAVE.with_borrow_mut(|q| {
@@ -354,7 +358,7 @@ fn answer_in(app: &mut LccApp, ctx: &egui::Context, key: &str, r: Value) {
                 app.immich.unlock_error = None;
             }
         }
-        _ if failed => app.toast(ctx, message),
+        _ if failed => app.toast_error(ctx, message),
         "immich.scanLibraries" => app.toast(ctx, trf!("Immich is rescanning {} libraries", r.field("scanned").as_array().map(Vec::len).unwrap_or(0))),
         "immich.importPeople" => app.toast(ctx, trf!("Imported the faces of {} photos from Immich", r.field("photos").as_u64().unwrap_or(0))),
         "immich.pushPeople" => app.toast(ctx, trf!("Sent {} names to Immich", r.field("renames").as_array().map(Vec::len).unwrap_or(0))),
@@ -366,12 +370,12 @@ fn answer_in(app: &mut LccApp, ctx: &egui::Context, key: &str, r: Value) {
 fn report(app: &mut LccApp, ctx: &egui::Context, r: Result<Value, String>) -> bool {
     match r {
         Ok(r) if r.field("ok") == false => {
-            app.toast(ctx, r.field("error").field("message").as_str().unwrap_or("Immich"));
+            app.toast_error(ctx, r.field("error").field("message").as_str().unwrap_or("Immich"));
             false
         }
         Ok(_) => true,
         Err(e) => {
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
             false
         }
     }
@@ -399,14 +403,14 @@ fn confirm_box(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &s
     register(ui.ctx(), format!("immichConfirmBox-{i}"), r.response.rect);
     if go && let Some(c) = app.immich.confirm.take() {
         match app.run(c.command, c.params) {
-            Ok(r) if r.field("ok") == false => app.toast(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
+            Ok(r) if r.field("ok") == false => app.toast_error(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
             // (a deletion the server refused comes back in `failed`)
             Ok(r) => {
                 if let Some(m) = r.field("failed").as_array().and_then(|f| f.first()).and_then(|f| f.field("error").field("message").as_str()) {
-                    app.toast(ui.ctx(), m);
+                    app.toast_error(ui.ctx(), m);
                 }
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
         if c.command == "immich.disconnect" {
             app.immich.libraries.remove(id);
@@ -459,7 +463,7 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
             && app.immich.fetch_tried.contains(&id)
             && app.immich.fetch_failed.insert(id)
         {
-            app.toast(ctx, trf!("Could not download the original from Immich: {}", e["error"].as_str().unwrap_or_default()));
+            app.toast_error(ctx, trf!("Could not download the original from Immich: {}", e["error"].as_str().unwrap_or_default()));
         }
     }
     // …and once the user has moved on from that photo, forget the try: opening it again tries again
@@ -493,12 +497,12 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
                 false
             }
             Ok(r) if r.field("ok") == false => {
-                app.toast(ctx, r.field("error").field("message").as_str().unwrap_or("Immich"));
+                app.toast_error(ctx, r.field("error").field("message").as_str().unwrap_or("Immich"));
                 true
             }
             Ok(_) => false,
             Err(e) => {
-                app.toast(ctx, e.to_string());
+                app.toast_error(ctx, e.to_string());
                 true
             }
         };
@@ -802,7 +806,7 @@ pub(crate) fn unlock_box(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, st: &V
                 match app.session.execute("credentials.unlock", &json!({"passphrase": pass, "background": true})) {
                     Ok(r) if r.field("started") == true => {}
                     Ok(r) => app.toast(ui.ctx(), r.field("reason").as_str().unwrap_or("busy")),
-                    Err(e) => app.toast(ui.ctx(), e.to_string()),
+                    Err(e) => app.toast_error(ui.ctx(), e.to_string()),
                 }
                 app.immich.cred = Value::Null;
             }
@@ -1151,9 +1155,9 @@ fn sidecar_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id
             let full = app.immich.full_sidecars;
             match app.run("immich.pushSidecars", json!({"account": id, "background": true, "full": full})) {
                 Ok(r) if r.field("started") == true => app.toast(ui.ctx(), crate::i18n::tr("Pushing XMP sidecars to Immich…")),
-                Ok(r) if r.field("ok") == false => app.toast(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
+                Ok(r) if r.field("ok") == false => app.toast_error(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
                 Ok(_) => {}
-                Err(e) => app.toast(ui.ctx(), e.to_string()),
+                Err(e) => app.toast_error(ui.ctx(), e.to_string()),
             }
         }
         let pull = crate::i18n::tr("Pull XMP Sidecars");
@@ -1165,9 +1169,9 @@ fn sidecar_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id
         {
             match app.run("immich.pullSidecars", json!({"account": id, "background": true})) {
                 Ok(r) if r.field("started") == true => app.toast(ui.ctx(), crate::i18n::tr("Pulling XMP sidecars from Immich…")),
-                Ok(r) if r.field("ok") == false => app.toast(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
+                Ok(r) if r.field("ok") == false => app.toast_error(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
                 Ok(_) => {}
-                Err(e) => app.toast(ui.ctx(), e.to_string()),
+                Err(e) => app.toast_error(ui.ctx(), e.to_string()),
             }
         }
     });
@@ -1380,9 +1384,9 @@ fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
             // (a finished run says what it did: the pump's toast)
             match app.session.execute("immich.pushSidecars", &json!({"account": id, "externalOnly": true, "background": true})) {
                 Ok(r) if r.field("started") == true => app.toast(ui.ctx(), crate::i18n::tr("Pushing XMP sidecars to Immich…")),
-                Ok(r) if r.field("ok") == false => app.toast(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
+                Ok(r) if r.field("ok") == false => app.toast_error(ui.ctx(), r.field("error").field("message").as_str().unwrap_or("Immich")),
                 Ok(r) => app.toast(ui.ctx(), r.field("reason").as_str().unwrap_or("Immich")),
-                Err(e) => app.toast(ui.ctx(), e.to_string()),
+                Err(e) => app.toast_error(ui.ctx(), e.to_string()),
             }
         }
         if text_button(ui, "immichRescan", crate::i18n::tr("Rescan in Immich"), false)
