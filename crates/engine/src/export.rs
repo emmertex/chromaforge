@@ -13,13 +13,20 @@ use serde::{Deserialize, Serialize};
 
 /// Under `<PREFIX>_PROFILE`: print how long the step since the last lap took (`t` restarts),
 /// with the thread and the time since the first lap (photos side by side overlap or queue).
+/// The stage meter ([`lcc_pipeline::meter`]) records each lap as stage `export <what>`.
 fn lap(what: &str, t: &mut Option<std::time::Instant>) {
     static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     if let Some(t) = t {
         let now = std::time::Instant::now();
-        let at = now.duration_since(*EPOCH.get_or_init(|| *t)).as_secs_f64();
-        let thread = std::thread::current();
-        eprintln!("  export {what}: {:.1} ms [{} at {at:.1} s]", t.elapsed().as_secs_f64() * 1e3, thread.name().unwrap_or("main"));
+        let took = now.saturating_duration_since(*t);
+        if lcc_pipeline::meter::on() {
+            lcc_pipeline::meter::add(&format!("export {what}"), took);
+        }
+        if lcc_pipeline::profiling() {
+            let at = now.duration_since(*EPOCH.get_or_init(|| *t)).as_secs_f64();
+            let thread = std::thread::current();
+            eprintln!("  export {what}: {:.1} ms [{} at {at:.1} s]", took.as_secs_f64() * 1e3, thread.name().unwrap_or("main"));
+        }
         *t = now;
     }
 }
@@ -27,9 +34,9 @@ fn lap(what: &str, t: &mut Option<std::time::Instant>) {
 /// The error of a photo whose export was cancelled before it was done ([`PreparedExport::run_until`]).
 pub const CANCELLED: &str = "export cancelled";
 
-/// A clock for [`lap`] when profiling (never read otherwise: `Instant::now` panics on wasm32).
+/// A clock for [`lap`] when profiling or metering (never read otherwise: `Instant::now` panics on wasm32).
 fn lap_clock() -> Option<std::time::Instant> {
-    lcc_pipeline::profiling().then(std::time::Instant::now)
+    (lcc_pipeline::profiling() || lcc_pipeline::meter::on()).then(std::time::Instant::now)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
