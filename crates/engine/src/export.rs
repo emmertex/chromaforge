@@ -3587,6 +3587,18 @@ fn run_batch_with(
     lanes: usize,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    // the lanes keep the memory each photo frees for the next one and give it back once at the end (#1416)
+    crate::memory::holding_freed_memory(|| run_batch_holding(items, placer, progress, lanes, cancel))
+}
+
+/// [`run_batch_with`] with this thread holding its freed memory.
+fn run_batch_holding(
+    items: Vec<PreparedExport>,
+    placer: &mut Placer<'_>,
+    progress: &mut dyn FnMut(usize, &str) -> bool,
+    lanes: usize,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Vec<serde_json::Value>, String> {
     placer.single = items.len() == 1;
     let cancelled = || cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     if cfg!(target_arch = "wasm32") || (cancel.is_none() && (lanes <= 1 || items.len() <= 1)) {
@@ -3620,7 +3632,7 @@ fn run_batch_with(
     for k in 0..threads {
         let q = queue.clone();
         // a lane that can't start leaves its photos to the others (and to this thread)
-        if std::thread::Builder::new().name(format!("export-{}", k + 1)).spawn(move || q.work()).is_err() {
+        if std::thread::Builder::new().name(format!("export-{}", k + 1)).spawn(move || crate::memory::holding_freed_memory(|| q.work())).is_err() {
             break;
         }
         queue.lanes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
