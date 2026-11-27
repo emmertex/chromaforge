@@ -428,13 +428,17 @@ fn reads_ahead_at_most_per_volume_files_on_each_volume() {
         let ctx = context(&root);
         let h = start_in(&ctx, files.clone(), options(&root, ImportMode::Add), look, Some(gated_probe(&gate, real)));
         wait_until(|| ctx.pending.load(Ordering::SeqCst) >= 2 * want, "the read-ahead to fill");
+        // (both cards' reads are queued; that both also *run* while every read is held isn't
+        // promised here: the pool's cap is `workers()` for the whole process, and the first card's
+        // reads, listed first, can take every slot until one ends. Per-volume limits remove that.)
+        // (time for any read ahead beyond the bound to show up)
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(ctx.pending.load(Ordering::SeqCst), 2 * want, "{n} files a card: no more than {w} read ahead on each");
-        assert!(gate.calls_on("a") > 0 && gate.calls_on("b") > 0, "both cards read at once");
         gate.release();
         let batches = h.join().unwrap();
         let ready = batches.iter().flat_map(|b| &b.items).filter(|it| matches!(it, PreparedItem::Ready(_))).count();
         assert_eq!(ready, 2 * n, "every file, once");
+        assert_eq!((gate.calls_on("a"), gate.calls_on("b")), (n, n), "each file read once");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
