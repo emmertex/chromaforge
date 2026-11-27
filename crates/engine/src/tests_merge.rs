@@ -828,7 +828,8 @@ fn an_imported_pixel_shift_dng_has_its_capture_time_and_keywords() {
         city: Some("Testville".into()),
         ..Default::default()
     };
-    let provenance = lcc_raw::merge_provenance::Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![] };
+    let provenance =
+        lcc_raw::merge_provenance::Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![], registration: None };
     let color = ColorData { as_shot_neutral: Some([0.54, 1.0, 0.7]), ..Default::default() };
     let dng = write_dng(
         merged,
@@ -929,7 +930,8 @@ fn synthetic_merged_dng() -> Vec<u8> {
     }
     // a body no camera table names, so its raw edits white balance relative to as shot
     let metadata = lcc_meta::Metadata { make: Some("NIKON CORPORATION".into()), model: Some("NIKON Z 0".into()), ..Default::default() };
-    let provenance = lcc_raw::merge_provenance::Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![] };
+    let provenance =
+        lcc_raw::merge_provenance::Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![], registration: None };
     let color = ColorData { as_shot_neutral: Some([0.54, 1.0, 0.7]), baseline_exposure: 0.018, ..Default::default() };
     write_dng(
         merger.finish().unwrap(),
@@ -1042,4 +1044,255 @@ fn the_first_16_frames_of_a_32_shot_series_are_not_taken_for_a_16_shot_series() 
     assert!(planned.is_err(), "the first 16 frames of a 32-shot series were accepted as a complete 16-shot series");
     assert_eq!(planned.unwrap_err(), crate::merge::PixelShiftRefusal::Unsupported(32));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A merged DNG whose XMP says how it was made.
+fn merged_dng_made(registration: Option<lcc_raw::merge_provenance::Registration>) -> Vec<u8> {
+    use lcc_geom::Orientation;
+    use lcc_merge::pixelshift::{DngPacking, DngSource, Merger, SHOT_16, write_dng};
+    use lcc_raw::{BlackLevel, Cfa, ColorData, RawData, RawFormat, RawImage, Rect};
+    let (w, h) = (24usize, 24usize);
+    let frame = |k: usize| RawImage {
+        format: RawFormat::Nef,
+        width: w,
+        height: h,
+        cpp: 1,
+        data: RawData::U16((0..w * h).map(|i| 1100 + ((i * 7 + k * 13) % 3000) as u16).collect()),
+        cfa: Cfa::bayer("RGGB"),
+        bits: 14,
+        black: BlackLevel::uniform(1008.0),
+        white: vec![16383.0],
+        active_area: Rect::new(0, 0, w, h),
+        crop: Rect::new(2, 2, 20, 20),
+        orientation: Orientation::Normal,
+        color: ColorData::default(),
+        wb_multipliers: None,
+        linearized: false,
+        pixel_aspect: 1.0,
+        opcodes: Default::default(),
+        metadata: Default::default(),
+        lens_metadata: Default::default(),
+    };
+    let mut merger = Merger::new(&SHOT_16, &frame(0)).unwrap();
+    for k in 0..16 {
+        merger.add_frame(k, &frame(k)).unwrap();
+    }
+    let metadata = lcc_meta::Metadata { make: Some("NIKON CORPORATION".into()), model: Some("NIKON Z 8".into()), ..Default::default() };
+    let engine = if registration.as_ref().is_some_and(|r| r.registered) {
+        lcc_raw::merge_provenance::ENGINE_REGISTERED
+    } else {
+        lcc_raw::merge_provenance::ENGINE
+    };
+    let frames = (1..=16u16)
+        .map(|i| lcc_raw::merge_provenance::SourceFrame {
+            index: i,
+            file_name: format!("frame-{i:02}.nef"),
+            captured: String::new(),
+            counter: 100 + u32::from(i),
+        })
+        .collect();
+    let provenance = lcc_raw::merge_provenance::Provenance { engine, shot_count: 16, reference: 1, scale: 2, window: None, frames, registration };
+    write_dng(
+        merger.finish().unwrap(),
+        DngSource { metadata, color: ColorData::default(), orientation: Orientation::Normal, lens: vec![], provenance, preview: None },
+        DngPacking::Deflate,
+    )
+    .unwrap()
+}
+
+/// How a merge was made is in the file's XMP and, when the file is imported on its own, in the catalog: registered with
+/// its verdict and models, plain with its reason, and a file from before registration says nothing.
+#[test]
+fn how_a_pixel_shift_merge_was_made_is_in_the_file_and_the_catalog() {
+    use lcc_raw::merge_provenance::{Registration, from_dng};
+    let registered = Registration {
+        registered: true,
+        verdict: Some("equal".into()),
+        reason: None,
+        gains: true,
+        tiles: 54,
+        models: (0..16).map(|k| [k as f32 * 0.5, -0.25, 1.5e-6, -2.0e-6]).collect(),
+        made_at: Some("2030-01-02T03:04:05.678Z".into()),
+    };
+    let plain =
+        Registration { registered: false, verdict: None, reason: Some("noTexture".into()), gains: false, tiles: 0, models: vec![], made_at: None };
+    for (tag, made) in [("registered", Some(registered)), ("plain", Some(plain)), ("old", None)] {
+        let file = merged_dng_made(made.clone());
+        assert_eq!(from_dng(&file).unwrap().registration, made, "{tag}: the file says how it was made");
+        let dir = std::env::temp_dir().join(format!("lcc-ps-how-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("frame-01-PixelShift.dng"), &file).unwrap();
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [dir.to_string_lossy()]})).unwrap();
+        let id = lcc_catalog::PhotoId(r["imported"][0].as_u64().expect("imported"));
+        let sources = s.catalog.photo(id).unwrap().merge_sources.clone().expect("a merge that knows its frames");
+        let expected = made.as_ref().map(|m| lcc_catalog::MergeRegistration {
+            registered: m.registered,
+            verdict: m.verdict.clone(),
+            reason: m.reason.clone(),
+            gains: m.gains,
+        });
+        assert_eq!(sources.registration, expected, "{tag}: the catalog says it too");
+        assert_eq!(sources.engine, if made.as_ref().is_some_and(|m| m.registered) { 2 } else { 1 }, "{tag}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A pixel-shift merge is registered unless the plain merge is asked for; one that would not fit in memory is planned
+/// as plain with the reason kept; a kind written by an earlier build (no `registered` field) reads as registered.
+#[test]
+fn a_pixel_shift_merge_is_registered_by_default_and_plain_when_asked_or_too_big() {
+    use crate::merge::{MergeKind, parse};
+    let kind = |p: serde_json::Value| parse("merge.pixelShift", &p).unwrap().0;
+    assert_eq!(kind(json!({})), MergeKind::PixelShift { registered: true });
+    assert_eq!(kind(json!({"method": "registered"})), MergeKind::PixelShift { registered: true });
+    assert_eq!(kind(json!({"method": "plain"})), MergeKind::PixelShift { registered: false });
+    let e = parse("merge.pixelShift", &json!({"method": "magic"})).err().unwrap().to_string();
+    assert!(e.contains("method"), "{e}");
+    assert_eq!(serde_json::from_value::<MergeKind>(json!({"kind": "pixelShift"})).unwrap(), MergeKind::PixelShift { registered: true });
+    // the same series planned with room for the registered merge, and with room for the plain one only (45 megapixels:
+    // 80 bytes a pixel registered, 64 plain)
+    let dir = std::env::temp_dir().join(format!("lcc-ps-budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::new().with_fs();
+    let frames = mode_series(&mut s, &dir, "s16", 16, 16);
+    let ids: Vec<lcc_catalog::PhotoId> = frames.iter().map(|(id, _)| *id).collect();
+    let gib = 1usize << 30;
+    for (registered, available, limited, ok) in
+        [(true, 8 * gib, false, true), (true, 3 * gib + gib / 4, true, true), (true, gib, true, false), (false, 8 * gib, false, true)]
+    {
+        let k = MergeKind::PixelShift { registered };
+        let finish = parse("merge.pixelShift", &json!({})).unwrap().1;
+        let planned = s.plan_merge_with_budget(k, finish, &ids, false, available);
+        assert_eq!(planned.is_ok(), ok, "registered {registered} with {available} bytes");
+        if let Ok(job) = planned {
+            assert_eq!(job.pixel_shift.unwrap().memory_limited, limited, "registered {registered} with {available} bytes");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The reasons a series was not registered have a code and plain words, and every code the registration can give is one.
+#[test]
+fn every_reason_a_series_is_not_registered_has_words() {
+    use crate::merge_pixel_shift::{REASON_MEMORY, reason_code, reason_message};
+    use lcc_merge::pixelshift_registered::gate::{GateResult, GateVerdict};
+    use lcc_merge::pixelshift_registered::register::FallbackReason as F;
+    let worse = GateResult { verdict: GateVerdict::Worse, holdout: 3, e_nom: 1.0, e_meas: 2.0, gain: -1.0, t: -5.0, t_crit: 2.9 };
+    let all = [F::NoTexture, F::NoStart, F::FrameCount(8), F::TooFewTiles { usable: 3, needed: 8 }, F::MeasuredWorse(worse)];
+    let codes: Vec<&str> = all.iter().map(reason_code).chain([REASON_MEMORY]).collect();
+    assert_eq!(codes, ["noTexture", "noMatch", "noMatch", "tooFewTiles", "measuredWorse", "memory"]);
+    let words: std::collections::BTreeSet<&str> = codes.iter().map(|c| reason_message(c)).collect();
+    assert_eq!(words.len(), 4, "texture, matching, reliability, memory: {words:?}");
+    assert!(words.iter().all(|w| w.chars().next().is_some_and(char::is_lowercase) && !w.ends_with('.')), "{words:?}");
+}
+
+/// A pixel-shift job that is stopped before it has decoded anything ends with "cancelled" and writes nothing.
+#[test]
+fn a_cancelled_pixel_shift_job_stops_before_anything_is_decoded() {
+    let dir = std::env::temp_dir().join(format!("lcc-ps-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::new().with_fs();
+    let frames = mode_series(&mut s, &dir, "s16", 16, 16);
+    let ids: Vec<lcc_catalog::PhotoId> = frames.iter().map(|(id, _)| *id).collect();
+    for registered in [true, false] {
+        let (kind, finish) = crate::merge::parse("merge.pixelShift", &json!({"method": if registered { "registered" } else { "plain" }})).unwrap();
+        let job = s.plan_merge(kind, finish, &ids, false).unwrap();
+        let before = std::fs::read_dir(&dir).unwrap().count();
+        let err = job.run(&|_, _| false).err().expect("cancelled");
+        assert_eq!(err, "cancelled");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), before, "nothing written");
+    }
+    assert_eq!(s.catalog.len(), 16, "no photo added");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Finishes a pixel-shift job with a made-up result of `method` (the real merge needs real frames), made at second `at`.
+fn finish_made(s: &mut Session, ids: &[lcc_catalog::PhotoId], method: &str, at: u32) -> serde_json::Value {
+    use lcc_raw::merge_provenance::Registration;
+    let registered = method == "registered";
+    let (kind, finish) = crate::merge::parse("merge.pixelShift", &json!({"method": method})).unwrap();
+    let job = s.plan_merge(kind, finish, ids, false).unwrap();
+    let made = Registration {
+        registered,
+        verdict: registered.then(|| "better".to_string()),
+        reason: None,
+        gains: false,
+        tiles: if registered { 60 } else { 0 },
+        models: vec![],
+        made_at: Some(format!("2030-01-01T00:00:{at:02}.000Z")),
+    };
+    let info = json!({"kind": "pixelShift", "method": method, "registration": {"registered": registered, "verdict": made.verdict, "reason": null, "gains": false, "tiles": made.tiles}});
+    let out = crate::merge::MergeOutput { dng: merged_dng_made(Some(made)), preview: None, crop: None, info, layers: None };
+    s.finish_merge(&job, out).unwrap()
+}
+
+/// A merge of a series that already has one is not refused: the registered result keeps `-PixelShift.dng`, the plain one is
+/// `-PixelShift-Plain.dng`, a taken name gets the next number, nothing is replaced, every result is its own photo with its
+/// own provenance, and all of them sit in one stack with the frames.
+#[test]
+fn several_pixel_shift_merges_of_one_series_each_get_their_own_file_photo_and_place_in_the_stack() {
+    for (tag, order) in [
+        ("rp", ["registered", "plain"].as_slice()),
+        ("pr", ["plain", "registered"].as_slice()),
+        ("rr", ["registered", "registered"].as_slice()),
+        ("pp", ["plain", "plain"].as_slice()),
+        ("rpr", ["registered", "plain", "registered"].as_slice()),
+    ] {
+        let dir = std::env::temp_dir().join(format!("lcc-ps-several-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::new().with_fs();
+        let frames = mode_series(&mut s, &dir, "s16", 16, 16);
+        let ids: Vec<lcc_catalog::PhotoId> = frames.iter().map(|(id, _)| *id).collect();
+        let (mut registered_n, mut plain_n) = (0, 0);
+        let mut made: Vec<(lcc_catalog::PhotoId, String, Vec<u8>)> = Vec::new();
+        for (n, method) in order.iter().enumerate() {
+            let r = finish_made(&mut s, &ids, method, n as u32 + 1);
+            let id = lcc_catalog::PhotoId(r["id"].as_u64().unwrap());
+            let path = r["path"].as_str().unwrap().to_string();
+            let count = if *method == "registered" { &mut registered_n } else { &mut plain_n };
+            *count += 1;
+            let base = if *method == "registered" { "s16-01-PixelShift" } else { "s16-01-PixelShift-Plain" };
+            let expected = if *count == 1 { format!("{base}.dng") } else { format!("{base}-{count}.dng") };
+            assert_eq!(std::path::Path::new(&path).file_name().unwrap().to_string_lossy(), expected, "{tag}: merge {n} ({method})");
+            assert_eq!(r["reused"], false, "{tag}: merge {n} is a new file");
+            made.push((id, path.clone(), std::fs::read(&path).unwrap()));
+            // its own provenance, in the catalog and in the file
+            let regs = s.catalog.photo(id).unwrap().merge_sources.clone().unwrap().registration.unwrap();
+            assert_eq!(regs.registered, *method == "registered", "{tag}: merge {n}");
+            let file = lcc_raw::merge_provenance::from_dng(&made[n].2).unwrap().registration.unwrap();
+            assert_eq!(file.registered, *method == "registered");
+            // all the merges and the frames are one stack, the newest on top
+            let stack = s.catalog.stack_of(id).expect("stacked").photos.clone();
+            assert_eq!(stack.len(), 16 + n + 1, "{tag}: merge {n}");
+            assert_eq!(stack[0], id, "{tag}: the newest merge on top");
+            assert!(made.iter().all(|(m, _, _)| stack.contains(m)) && ids.iter().all(|f| stack.contains(f)), "{tag}");
+        }
+        // nothing earlier was replaced, and no two results are the same photo or the same bytes
+        for (_, path, bytes) in &made {
+            assert_eq!(&std::fs::read(path).unwrap(), bytes, "{tag}: not replaced");
+        }
+        let unique: std::collections::BTreeSet<&Vec<u8>> = made.iter().map(|m| &m.2).collect();
+        assert_eq!(unique.len(), made.len(), "{tag}: every merge its own file");
+        assert_eq!(s.catalog.len(), 16 + made.len(), "{tag}");
+        // the frames are still a series (Photo Merge's question for the other kinds depends on it), and a result is not one
+        assert!(s.plan_pixel_shift_checked(&frames).is_ok(), "{tag}");
+        let mut with_result = frames.clone();
+        with_result[15] = (made[0].0, made[0].1.clone());
+        assert!(s.plan_pixel_shift_checked(&with_result).is_err(), "{tag}");
+        // Delete Merge Sources on the first result takes frames 2 to 16; the other results stay, with frame 01, and theirs
+        // finds the frames already gone
+        let first = made[0].0;
+        let r = s.execute("merge.deleteSources", &json!({"id": first.0})).unwrap();
+        assert_eq!((r["deleted"].as_u64(), r["missing"].as_u64()), (Some(15), Some(0)), "{tag}");
+        let live: Vec<lcc_catalog::PhotoId> =
+            s.catalog.stack_of(first).unwrap().photos.iter().copied().filter(|p| !s.catalog.photo(*p).unwrap().deleted).collect();
+        assert_eq!(live.len(), made.len() + 1, "{tag}: the results and frame 01: {live:?}");
+        for (id, _, _) in &made[1..] {
+            let (present, _) = s.merge_sources_to_delete(*id).unwrap();
+            assert!(present.is_empty(), "{tag}: its frames are already gone");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

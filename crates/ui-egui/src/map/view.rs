@@ -62,6 +62,9 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     // fork #741: a filmstrip selection whose pins lie off screen brings the map to them (pan only).
     // The first frame only records the selection, so entering the module never jumps.
     let sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    if super::glide_step(&mut app.map, ui.input(|i| i.time)) {
+        ctx.request_repaint();
+    }
     if app.map.last_selection.as_ref().is_some_and(|prev| prev.as_slice() != sel.as_slice()) {
         super::reveal_selection(app, false);
     } else {
@@ -236,13 +239,16 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     }
     // the active saved location's handles (centre and radius) and the Edit Location panel's draft: above the pins
     locations(app, ui, &painter, r, mpp, true);
-    // hover preview: the first photo's thumbnail and the count
-    if let Some((at, ids)) = hovered
-        && app.map.dragging_pin.is_none()
-        && app.map.dragging_location.is_none()
-        && scroll.abs() == 0.0
-    {
-        hover_preview(app, ui, r, at, &ids);
+    // the hover card: opened by a hovered pin, kept while the pointer is on the pin or the card
+    let busy = app.map.dragging_pin.is_some()
+        || app.map.dragging_location.is_some()
+        || app.ui.dragging_photos.is_some()
+        || resp.dragged()
+        || scroll.abs() > 0.0;
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    app.map.hover_card = if busy { None } else { next_hover_card(app.map.hover_card.take(), hovered, &app.map.drawn, pointer) };
+    if app.map.hover_card.is_some() {
+        hover_card(app, ui, r);
     }
 
     // ---- context menu
@@ -665,26 +671,102 @@ fn zoom_at(app: &mut LccApp, r: Rect, at: Pos2, dz: f64) {
     app.map.set_view(unproject(cx + (bx - ax), cy + (by - ay)), zz);
 }
 
-fn hover_preview(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, at: Pos2, ids: &[u64]) {
-    let t = Tokens::get(ui.ctx());
-    let Some(first) = ids.first().map(|i| lcc_catalog::PhotoId(*i)) else { return };
-    crate::panels::grid::request_thumb(app, first, 256, 4);
-    let size = vec2(150.0, 120.0);
-    let mut pos = at + vec2(14.0, -size.y - 10.0);
-    pos.x = pos.x.min(r.right() - size.x - 4.0);
-    pos.y = pos.y.max(r.top() + 4.0);
-    let box_r = Rect::from_min_size(pos, size);
-    let p = ui.painter_at(r);
-    p.rect(box_r, CornerRadius::same(4), t.chrome, Stroke::new(1.0, t.divider), StrokeKind::Inside);
-    let img = Rect::from_min_max(box_r.min + vec2(6.0, 6.0), box_r.max - vec2(6.0, 22.0));
-    if let Some(tex) = app.renderer.thumb(first) {
-        let [tw, th] = tex.size;
-        let s = (img.width() / tw.max(1) as f32).min(img.height() / th.max(1) as f32);
-        let fr = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
-        p.image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+/// The hover card after this frame: a hovered pin opens it (or keeps it, on the photo it shows);
+/// otherwise it stays while the pointer is on the card or on its pin, which may have moved.
+pub(super) fn next_hover_card(
+    card: Option<super::HoverCard>,
+    hovered: Option<(Pos2, Vec<u64>)>,
+    drawn: &[(Pos2, Vec<u64>)],
+    pointer: Option<Pos2>,
+) -> Option<super::HoverCard> {
+    if let Some((at, ids)) = hovered {
+        return Some(match card {
+            Some(c) if c.ids == ids => super::HoverCard { anchor: at, ..c },
+            _ => super::HoverCard { ids, index: 0, anchor: at, rect: None },
+        });
     }
-    let name = app.session.catalog.photo(first).map(|ph| ph.file_name.clone()).unwrap_or_default();
-    let text = if ids.len() > 1 { crate::i18n::tr_format!("{n} photos", n = ids.len()) } else { name };
-    p.text(pos2(box_r.center().x, box_r.bottom() - 11.0), Align2::CENTER_CENTER, text, t.font(11.0), t.text);
-    register(ui.ctx(), "map:hover", box_r);
+    let mut c = card?;
+    c.anchor = drawn.iter().find(|(_, ids)| *ids == c.ids)?.0;
+    // the pin, the card and the gap between them: the pointer crosses it to reach the arrows
+    let zone =
+        c.rect.map_or_else(|| Rect::from_center_size(c.anchor, vec2(28.0, 28.0)), |r| r.union(Rect::from_center_size(c.anchor, vec2(28.0, 28.0))));
+    pointer.is_some_and(|p| zone.contains(p)).then_some(c)
+}
+
+/// Lightroom Classic's card over a hovered pin: the photo, its file name, capture time and
+/// exposure, and for a pin of several photos "2 of 5" with arrows to step through them. A click on
+/// the photo selects it.
+fn hover_card(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    let Some(card) = app.map.hover_card.clone() else { return };
+    let n = card.ids.len();
+    let index = card.index.min(n.saturating_sub(1));
+    let Some(id) = card.ids.get(index).copied() else { return };
+    let pid = lcc_catalog::PhotoId(id);
+    crate::panels::grid::request_thumb(app, pid, 256, 4);
+    let t = Tokens::get(ui.ctx());
+    let size = card.rect.map_or(vec2(206.0, 230.0), |c| c.size());
+    let mut pos = card.anchor + vec2(14.0, -size.y - 10.0);
+    pos.x = pos.x.min(r.right() - size.x - 4.0).max(r.left() + 4.0);
+    pos.y = pos.y.max(r.top() + 4.0);
+    let (name, date, exposure) = app
+        .session
+        .catalog
+        .photo(pid)
+        .map(|p| {
+            let date = p.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into());
+            (p.file_name.clone(), date, crate::panels::grid::exposure_line(&p.meta))
+        })
+        .unwrap_or_default();
+    let thumb = app.renderer.thumb(pid);
+    let mut step: Option<isize> = None;
+    let mut pick = false;
+    let shown = egui::Area::new(egui::Id::new("map-hover-card")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+        egui::Frame::new().fill(t.chrome).stroke(Stroke::new(1.0, t.divider)).corner_radius(CornerRadius::same(4)).inner_margin(6.0).show(ui, |ui| {
+            ui.set_width(194.0);
+            let (img, resp) = ui.allocate_exact_size(vec2(194.0, 130.0), Sense::click());
+            register(ui.ctx(), "map:hover:photo", img);
+            crate::access::named(&resp, egui::WidgetType::Button, &name);
+            if let Some(tex) = thumb {
+                let [tw, th] = tex.size;
+                let s = (img.width() / tw.max(1) as f32).min(img.height() / th.max(1) as f32);
+                let fr = Rect::from_center_size(img.center(), vec2(tw as f32 * s, th as f32 * s));
+                ui.painter().image(tex.id(), fr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                ui.painter().rect_filled(img, 0.0, t.skeleton);
+            }
+            pick = resp.clicked();
+            ui.add(egui::Label::new(egui::RichText::new(&name).size(11.0).color(t.text)).truncate());
+            ui.label(egui::RichText::new(&date).size(10.5).color(t.text_dim));
+            if let Some(e) = &exposure {
+                ui.add(egui::Label::new(egui::RichText::new(e).size(10.5).color(t.text_dim)).truncate());
+            }
+            if n > 1 {
+                ui.horizontal(|ui| {
+                    let b = ui.small_button("‹").on_hover_text(crate::i18n::tr("Previous"));
+                    register(ui.ctx(), "map:hover:prev", b.rect);
+                    if b.clicked() {
+                        step = Some(-1);
+                    }
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("{i} of {n}", i = index + 1, n = n)).size(11.0).color(t.text));
+                    let b = ui.small_button("›").on_hover_text(crate::i18n::tr("Next"));
+                    register(ui.ctx(), "map:hover:next", b.rect);
+                    if b.clicked() {
+                        step = Some(1);
+                    }
+                });
+            }
+        });
+    });
+    register(ui.ctx(), "map:hover", shown.response.rect);
+    if let Some(c) = app.map.hover_card.as_mut() {
+        c.rect = Some(shown.response.rect);
+        c.index = match step {
+            // the arrows wrap round at both ends
+            Some(d) => (index as isize + d).rem_euclid(n.max(1) as isize) as usize,
+            None => index,
+        };
+    }
+    if pick {
+        let _ = app.run("library.select", json!({"ids": [id]}));
+    }
 }

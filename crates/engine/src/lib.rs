@@ -106,6 +106,7 @@ pub mod media;
 pub mod memory;
 pub mod merge;
 pub mod merge_layers;
+mod merge_pixel_shift;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
 pub mod ml;
