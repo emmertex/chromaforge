@@ -1080,6 +1080,7 @@ impl NetRunner {
         let bytes = (self.shared.layout.out_floats * 4) as u64;
         enc.copy_buffer_to_buffer(&w.output, 0, &w.staging, 0, bytes);
         d.queue.submit([enc.finish()]);
+        crate::busy::submitted(&d.queue);
         let slice = w.staging.slice(..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {

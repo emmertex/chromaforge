@@ -226,6 +226,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "გადახედა {reviewer}, მარკეტპლეისის მეურვე.",
   "Saved template {name}": "შაბლონი {name} შენახულია",
   "Saved {path}": "შენახულია: {path}",
+  "Search online for “{q}”…": "„{q}“-ის ძიება ონლაინ…",
   "Second graphics card not used: {why}": "მეორე გრაფიკული ბარათი არ გამოიყენება: {why}",
   "Select {n} look-alikes": "{n} მსგავსი სახის არჩევა",
   "Selected cell {n}": "მონიშნული უჯრა {n}",

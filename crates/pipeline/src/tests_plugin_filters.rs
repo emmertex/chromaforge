@@ -349,3 +349,47 @@ fn draft_and_full_renders_give_matching_point_filter_results() {
     let filtered = mean_diff(&fd.image, &ff.image);
     assert!(filtered <= plain + 1.5, "draft vs full with the filter differ by {filtered:.2} (unfiltered {plain:.2})");
 }
+
+/// A Display filter limited to a mask changes only what the mask covers, the inverted mask only the rest, and a mask
+/// that's gone leaves it on the whole frame with a warning (#1397).
+#[test]
+fn a_masked_filter_changes_only_what_its_mask_covers() {
+    use lcc_develop::{FilterMask, Mask, MaskComponent, MaskOp, MaskShape};
+    use lcc_geom::Point;
+    let (src, info) = (source(), info());
+    let req = RenderRequest::fit(96, 64);
+    let mut s = with(&[FilterStage::Display], "t.invert");
+    // a hard mask over the left part (x < 0.45), hidden: it adjusts nothing itself
+    let shape = MaskShape::Linear { start: Point::new(0.45, 0.5), end: Point::new(0.46, 0.5) };
+    s.masks.push(Mask {
+        id: 5,
+        components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+        ..Default::default()
+    });
+    let plain = render(
+        &src,
+        &info,
+        &{
+            let mut p = s.clone();
+            p.plugin_filters.clear();
+            p
+        },
+        &req,
+    );
+    let at = |i: &lcc_raster::Rgba8, x: usize| i.data[32 * 96 + x];
+    let changed = |i: &lcc_raster::Rgba8, x: usize| (0..3).any(|k| (at(i, x)[k] as i32 - at(&plain.image, x)[k] as i32).abs() > 20);
+
+    s.plugin_filters[0].mask = Some(FilterMask { id: 5, invert: false });
+    let masked = render(&src, &info, &s, &req);
+    assert!(masked.warnings.is_empty(), "{:?}", masked.warnings);
+    assert!(changed(&masked.image, 10) && !changed(&masked.image, 85), "left filtered, right as it was");
+
+    s.plugin_filters[0].mask = Some(FilterMask { id: 5, invert: true });
+    let inverted = render(&src, &info, &s, &req);
+    assert!(!changed(&inverted.image, 10) && changed(&inverted.image, 85), "inverted: the right");
+
+    s.plugin_filters[0].mask = Some(FilterMask { id: 99, invert: false });
+    let gone = render(&src, &info, &s, &req);
+    assert!(changed(&gone.image, 10) && changed(&gone.image, 85), "the whole frame");
+    assert!(gone.warnings.iter().any(|w| w.contains("mask")), "{:?}", gone.warnings);
+}

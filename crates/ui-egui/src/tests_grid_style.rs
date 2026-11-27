@@ -105,3 +105,21 @@ fn grid_fallbacks_use_the_chosen_style() {
     a.run("view.filterBar", json!({})).unwrap(); // on again, from the photo
     assert_eq!(a.ui.view, ViewMode::SquareGrid, "the filter bar lands on the chosen grid");
 }
+
+/// In Develop the filter button opens a bar over the loupe and the photo stays (#1317); a second click closes it,
+/// and the Library's own bar is left as it was.
+#[test]
+fn the_filter_bar_in_develop_keeps_the_photo() {
+    let mut a = app();
+    a.run("module.develop", json!({})).unwrap();
+    assert_eq!(a.ui.view, ViewMode::Detail);
+    let library_bar = a.ui.filter_bar;
+    assert!(!a.ui.filter_bar_shown(), "Develop starts without its bar");
+    a.run("view.filterBar", json!({})).unwrap();
+    assert_eq!(a.ui.view, ViewMode::Detail, "still the photo");
+    assert!(a.ui.filter_bar_shown());
+    a.run("view.filterBar", json!({})).unwrap();
+    assert!(!a.ui.filter_bar_shown());
+    assert_eq!(a.ui.view, ViewMode::Detail);
+    assert_eq!(a.ui.filter_bar, library_bar, "the Library's bar is its own");
+}

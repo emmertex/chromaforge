@@ -46,7 +46,10 @@ const GRADING_COMMANDS: &[UiCommand] = &[("view.gradingMode", "Grading Mode", So
 /// Settings ▸ Interface ▸ Click through (macOS): `app.backgroundClicks` takes
 /// `{accept: bool}` (false: a click only brings the window forward) and answers `{accept}`; without
 /// `accept` it answers the current choice.
-const WINDOW_COMMANDS: &[UiCommand] = &[("app.backgroundClicks", "Click Through", None, "")];
+///
+/// Settings ▸ Develop ▸ Detach the mask list: `view.masksDetached` takes `{on: bool}` (without it, switches) and
+/// answers `{on}` (#1251).
+const WINDOW_COMMANDS: &[UiCommand] = &[("app.backgroundClicks", "Click Through", None, ""), ("view.masksDetached", "Detach Mask List", None, "")];
 
 /// The Edit panel's sections the fork adds: Transform (Upright and the transform sliders, upstream's Geometry in the
 /// Crop tool), as Lightroom Classic's Transform panel, and Plug-in Filters (the photo's pixel-filter stack). Opened and
@@ -187,6 +190,14 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                 Some(v) => return Some(Err(format!("app.backgroundClicks: accept must be true or false, not {v}"))),
             }
             Ok(json!({"accept": app.ui.settings.accept_background_clicks}))
+        }
+        "view.masksDetached" => {
+            match p.get("on") {
+                None | Some(Value::Null) => app.ui.settings.masks_detached = !app.ui.settings.masks_detached,
+                Some(Value::Bool(on)) => app.ui.settings.masks_detached = *on,
+                Some(v) => return Some(Err(format!("view.masksDetached: on must be true or false, not {v}"))),
+            }
+            Ok(json!({"on": app.ui.settings.masks_detached}))
         }
         "view.gradingMode" => {
             // {mode?: eboda|witchcraft}; without one, cycles Eboda → Witchcraft → Eboda

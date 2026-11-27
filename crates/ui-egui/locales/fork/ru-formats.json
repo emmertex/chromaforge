@@ -182,6 +182,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "Проверил {reviewer}, сопровождающий маркетплейса.",
   "Running on the processor: {}.": "Работает на процессоре: {}.",
   "Running on {}.": "Работает на {}.",
+  "Search online for “{q}”…": "Искать «{q}» в интернете…",
   "Second graphics card not used: {why}": "Вторая видеокарта не используется: {why}",
   "Select {n} look-alikes": "Выбрать похожие ({n})",
   "Selected cell {n}": "Выбранная ячейка {n}",
