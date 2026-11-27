@@ -106,7 +106,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                             ui.separator();
                             crate::widgets::menu_button(ui, crate::i18n::tr("Sort"), |ui| sort_menu(app, ui));
                             if compact_zoom && matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare) {
-                                crate::widgets::menu_button(ui, crate::i18n::tr_format!("Click {}:1", app.ui.click_zoom / 100), |ui| {
+                                crate::widgets::menu_button(ui, crate::i18n::tr_format!("Click {}%", app.ui.click_zoom), |ui| {
                                     click_zoom_menu(app, ui)
                                 });
                             }
@@ -376,7 +376,7 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
             let cz = crate::widgets::dropdown(
                 &mut child,
                 "clickZoom",
-                &crate::i18n::tr_format!("Click {}:1", app.ui.click_zoom / 100),
+                &crate::i18n::tr_format!("Click {}%", app.ui.click_zoom),
                 t.font(13.0),
                 t.text_label,
             );
@@ -482,7 +482,7 @@ fn thumb_slider(app: &mut LccApp, child: &mut egui::Ui, t: &Tokens) {
 
 fn click_zoom_menu(app: &mut LccApp, ui: &mut egui::Ui) {
     for pct in crate::state::CLICK_ZOOMS {
-        if ui.selectable_label(app.ui.click_zoom == pct, format!("{}:1", pct / 100)).clicked() {
+        if ui.selectable_label(app.ui.click_zoom == pct, format!("{pct}%")).clicked() {
             let _ = app.run("view.clickZoom", json!({"ratio": pct / 100}));
         }
     }

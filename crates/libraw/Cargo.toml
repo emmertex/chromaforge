@@ -1,0 +1,21 @@
+[package]
+name = "lcc-libraw"
+version.workspace = true
+edition.workspace = true
+# LibRaw is LGPL-2.1 or CDDL-1.0 (used under the LGPL-2.1, which GPL-3.0-or-later builds may carry): a binary built
+# with this crate's LibRaw linked in is offered under GPL-3.0-or-later (see NOTICE).
+license = "GPL-3.0-or-later"
+description = "LibRaw (L0, opt-in): reads a raw file's unpacked mosaic and levels with the LibRaw C++ library, through a small C shim. The one C/C++ dependency of the product, built only with the engine's `libraw` feature and a LibRaw source checkout (`LIBRAW_DIR`) or a system LibRaw (`LIBRAW_SYSTEM=1`); without either it builds as a stub that says LibRaw is not available. One of the few crates allowed `unsafe` (FFI calls only)."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the FFI
+# module below; see AGENTS.md ("Never crash", which names the isolated helper crates).
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(lcc_libraw)"] }
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[build-dependencies]
+cc = "1"
