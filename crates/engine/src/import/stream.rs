@@ -228,7 +228,8 @@ impl ImportJob {
             if run.stop.is_some() {
                 break;
             }
-            run.stage(self, run.emitted.saturating_add(run.look.batches));
+            // (this batch, if not staged ahead yet; the ones after it are staged as results come)
+            run.stage(self, k.saturating_add(1));
             let Some(batch) = run.staged.pop_front() else { break };
             let planning = self.plan_streamed(&mut run, batch, library.take(), emit);
             run.planned.push_back(planning);
@@ -365,28 +366,44 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Stage the chunks before `upto` (the `beforeImport` hook; which files may be read ahead).
+    /// Stage the chunks before `upto`, each one's reads fed as soon as it is staged.
     fn stage(&mut self, job: &mut ImportJob, upto: usize) {
-        while self.staged_chunks < upto {
-            let start = self.staged_chunks.saturating_mul(self.look.batch);
-            let Some(chunk) = self.files.get(start..).map(|rest| rest.iter().take(self.look.batch).cloned().collect::<Vec<_>>()) else { break };
-            if chunk.is_empty() {
-                break;
-            }
-            self.staged_chunks += 1;
-            let (files, out) = job.filter_batch(chunk, self.cancel);
-            let first = self.next_pos;
-            self.next_pos = self.next_pos.saturating_add(files.len());
-            if job.probe.is_some() {
-                for (i, f) in files.iter().enumerate() {
-                    if job.may_read(f) {
-                        self.queue(first.saturating_add(i), f);
-                    }
+        while self.staged_chunks < upto && self.stage_one(job) {}
+    }
+
+    /// One more chunk staged ahead, within [`Lookahead::batches`] of the oldest batch not handed
+    /// over, unless the run stopped. Staging asks the `beforeImport` hook about each file (a call
+    /// to the file's volume and to the plug-in), so it runs a batch at a time between results
+    /// ([`Run::pump`]): the first reads and the first batch never wait for the hook to see the
+    /// whole horizon, and a cancel is noticed between batches.
+    fn stage_ahead(&mut self, job: &mut ImportJob) -> bool {
+        self.stop.is_none() && self.staged_chunks < self.emitted.saturating_add(self.look.batches) && self.stage_one(job)
+    }
+
+    /// Stage the next chunk (the `beforeImport` hook; which of its files may be read ahead) and
+    /// feed the reads; `false` when every chunk is staged.
+    fn stage_one(&mut self, job: &mut ImportJob) -> bool {
+        let start = self.staged_chunks.saturating_mul(self.look.batch);
+        let Some(chunk) = self.files.get(start..).map(|rest| rest.iter().take(self.look.batch).cloned().collect::<Vec<_>>()) else {
+            return false;
+        };
+        if chunk.is_empty() {
+            return false;
+        }
+        self.staged_chunks += 1;
+        let (files, out) = job.filter_batch(chunk, self.cancel);
+        let first = self.next_pos;
+        self.next_pos = self.next_pos.saturating_add(files.len());
+        if job.probe.is_some() {
+            for (i, f) in files.iter().enumerate() {
+                if job.may_read(f) {
+                    self.queue(first.saturating_add(i), f);
                 }
             }
-            self.staged.push_back(Staged { first, files, out });
         }
+        self.staged.push_back(Staged { first, files, out });
         self.feed(job);
+        true
     }
 
     fn probe_stream(&mut self) -> &mut Stream<ProbeResult> {
@@ -653,14 +670,20 @@ impl<'a> Run<'a> {
         self.resolved(tid, item);
     }
 
-    /// Take every result that has come, read ahead, hand over the batches that are complete; with
-    /// `wait`, block a little on that stream first when nothing has come. Notices cancel.
+    /// Take every result that has come, stage one more batch ahead ([`Run::stage_ahead`]), read
+    /// ahead, hand over the batches that are complete; with `wait`, block a little on that stream
+    /// first when nothing has come and nothing was staged. Notices cancel.
     fn pump(&mut self, job: &mut ImportJob, wait: Option<Wait>, emit: Emit<'_>) {
         if self.stop.is_none() && self.cancel.load(Relaxed) {
             self.halt(Stop::Cancel);
         }
         let got = self.drain(job);
-        if !got && let Some(w) = wait {
+        // a batch more staged ahead, instead of blocking when nothing has come
+        let staged = self.stage_ahead(job);
+        if !got
+            && !staged
+            && let Some(w) = wait
+        {
             match w {
                 Wait::Probes if self.probes.is_some() => self.drain_probes(job, SLICE),
                 Wait::Transfers if self.transfers.is_some() => self.drain_transfers(Some(job), SLICE),

@@ -1447,6 +1447,9 @@ pub struct ImportJob {
     /// ones read so far: the step before they are handled.
     pub read_total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub read_done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Called with each batch as the `beforeImport` hook would be (tests: a slow hook).
+    #[cfg(test)]
+    pub(crate) test_filter: Option<std::sync::Arc<dyn Fn(&[String]) + Send + Sync>>,
 }
 
 /// The outcome of [`ImportJob::prepare`] for one batch, in file order.
@@ -1608,6 +1611,8 @@ impl ImportJob {
             before_import: None,
             read_total: Default::default(),
             read_done: Default::default(),
+            #[cfg(test)]
+            test_filter: None,
         })
     }
 
@@ -1809,6 +1814,10 @@ impl ImportJob {
     fn filter_batch(&mut self, mut files: Vec<String>, cancel: &std::sync::atomic::AtomicBool) -> (Vec<String>, Prepared) {
         let scanned = files.len();
         let mut plugin_skipped = 0usize;
+        #[cfg(test)]
+        if let Some(f) = &self.test_filter {
+            f(&files);
+        }
         if let Some(hook) = &self.before_import {
             files = hook.filter(files, cancel, &mut plugin_skipped);
             self.done.fetch_add(plugin_skipped, std::sync::atomic::Ordering::Relaxed);

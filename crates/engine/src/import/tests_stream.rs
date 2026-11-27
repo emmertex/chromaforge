@@ -806,3 +806,56 @@ fn a_panic_takes_back_the_batches_planned_and_not_handed_over() {
     assert!(files.iter().all(|f| Path::new(f).exists()), "sources untouched");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Staging (the `beforeImport` hook asked about each file) runs a batch at a time between
+/// results, not the whole horizon first: with a hook taking 50 ms a batch, the first read starts
+/// once the first batch is staged (here at most two), where the sixteen batches of the horizon
+/// took 800 ms first; every file is still imported, in order. A cancel while the second batch is
+/// staged stops staging there (all sixteen were staged before).
+#[test]
+fn staging_runs_a_batch_at_a_time_not_the_horizon_first() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = temp_root("staging");
+    let files = cards_of(&root, 32);
+    let ctx = context(&root);
+    let mut s = Session::new().with_fs();
+    let mut job = ImportJob::new(&mut s, options(&root, ImportMode::Add)).unwrap();
+    let staged = Arc::new(AtomicUsize::new(0));
+    let st = staged.clone();
+    job.test_filter = Some(Arc::new(move |_: &[String]| {
+        std::thread::sleep(Duration::from_millis(50));
+        st.fetch_add(1, SeqCst);
+    }));
+    let at_first_read = Arc::new(AtomicUsize::new(usize::MAX));
+    let (real, st, first) = (job.probe.clone().unwrap(), staged.clone(), at_first_read.clone());
+    job.probe = Some(Arc::new(move |p: &str| {
+        let _ = first.compare_exchange(usize::MAX, st.load(SeqCst), SeqCst, SeqCst);
+        real(p)
+    }));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut batches = Vec::new();
+    job.prepare_streamed(&ctx, files.clone(), &cancel, Lookahead { batch: 4, per_volume: 8, batches: 16 }, &mut |p| {
+        batches.push(p);
+        true
+    });
+    let seen = at_first_read.load(SeqCst);
+    assert!(seen <= 2, "{seen} batches staged before the first read");
+    let ready: Vec<String> =
+        batches.iter().flat_map(|b| &b.items).filter_map(|it| if let PreparedItem::Ready(r) = it { Some(r.path.clone()) } else { None }).collect();
+    assert_eq!(ready, files, "every file, in order");
+
+    // a cancel while the second batch is staged: staging stops there, not after the horizon
+    let mut s = Session::new().with_fs();
+    let mut job = ImportJob::new(&mut s, options(&root, ImportMode::Add)).unwrap();
+    let (staged, cancel) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+    let (st, c) = (staged.clone(), cancel.clone());
+    job.test_filter = Some(Arc::new(move |_: &[String]| {
+        if st.fetch_add(1, SeqCst) == 1 {
+            c.store(true, SeqCst);
+        }
+    }));
+    job.prepare_streamed(&ctx, files, &cancel, Lookahead { batch: 4, per_volume: 8, batches: 16 }, &mut |_| true);
+    let n = staged.load(SeqCst);
+    assert!(n <= 3, "{n} batches staged after the cancel");
+    let _ = std::fs::remove_dir_all(&root);
+}
