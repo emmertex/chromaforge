@@ -428,9 +428,15 @@ fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom
         // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
         // album id it can't give) must not leave them so, without the catalog's ratings, flags, edits or collections,
         // while it reports only the error: take that step back. It is records only: Add moves and copies no file.
+        //
+        // A large import commits (and saves) in parts folded into the file step (issue #1361): then the file step is no
+        // longer the last commit, and the parts and it go back as an undo would, logged.
         Err(e) => {
-            let Some(step) = file_step else { return Err(e) };
-            return Err(match s.take_back(step) {
+            let back = match file_step {
+                Some(step) if s.take_back(step).is_ok() => Ok(()),
+                _ => undo_since(s, undo0),
+            };
+            return Err(match back {
                 Ok(()) => e,
                 Err(back) => crate::EngineError::Other(format!("{e}; the photos it added could not be taken back: {back}")),
             });
@@ -449,6 +455,15 @@ fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom
         None
     };
     Ok(LightroomCompletion { report, finalization: LightroomArchiveFinalization { path, bytes } })
+}
+
+/// Undo every step committed since the undo stack was `undo0` long, leaving nothing to redo.
+pub(crate) fn undo_since(s: &mut crate::Session, undo0: usize) -> crate::Result<()> {
+    while s.undo.len() > undo0 {
+        s.undo_step()?;
+        s.redo.pop();
+    }
+    Ok(())
 }
 
 fn original_paths(data: &CatalogImport, cancel: &AtomicBool) -> crate::Result<(Vec<String>, HashSet<String>)> {

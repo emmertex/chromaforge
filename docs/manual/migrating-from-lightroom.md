@@ -18,7 +18,7 @@ catalog and your originals are opened read-only and never changed. You can keep 
 File → Import Lightroom Catalog… shows what will come across (`library.inspectLightroom`: photo and collection
 counts, missing files, warnings) and then imports it in the background, with progress and Cancel. When it finishes,
 the result window lists every warning and failure in a scrollable area; **Copy** puts the whole report on the clipboard.
-One undo step reverses it. From the command line:
+One undo step reverses it. A large catalog is saved in parts as it imports; if the app stops partway (a crash, power loss), the photos already saved stay, and importing the catalog again adds the rest (virtual copies saved before the stop may then come in twice). From the command line:
 
 ```sh
 <cli> run --library "<library_default>" library.inspectLightroom path="Lightroom Catalog.lrcat"
@@ -79,7 +79,7 @@ needs (photos, files, folders), the result also says that photos may be missing.
 
 Before changing anything, the importer saves the source records, decoded XMP, develop settings, history, snapshots
 and collection content to compressed recovery archives in the library's `Interop/` folder (best-effort, capped in
-size). Imports are bounded: a 1 GiB database, one million rows for each table kept whole (keyword assignments, develop history and metadata are read a row at a time, without that limit). Details and limits:
+size). Imports are bounded by memory, not by a number of photos: the read may keep three quarters of the memory free when it starts, and a catalog that needs more stops with an error and imports nothing. Set `<PREFIX>_LIGHTROOM_IMPORT_MEMORY` to a number of GiB to allow more (or less). Details and limits:
 [lightroom-catalog-import.md](../lightroom-catalog-import.md).
 
 ## Habits that carry over
