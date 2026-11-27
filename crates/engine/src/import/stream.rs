@@ -115,6 +115,15 @@ enum Slot {
 struct Planning {
     out: Prepared,
     slots: Vec<Slot>,
+    /// Slots before this one have their outcomes ([`Run::complete`] goes on from here: an
+    /// outcome, once in, stays until the batch is assembled).
+    ready: usize,
+}
+
+impl Planning {
+    fn new(out: Prepared, slots: Vec<Slot>) -> Planning {
+        Planning { out, slots, ready: 0 }
+    }
 }
 
 struct Pending {
@@ -253,7 +262,7 @@ impl ImportJob {
                 && !run.wait_hash(self, &h, emit)
             {
                 out.cut_short = true;
-                return Planning { out, slots: Vec::new() };
+                return Planning::new(out, Vec::new());
             }
             match self.sort_file(f, &mut follow) {
                 Sorted::Item(it) => {
@@ -274,13 +283,21 @@ impl ImportJob {
             run.need(self, *pos, path);
         }
         let mut slots = Vec::new();
-        // every read of the batch, before its first file is planned (the stem sidecars' owners)
-        while run.stop.is_none() && todo.iter().any(|(pos, _)| !run.arrived(*pos)) {
+        // every read of the batch, before its first file is planned (the stem sidecars' owners);
+        // `arrived`: the reads before it have come (a read, once in, stays until taken below)
+        let mut arrived = 0;
+        while run.stop.is_none() {
+            while todo.get(arrived).is_some_and(|(pos, _)| run.arrived(*pos)) {
+                arrived += 1;
+            }
+            if arrived >= todo.len() {
+                break;
+            }
             run.pump(self, Some(Wait::Probes), emit);
         }
         if run.stop.is_some() {
             out.cut_short = !todo.is_empty();
-            return Planning { out, slots };
+            return Planning::new(out, slots);
         }
         let probed: Vec<Probed> = todo.iter().map(|(pos, _)| run.take(*pos)).collect();
         crate::memory::release();
@@ -319,7 +336,7 @@ impl ImportJob {
                 }
             }
         }
-        Planning { out, slots }
+        Planning::new(out, slots)
     }
 }
 
@@ -731,7 +748,9 @@ impl<'a> Run<'a> {
 
     /// Hand over the oldest batches whose transfers all have outcomes.
     fn emit_ready(&mut self, emit: Emit<'_>) {
-        while self.planned.front().is_some_and(|b| self.complete(b)) {
+        while let Some(front) = self.planned.front_mut()
+            && Run::complete(front, &self.outcomes)
+        {
             let Some(b) = self.planned.pop_front() else { break };
             let out = self.assemble(b);
             self.emitted = self.emitted.saturating_add(1);
@@ -742,16 +761,23 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn complete(&self, b: &Planning) -> bool {
-        b.slots.iter().all(|s| match s {
-            Slot::Item(_) => true,
-            Slot::Transfer(t) => self.outcomes.contains_key(t),
-        })
+    /// Whether every transfer of batch `b` has its outcome, looking on from the last slot seen
+    /// without one (so a batch of n files is checked in O(n) over all its calls, not per call).
+    fn complete(b: &mut Planning, outcomes: &HashMap<usize, Option<PreparedItem>>) -> bool {
+        while let Some(s) = b.slots.get(b.ready) {
+            if let Slot::Transfer(t) = s
+                && !outcomes.contains_key(t)
+            {
+                return false;
+            }
+            b.ready += 1;
+        }
+        true
     }
 
     /// A planned batch's items in file order (a transfer not started leaves its batch cut short).
     fn assemble(&mut self, b: Planning) -> Prepared {
-        let Planning { mut out, slots } = b;
+        let Planning { mut out, slots, .. } = b;
         for s in slots {
             match s {
                 Slot::Item(it) => out.items.push(it),
