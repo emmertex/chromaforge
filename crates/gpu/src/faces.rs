@@ -1238,6 +1238,7 @@ impl FaceGpu {
     ) -> Result<Vec<f32>, String> {
         let d = self.dev;
         let index = d.queue.submit([enc.finish()]);
+        crate::busy::submitted(&d.queue);
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
