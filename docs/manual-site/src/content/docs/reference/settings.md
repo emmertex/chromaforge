@@ -59,6 +59,16 @@ sidebar:
 - The camera profile new photos start from, for all cameras or per camera: **Built-in colour**, a camera's imported
   profile, or another installed profile. The Profiles page sets one per camera body.
 
+### Raw decoder
+- Which decoder reads each camera's raw files, per camera seen in the catalog: **Auto** (the default), **Built-in
+  (lcc-raw)** or **LibRaw**. Whichever reads the file, the app demosaics and develops the picture itself.
+- **Auto** reads with the built-in decoder, and hands LibRaw only the files the built-in decoder can't read (which
+  otherwise open as their embedded preview). **Built-in** never uses LibRaw. **LibRaw** reads with LibRaw and falls
+  back to the built-in decoder when LibRaw can't read a file.
+- LibRaw comes with the desktop app for macOS, Windows and Linux. The web and Android versions don't have it: there
+  the LibRaw choice is greyed out, and a camera set to LibRaw on another computer is read by the built-in decoder.
+- Changing a camera's decoder redraws its photos straight away. The choice is saved with the library.
+
 ### Metadata
 - Metadata added to imported photos that don't already have it, and a **metadata preset** applied on import.
 
@@ -217,6 +227,14 @@ messages at the bottom of the window. Each kind has a **Test** button that shows
   white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style…).
 - Profiles are saved with the app's settings. Scripts and agents: `view.toolProfile {id}` picks one (without an id it
   lists them); `view.toolProfileEdit {op, …}` changes your own. The Modern layout's cards show their sections whole.
+
+### Tool Row and Masking
+- **Tool Row**: show or hide each button under the histogram (Crop, Remove, Red Eye, Masking, Browse Profiles, and
+  the Compact layout's Reset). Edit always stays. Right-click the row to do the same, or to move a button left or
+  right (`panel.show`, `panel.order`).
+- **Detach the mask list** (off by default): the masks show in a window of their own over the photo, which you can
+  move and resize. Feather, Refine Edges and the mask's sliders stay in the panel. Right-click the window, or a mask,
+  to dock it again (`view.masksDetached {on}`).
 
 ## AI Denoise
 - The denoiser in use (the built-in one needs nothing installed), where it runs (**Automatic**, graphics card or

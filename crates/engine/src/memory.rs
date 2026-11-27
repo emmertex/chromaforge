@@ -294,6 +294,69 @@ pub fn is_background() -> bool {
     BACKGROUND.with(|b| b.get())
 }
 
+/// Interactive loads running now ([`in_foreground`]), and the condition [`yield_to_foreground`] waits on.
+static FOREGROUND: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// The longest a background load waits for interactive ones ([`yield_to_foreground`]): a loupe being re-rendered
+/// for minutes on end (a slider held) still lets the grid's thumbnails through now and then.
+pub const FOREGROUND_YIELD_MAX: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Run `f` as the load of the photo the user is looking at (the loupe's own render): background loads that start
+/// meanwhile wait for it ([`yield_to_foreground`]), so a photo opened in Develop decodes at full speed while a batch
+/// prepares others (#1355).
+pub fn in_foreground<R>(f: impl FnOnce() -> R) -> R {
+    struct Held;
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let mut n = FOREGROUND.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *n = n.saturating_sub(1);
+            drop(n);
+            FOREGROUND.1.notify_all();
+        }
+    }
+    {
+        let mut n = FOREGROUND.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *n = n.saturating_add(1);
+    }
+    let _held = Held;
+    let was = IN_FOREGROUND.with(|b| b.replace(true));
+    let r = f();
+    IN_FOREGROUND.with(|b| b.set(was));
+    r
+}
+
+thread_local! {
+    /// This thread runs an interactive load ([`in_foreground`]): background work it starts itself never waits for it.
+    static IN_FOREGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether an interactive load ([`in_foreground`]) is running.
+pub fn foreground_busy() -> bool {
+    *FOREGROUND.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0
+}
+
+/// On a background thread ([`in_background`]): wait while an interactive load runs, at most `max`. Elsewhere, and
+/// inside an interactive load itself, it returns at once. Returns whether it waited.
+pub fn yield_to_foreground(max: std::time::Duration) -> bool {
+    if !is_background() || IN_FOREGROUND.with(|b| b.get()) {
+        return false;
+    }
+    let start = web_time::Instant::now();
+    let mut n = FOREGROUND.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let waited = *n > 0;
+    while *n > 0 {
+        let left = max.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        n = match FOREGROUND.1.wait_timeout(n, left) {
+            Ok((g, _)) => g,
+            Err(e) => e.into_inner().0,
+        };
+    }
+    waited
+}
+
 /// The process-wide gate for decodes and import probes (limit: a quarter of the budget).
 pub fn work_gate() -> &'static WorkGate {
     GATE.get_or_init(|| WorkGate::new(budget() / 4))
@@ -443,11 +506,38 @@ pub fn set_release_hook(f: fn()) {
 }
 
 /// Return freed memory to the system now (after large temporaries were dropped: a decode, an
-/// import). No-op without a hook.
+/// import). No-op without a hook, and on a thread running [`holding_freed_memory`] (an export lane),
+/// which releases once when it ends instead.
 pub fn release() {
+    if HOLDING.with(std::cell::Cell::get) {
+        return;
+    }
     if let Some(f) = RELEASE.get() {
         f();
     }
+}
+
+thread_local! {
+    /// This thread keeps freed memory for its next photo ([`holding_freed_memory`]).
+    static HOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` keeping the memory it frees for the process to reuse: its [`release`] calls do nothing, and one release
+/// follows at the end. For an export lane (#1416): giving the pages back after every photo's decode only made
+/// the next photo fault them all in again, about a tenth of a batch export's processor time in system calls and
+/// page faults (measured on 500 and 7,504 raws), without lowering its peak memory.
+pub fn holding_freed_memory<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HOLDING.with(|h| h.set(self.0));
+            if !self.0 {
+                release();
+            }
+        }
+    }
+    let _restore = Restore(HOLDING.with(|h| h.replace(true)));
+    f()
 }
 
 /// Install the heap counter of an instrumented binary (first call wins).
@@ -500,6 +590,62 @@ impl crate::Session {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static RELEASED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Inside [`holding_freed_memory`] a release waits for the end: one release for the whole run, nested or not
+    /// (#1416); outside it each release happens.
+    #[test]
+    fn an_export_lane_releases_once_at_the_end() {
+        set_release_hook(|| RELEASED.with(|n| n.set(n.get() + 1)));
+        let count = || RELEASED.with(std::cell::Cell::get);
+        // (another test's hook may have won: then this thread's count never moves and there is nothing to check)
+        release();
+        if count() == 0 {
+            return;
+        }
+        let before = count();
+        holding_freed_memory(|| {
+            release();
+            release();
+            holding_freed_memory(release);
+            assert_eq!(count(), before, "nothing given back while the lane works");
+        });
+        assert_eq!(count(), before + 1, "once at the end");
+        release();
+        assert_eq!(count(), before + 2);
+    }
+
+    /// A background load waits while the photo on screen loads (#1355), at most the cap; the interactive load itself,
+    /// and background work it starts on its own thread, never wait.
+    #[test]
+    fn background_loads_wait_for_the_photo_on_screen() {
+        use std::time::Duration;
+        assert!(!yield_to_foreground(Duration::from_secs(5)), "not background: no wait");
+        let (started, finish) = (std::sync::mpsc::channel::<()>(), std::sync::mpsc::channel::<()>());
+        let fg = std::thread::spawn(move || {
+            in_foreground(|| {
+                assert!(!in_background(|| yield_to_foreground(Duration::from_secs(5))), "its own background work");
+                started.0.send(()).unwrap();
+                finish.1.recv().unwrap();
+            })
+        });
+        started.1.recv().unwrap();
+        assert!(foreground_busy());
+        let t = std::time::Instant::now();
+        assert!(in_background(|| yield_to_foreground(Duration::from_millis(150))), "waited");
+        assert!(t.elapsed() >= Duration::from_millis(140), "at most the cap, then on");
+        let waiter = std::thread::spawn(|| in_background(|| yield_to_foreground(Duration::from_secs(30))));
+        std::thread::sleep(Duration::from_millis(50));
+        finish.0.send(()).unwrap();
+        fg.join().unwrap();
+        let t = std::time::Instant::now();
+        assert!(waiter.join().unwrap());
+        assert!(t.elapsed() < Duration::from_secs(10), "released when the load ends");
+        assert!(!foreground_busy());
+    }
 
     /// Inside a container or a systemd scope with `MemoryMax`, the budget is sized from the limit,
     /// not the machine's RAM (#3072).

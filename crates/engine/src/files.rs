@@ -775,7 +775,7 @@ fn load_bytes_now(
         let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
-            None => lcc_raw::decode(&bytes),
+            None => crate::raw_decoder::decode(&bytes),
         };
         let mut raw = match decoded.map_err(|e| preview_reason(&bytes, e)) {
             Ok(r) => r,
@@ -788,12 +788,14 @@ fn load_bytes_now(
             Err(Err(e)) => return Err(e),
         };
         let decode_ms = t_decode.elapsed().as_secs_f64() * 1e3;
+        lcc_pipeline::meter::add("raw decode", t_decode.elapsed());
         // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
-        let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
+        let pixels = lcc_pipeline::meter::time("raw defects", || repair_pixels(&mut raw, &RawOptions::of(&options)));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
         if options.outliers {
             let t = std::time::Instant::now();
             let n = raw.suppress_hot_pixels();
+            lcc_pipeline::meter::add("raw hot pixels", t.elapsed());
             if lcc_pipeline::profiling() {
                 eprintln!("[profile] raw outliers: {n} photosites replaced in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
             }
@@ -856,6 +858,7 @@ fn load_bytes_now(
             || dng_mattes(&bytes, &info),
         );
         drop(bytes);
+        lcc_pipeline::meter::add("raw starting colour", t_colour.elapsed());
         if lcc_pipeline::profiling() {
             eprintln!(
                 "[profile] raw load: decode {decode_ms:.1} ms, repair + outliers + profile {:.1} ms, starting colour {:.1} ms",
@@ -928,6 +931,15 @@ fn load_bytes_now(
             (img, stages)
         };
         let (img, stages) = finish(img);
+        if lcc_pipeline::meter::on() {
+            // (`develop` is the binning or the demosaic, the rest the colour finish of the camera RGB)
+            let mut prev = std::time::Duration::ZERO;
+            for (n, t) in &stages {
+                let stage = if *n == "develop" { if factor > 1 { "raw binning" } else { "raw demosaic" } } else { "raw finish" };
+                lcc_pipeline::meter::add(stage, t.saturating_sub(prev));
+                prev = *t;
+            }
+        }
         if lcc_pipeline::profiling() {
             let mut prev = std::time::Duration::ZERO;
             let parts: Vec<String> = stages
@@ -1622,7 +1634,7 @@ pub fn fs_pair_loader() -> PairLoader {
 ///
 /// Their working memory is bounded by [`crate::memory::work_gate`]: background loads (grid
 /// thumbnails, neighbour prefetch: [`crate::memory::in_background`]) and import probes wait while
-/// too much is in flight, each counting its file's size times the expansion of decoding it;
+/// too much is in flight, each counting its file plus the decode's peak ([`load_weight`]);
 /// interactive loads (the loupe, exports) never wait — they are counted, so background work
 /// yields to them.
 pub fn fs_hooks() -> (FileLoader, FileProbe) {
@@ -1663,17 +1675,64 @@ pub fn fs_reduced_loader() -> ReducedLoader {
     Arc::new(|path: &str, max_edge: usize, options: LoadOptions| fs_load(path, max_edge, |bytes| load_vec_reduced(bytes, max_edge, options.at(path))))
 }
 
+/// Bytes per pixel a plain (non-raw) decode holds at its peak: the 8-bit samples plus the whole image widened to
+/// float (13 for grey, 15 for RGB; measured in #1476). 16-bit samples add a few more.
+const DECODE_BYTES_PER_PIXEL: u64 = 18;
+/// The same with an ICC profile a lookup table converts (`IccKind::NeedsCms`): two more float copies (39 measured).
+const CMS_DECODE_BYTES_PER_PIXEL: u64 = 39;
+/// How far into a file an ICC profile's signature is looked for.
+const ICC_SCAN: usize = 4 << 20;
+
+/// The working memory a load of `bytes` at `max_edge` holds at its peak, for the memory gate (#1476): the file plus
+/// what decoding its pixels takes, from the dimensions in its header. A raw, or a file whose header can't be read,
+/// counts its size times the old expansion (3 for a thumbnail, 6 otherwise), which is also the least any file counts.
+/// A JPEG decoded at a DCT scale (1/2 to 1/8) counts only the scaled pixels. A profile is assumed to need the slow
+/// lookup-table route whenever the file seems to carry one (its `acsp` signature near the start): overcounting only
+/// makes background loads wait sooner.
+pub(crate) fn load_weight(bytes: &[u8], max_edge: usize) -> usize {
+    let len = bytes.len();
+    let floor = len.saturating_mul(if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 });
+    if lcc_raw::probe(bytes).is_some() {
+        return floor;
+    }
+    let Ok(h) = lcc_codecs::read_header(bytes) else { return floor };
+    let mut pixels = u64::from(h.width).saturating_mul(u64::from(h.height));
+    if h.format == lcc_codecs::Format::Jpeg {
+        let long = u64::from(h.width.max(h.height));
+        let want = u64::try_from(max_edge).unwrap_or(u64::MAX).max(1);
+        let mut scale = 1u64;
+        while scale < 8 && long / (scale * 2) >= want {
+            scale *= 2;
+        }
+        pixels /= scale * scale;
+    }
+    let head = bytes.get(..len.min(ICC_SCAN)).unwrap_or(bytes);
+    let per_pixel = if head.windows(4).any(|w| w == b"acsp") { CMS_DECODE_BYTES_PER_PIXEL } else { DECODE_BYTES_PER_PIXEL };
+    let decode = usize::try_from(pixels.saturating_mul(per_pixel)).unwrap_or(usize::MAX);
+    len.saturating_add(decode).max(floor)
+}
+
 /// Read `path` and `load` it, waiting on [`crate::memory::work_gate`] as [`fs_hooks`] explains.
+///
+/// The file is read under a permit for its size; the decode then holds one for [`load_weight`], which the header
+/// can tell (#1476). Between the two the file's bytes are not counted for a moment: holding the first permit while
+/// waiting for the second could wait on itself.
 fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<T, String>) -> Result<T, String> {
     let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
-    let weight = len.saturating_mul(if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 });
+    // the photo on screen loads first (#1355)
+    crate::memory::yield_to_foreground(crate::memory::FOREGROUND_YIELD_MAX);
     let gate = crate::memory::work_gate();
-    let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-    let bytes =
-        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))?;
+    let acquire = |bytes: usize| if crate::memory::is_background() { gate.acquire(bytes) } else { gate.acquire_urgent(bytes) };
+    let reading = acquire(len);
+    let bytes = lcc_pipeline::meter::time("file read", || {
+        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))
+    })?;
+    let weight = load_weight(&bytes, max_edge);
+    drop(reading);
+    let _permit = acquire(weight);
     let r = load(bytes);
     // the file, the samples and the intermediate images are gone: give their pages back
-    crate::memory::release();
+    lcc_pipeline::meter::time("memory release", crate::memory::release);
     r
 }
 
@@ -2330,6 +2389,27 @@ pub(crate) mod tests {
     /// Issue #367: probes read headers, not pixels, and report what the decode-based probe did:
     /// oriented dimensions (EXIF orientation 6 swaps them), metadata, the error for a truncated
     /// file or one that isn't an image.
+    /// The memory gate counts a well-compressed image by its pixels, not its file size (#1476); a JPEG decoded at a
+    /// DCT scale counts less, and junk counts its size.
+    #[test]
+    fn the_load_weight_follows_the_pixels_not_the_file() {
+        let (w, h) = (1600u32, 1200u32);
+        let flat = vec![90u8; (w * h * 3) as usize];
+        let img = EncodeImage::new(w, h, 3, Samples::U8(&flat));
+        let png = lcc_codecs::encode_png(&img, &EncodeMeta::default()).unwrap();
+        let pixels = (w * h) as usize;
+        let full = load_weight(&png, usize::MAX);
+        assert!(full >= pixels * 15, "{full} for {pixels} px in {} bytes", png.len());
+        assert!(full >= png.len() * 6);
+        let jpeg = encode_jpeg(&img, 90, ChromaSubsampling::S420, &EncodeMeta::default()).unwrap();
+        let (big, small) = (load_weight(&jpeg, usize::MAX), load_weight(&jpeg, 200));
+        assert!(small < big && small >= jpeg.len() * 3, "{small} vs {big}");
+        // hostile: junk and an empty file count their size and never panic
+        assert_eq!(load_weight(b"not an image", usize::MAX), 12 * 6);
+        assert_eq!(load_weight(&[], 0), 0);
+        assert_eq!(load_weight(&png[..png.len() / 2], usize::MAX), png.len() / 2 * 6);
+    }
+
     #[test]
     fn image_probe_reads_headers_like_the_decode_did() {
         let (w, h) = (300u32, 200u32);

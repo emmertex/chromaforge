@@ -80,11 +80,14 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("kind", "File Type", Kind::Choice(&[("image", "Image"), ("raw", "Raw"), ("video", "Video")])),
     ("format", "File Format", Kind::Text),
     ("duration", "Video Duration", Kind::Number),
+    ("fileSize", "File Size (MB)", Kind::Number),
     ("sameContent", "Same Content as Another Photo", Kind::Bool),
     // Date
     ("captureDate", "Capture Date", Kind::Date),
     ("importDate", "Import Date", Kind::Date),
     ("editDate", "Edit Date", Kind::Date),
+    ("captureMonth", "Capture Month", Kind::Number),
+    ("captureDay", "Capture Day", Kind::Number),
     // Keywords & People
     ("keywords", "Keywords", Kind::Keywords),
     ("keywordCount", "Keyword Count", Kind::Number),
@@ -158,8 +161,8 @@ pub const TOP_LEVEL_FIELDS: &[&str] = &["rating", "flag", "label", "text"];
 /// once or in [`TOP_LEVEL_FIELDS`].
 pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Source", &["album", "virtualCopy", "copyName", "stacked", "immich"]),
-    ("File", &["fileName", "extension", "filePath", "folder", "kind", "format", "duration", "sameContent"]),
-    ("Date", &["captureDate", "importDate", "editDate"]),
+    ("File", &["fileName", "extension", "filePath", "folder", "kind", "format", "duration", "fileSize", "sameContent"]),
+    ("Date", &["captureDate", "importDate", "editDate", "captureMonth", "captureDay"]),
     ("Keywords & People", &["keywords", "keywordCount", "person", "personCount", "faceCount"]),
     ("Description", &["title", "caption", "altText", "creator", "copyright", "usageTerms", "copyrightStatus"]),
     ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso", "flash", "exposureBias", "cameraSerial"]),
@@ -972,6 +975,20 @@ fn last_secs(value: &Value) -> Option<i64> {
     Some(secs.min(MAX_LAST_SECS) as i64)
 }
 
+/// A number out of a photo's capture time (`2026-08-14T…`: 5..7 the month, 8..10 the day), when it has one.
+/// A capture time stated only to the year or the month has no day (nor, for a year, a month): none, not the 1st.
+fn capture_part(p: &Photo, at: std::ops::Range<usize>) -> Option<f64> {
+    let captured = p.captured.as_deref()?;
+    let known = match crate::dates::partial_capture(captured) {
+        Some((_, month)) => at.start == 5 && month.is_some(),
+        None => true,
+    };
+    if !known {
+        return None;
+    }
+    captured.get(at).and_then(|n| n.parse::<u8>().ok()).filter(|n| *n > 0).map(f64::from)
+}
+
 fn date_op(op: &str, have: Option<&str>, value: &Value) -> bool {
     if op == "isEmpty" {
         return have.is_none_or(str::is_empty);
@@ -1061,6 +1078,8 @@ impl Rule {
             "fileName" => text(&p.file_name),
             "extension" => text_op(op, p.extension(), want.trim_start_matches('.')),
             "duration" => num_op(op, p.duration.filter(|d| d.is_finite()), value),
+            // megabytes (10⁶ bytes); a photo whose size isn't known (0) has none
+            "fileSize" => num_op(op, (p.file_size > 0).then(|| p.file_size as f64 / 1e6), value),
             "filePath" => {
                 // `/` and `\` both separate, whatever platform the catalog came from; demo photos have no path
                 let path = match &p.source {
@@ -1115,6 +1134,9 @@ impl Rule {
             "captureDate" => date_op(op, p.captured.as_deref().map(crate::dates::capture_start).as_deref(), value),
             "importDate" => date_op(op, Some(&p.imported), value),
             "editDate" => date_op(op, p.edited.as_deref(), value),
+            // the month and the day of the month a photo was taken, whatever the year (issue #1135: "on this day")
+            "captureMonth" => num_op(op, capture_part(p, 5..7), value),
+            "captureDay" => num_op(op, capture_part(p, 8..10), value),
             // (the shown shutter text, not the exact time kept for export: a rule matches the value the photo
             // shows, `1/3` or `0.3571`, at every op, including `is` and the edges of a range)
             "shutterSpeed" => num_op(op, crate::parse_shutter_seconds(&m.shutter), &shutter_value(value)),

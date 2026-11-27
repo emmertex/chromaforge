@@ -219,6 +219,52 @@ fn pump_until_idle(s: &mut Session) {
     }
 }
 
+/// An `analyze: auto` filter is measured without a click once it is on the open photo, and a parameter it names in
+/// `analyzeParams` makes it measure again; other parameters keep the measurement (#1395).
+#[test]
+fn an_auto_filter_measures_itself_and_again_when_its_named_params_change() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.auto","name":"Auto","kind":"filter","analyze":"auto","analyzeParams":["region","nope"],"params":{"region":{"type":"number","min":0,"max":1,"default":0},"amount":{"type":"number","min":0,"max":1,"default":1}}}"#;
+    install_bytes(&mut s, "test.engine.auto", &module(m, Some(r#"{"_status":"Base 0.80 / 0.50 / 0.30","base":[0.8,0.5,0.3]}"#)));
+    let uid = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.auto"})).unwrap()["uid"].as_u64().unwrap();
+    let analysis = |s: &mut Session| s.execute("develop.pluginFilter.list", &json!({})).unwrap()["filters"][0]["analysis"].clone();
+    s.plugin_analyze_pump();
+    pump_until_idle(&mut s);
+    let a = analysis(&mut s);
+    assert_eq!(a["base"], json!([0.8, 0.5, 0.3]), "measured without being asked");
+    assert_eq!(crate::plugin_analysis_status(&a), Some("Base 0.80 / 0.50 / 0.30"));
+
+    // a parameter outside `analyzeParams` keeps the measurement
+    s.execute("develop.pluginFilter.set", &json!({"uid": uid, "params": {"amount": 0.5}})).unwrap();
+    assert!(!analysis(&mut s).is_null());
+    // one inside it drops it, and the next frame measures again
+    s.execute("develop.pluginFilter.set", &json!({"uid": uid, "params": {"region": 0.5}})).unwrap();
+    assert!(analysis(&mut s).is_null(), "a stale measurement is dropped");
+    s.plugin_analyze_pump();
+    pump_until_idle(&mut s);
+    assert_eq!(analysis(&mut s)["base"], json!([0.8, 0.5, 0.3]));
+
+    // a disabled entry is not measured
+    s.execute("develop.pluginFilter.set", &json!({"uid": uid, "enabled": false, "params": {"region": 0.25}})).unwrap();
+    s.plugin_analyze_pump();
+    assert!(!s.plugin_analyses_running());
+    assert!(analysis(&mut s).is_null());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.auto"})).unwrap();
+}
+
+/// A manual filter (the default) waits for its Measure button.
+#[test]
+fn a_manual_filter_is_not_measured_until_asked() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.manual","name":"Manual","kind":"filter"}"#;
+    install_bytes(&mut s, "test.engine.manual", &module(m, Some(r#"{"base":[1]}"#)));
+    s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.manual"})).unwrap();
+    s.plugin_analyze_pump();
+    assert!(!s.plugin_analyses_running());
+    assert!(s.execute("develop.pluginFilter.list", &json!({})).unwrap()["filters"][0]["analysis"].is_null());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.manual"})).unwrap();
+}
+
 #[test]
 fn analyze_runs_in_the_background_and_lands_one_history_step() {
     let mut s = Session::with_demo();
@@ -528,4 +574,21 @@ fn untagged_16bit_tiff_and_raw_propagate_source_provenance_to_filter_and_analyze
     assert_eq!(r["analysis"]["_image"]["source"], json!({"origin": "untagged", "bitsPerSample": 16}));
     s.execute("plugin.uninstall", &json!({"id": "test.engine.echo"})).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A Display-stage filter is measured on the developed photo it will filter, sRGB-encoded; a Source-stage one on
+/// the linear source (#1396).
+#[test]
+fn a_display_filter_measures_the_developed_photo() {
+    let mut s = Session::with_demo();
+    install_bytes(&mut s, "test.engine.echo", &echo_analyze_module("test.engine.echo"));
+    let shown = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.echo", "stage": "display"})).unwrap()["uid"].as_u64().unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": shown, "wait": true})).unwrap();
+    assert_eq!(r["analysis"]["encoding"], "srgb");
+    let w = r["analysis"]["_image"]["width"].as_u64().unwrap();
+    assert!(w > 0 && w <= 1024, "{w}");
+    let source = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.echo", "stage": "source"})).unwrap()["uid"].as_u64().unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": source, "wait": true})).unwrap();
+    assert_eq!(r["analysis"]["encoding"], "linear");
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.echo"})).unwrap();
 }

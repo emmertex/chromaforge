@@ -8,11 +8,12 @@ use crate::{Catalog, Flag, MediaKind, Photo};
 
 /// Every field a Metadata column can show: camera to year have filter fields of their own (only their "no value"
 /// pick goes through [`crate::Filter::facets`]), the rest are picked through it.
-pub const FIELDS: [&str; 25] = [
+pub const FIELDS: [&str; 26] = [
     "camera",
     "lens",
     "keyword",
     "person",
+    "faces",
     "label",
     "flag",
     "rating",
@@ -98,6 +99,8 @@ pub fn values(p: &Photo, cat: &Catalog, field: &str) -> Vec<String> {
         "lens" => text(&p.meta.lens),
         "keyword" => p.meta.keywords.iter().filter(|k| !k.trim().is_empty()).cloned().collect(),
         "person" => p.people().into_iter().map(str::to_string).collect(),
+        // every photo has a count, 0 when no face was found or drawn (issue #1112)
+        "faces" => vec![p.face_count().to_string()],
         "label" => p.label.map(|l| cat.label_name(l)).into_iter().collect(),
         "flag" => vec![flag_name(p.flag).to_string()],
         "rating" => vec![p.rating.to_string()],

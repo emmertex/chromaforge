@@ -853,6 +853,66 @@ fn cameras(app: &LccApp) -> Vec<String> {
     v
 }
 
+/// The raw decoder per camera: Auto, the built-in decoder (lcc-raw) or LibRaw. LibRaw is greyed out, with a note,
+/// where this build has none (the web, Android, desktop builds made without it).
+fn raw_decoder_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::raw_decoder::{self, Decoder};
+    let cams = cameras(app);
+    if cams.is_empty() {
+        return;
+    }
+    heading_help(ui, t, crate::i18n::tr("Raw decoder"), "rawDecoder");
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Which decoder reads each camera's raw files. Auto uses {app}'s own decoder, and LibRaw for files it can't read. Either way {app} develops the picture.",
+        ),
+    );
+    let built_in = raw_decoder::libraw_built_in();
+    if !built_in {
+        hint(
+            ui,
+            t,
+            crate::i18n::tr(
+                "LibRaw is not part of this version of {app}: it comes with the desktop app for macOS, Windows and Linux, not the web or Android versions. Cameras set to LibRaw are read by the built-in decoder here.",
+            ),
+        );
+    }
+    let label = |d: Decoder| -> String {
+        match d {
+            Decoder::Auto => crate::i18n::tr("Auto").to_string(),
+            Decoder::Lcc => crate::i18n::tr("Built-in (lcc-raw)").to_string(),
+            Decoder::Libraw => "LibRaw".to_string(),
+        }
+    };
+    let chosen = app.session.raw_decoders.clone();
+    egui::ScrollArea::vertical().max_height(150.0).id_salt("settingsRawDecoders").show(ui, |ui| {
+        for (i, cam) in cams.iter().enumerate() {
+            let key = raw_decoder::camera_key(cam);
+            let current = chosen.iter().find(|(k, _)| raw_decoder::camera_key(k) == key).map(|(_, d)| *d).unwrap_or_default();
+            row(ui, t, cam, |ui| {
+                let id = format!("settingsRawDecoder-{i}");
+                let mut pick = None;
+                let r = crate::widgets::combo_box(&id).width(240.0).selected_text(label(current)).show_ui(ui, |ui| {
+                    for d in Decoder::ALL {
+                        let enabled = d != Decoder::Libraw || built_in;
+                        let r = ui.add_enabled(enabled, egui::Button::selectable(current == d, label(d)));
+                        let r = if enabled { r } else { r.on_disabled_hover_text(crate::i18n::tr("Not available in this version of {app}")) };
+                        if r.clicked() {
+                            pick = Some(d);
+                        }
+                    }
+                });
+                register(ui.ctx(), format!("combo:{id}"), r.response.rect);
+                if let Some(d) = pick {
+                    let _ = app.run("library.preferences", json!({"rawDecoder": {"camera": cam, "decoder": d.id()}}));
+                }
+            });
+        }
+    });
+}
+
 fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let d = app.session.import_defaults.clone();
     // (browsing folders needs a file system: the web keeps the import review)
@@ -1039,6 +1099,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    raw_decoder_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Other images (JPEG, PNG, TIFF, HEIC…)"));
     row(ui, t, crate::i18n::tr("Non-raw photos"), |ui| {
         if let Some(v) = preset_combo(app, ui, "settingsOtherPreset", d.other_preset.as_deref(), "None") {
