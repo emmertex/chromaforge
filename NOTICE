@@ -236,6 +236,21 @@ libwebp-sys crate 0.9.6 (MIT License, https://github.com/NoXF/libwebp-sys) and c
 webp crate 0.3.1 (MIT OR Apache-2.0, https://github.com/jaredforth/webp). libwebp is a C library, used under the
 Rust-first rule (AGENTS.md) behind the codecs crate's `webp-lossy` feature. Web and Android builds leave it out and export lossless WebP only.
 
+ONNX Runtime (AI models on the graphics card)
+---------------------------------------------
+Desktop releases (Windows x64 and ARM64, Linux x86-64 and ARM64, macOS on Apple silicon) ship
+ONNX Runtime 1.32.0 (https://github.com/microsoft/onnxruntime, Copyright (c) Microsoft
+Corporation, MIT licence) and its WebGPU plug-in execution provider 0.5.0 (the same project, MIT),
+unmodified, as Microsoft builds them for PyPI (the "onnxruntime" and "onnxruntime-ep-webgpu"
+packages, pinned by SHA-256 in xtask/src/onnxruntime.rs). The plug-in contains Dawn
+(https://dawn.googlesource.com/dawn, BSD 3-Clause); the Windows plug-in comes with the
+DirectX Shader Compiler (dxcompiler.dll, https://github.com/microsoft/DirectXShaderCompiler,
+University of Illinois/NCSA Open Source Licence). Their licences and third-party notices ship
+beside them as LICENSE-onnxruntime.txt and ThirdPartyNotices-onnxruntime.txt. The app loads the
+library at run time through the ort crate (https://github.com/pykeio/ort, MIT OR Apache-2.0)
+in crates/onnxrt; the AI features run on our own Rust runners when it is absent. Microsoft's
+closed-source DirectML.dll is not shipped.
+
 Linux Wayland window decorations
 -------------------------------
 sctk-adwaita 0.10.1 (https://github.com/PolyMeilex/sctk-adwaita,

@@ -63,15 +63,10 @@ pub fn parse(v: &Value) -> PersonPage {
     }
 }
 
-/// The library filter as the face lists use it: what the sidebar picked (a year, a folder, an album), any person
-/// filter aside, since a person's page and the unnamed faces are about people already.
-pub(crate) fn face_filter(f: &lcc_catalog::Filter) -> lcc_catalog::Filter {
-    lcc_catalog::Filter { person: None, people: Vec::new(), ..f.clone() }
-}
-
 /// Forgets the cached face lists when the library filter changed since they were asked for, so they follow the sidebar.
 pub(crate) fn follow_filter(app: &mut LccApp) {
-    let now = face_filter(&app.session.filter);
+    // the sidebar's source (a folder, a collection) as well as the filter (issue #685)
+    let now = app.session.people_filter();
     match &app.caches.faces_filter {
         Some(was) if *was == now => {}
         Some(_) => {

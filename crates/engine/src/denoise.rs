@@ -552,11 +552,31 @@ fn make_gpu(cpu: &lcc_denoise::runtime::CpuRunner, path: &Path, tile: usize, car
     card_exists(card)?;
     let input = Arc::new(lcc_denoise::runtime::check_tile_for(cpu.manifest().domain, tile));
     let (on_card, net) = (input.clone(), cpu.net().clone());
+    let (model, manifest) = (path.to_path_buf(), cpu.manifest().clone());
     let card_work = move || -> Result<_, String> {
-        let runner = lcc_gpu::nn::runner_on(card, &net, tile)?;
+        // ONNX Runtime first, on the card AI work goes to (its WebGPU plug-in, Core ML or CUDA), when this build and
+        // computer have it; else our own wgpu kernels
+        let mut runner: Option<(Box<dyn TileRunner + Send>, String)> = None;
+        if ort_card(card) {
+            match lcc_denoise::ort::OrtRunner::load(&model, &manifest, lcc_onnxrt::Want::Gpu) {
+                Ok(r) => {
+                    let name = r.describe();
+                    runner = Some((Box::new(r), name));
+                }
+                Err(e) => log::info!("denoise: not on ONNX Runtime ({e})"),
+            }
+        }
+        let (runner, adapter) = match runner {
+            Some(r) => r,
+            None => {
+                let r = lcc_gpu::nn::runner_on(card, &net, tile)?;
+                let name = r.adapter();
+                (Box::new(r) as Box<dyn TileRunner + Send>, name)
+            }
+        };
         let got = runner.run(&on_card).map_err(|e| format!("the GPU could not run the check tile: {e}"))?;
-        let card_ms = card_tile_ms(&runner, &on_card);
-        Ok((runner, got, card_ms))
+        let card_ms = card_tile_ms(runner.as_ref(), &on_card);
+        Ok(((runner, adapter), got, card_ms))
     };
     // The CPU's answer on the cores a job at full pace may take, so an older CPU doesn't keep the card waiting for
     // minutes; its time summed over the threads stands for one tile on one thread, which is what the card is compared
@@ -572,14 +592,25 @@ fn make_gpu(cpu: &lcc_denoise::runtime::CpuRunner, path: &Path, tile: usize, car
         }
     };
     let marker = marker_of(&path.with_file_name(GPU_SETUP_MARKER), card);
-    let ((runner, got, card_ms), (want, cpu_ms)) = set_up_card(&marker, GPU_SETUP_LIMIT, card_work, on_cpu)?;
+    let (((runner, adapter), got, card_ms), (want, cpu_ms)) = set_up_card(&marker, GPU_SETUP_LIMIT, card_work, on_cpu)?;
     let want = want.map_err(|e| format!("the CPU could not check the GPU: {e}"))?;
     let scale = want.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-12);
     let worst = want.iter().zip(&got).fold(0f32, |m, (a, b)| m.max((a - b).abs())) / scale;
     if got.len() != want.len() || !got.iter().all(|v| v.is_finite()) || worst > GPU_AGREE {
         return Err(format!("its answer on the check tile is not the CPU's (off by {worst:.1e} of the largest value): not used"));
     }
-    Ok(GpuSide { adapter: runner.adapter(), runner: Box::new(runner), card_ms, cpu_ms })
+    Ok(GpuSide { adapter, runner, card_ms, cpu_ms })
+}
+
+/// Whether ONNX Runtime is tried on `card`: the card AI work goes to (the second card when there is one, else the card
+/// for editing), since ONNX Runtime's WebGPU plug-in picks the high-performance adapter itself and the two sides must
+/// not share one card.
+#[cfg(feature = "denoise")]
+fn ort_card(card: lcc_gpu::nn::Card) -> bool {
+    match card {
+        lcc_gpu::nn::Card::Second => true,
+        lcc_gpu::nn::Card::Editing => lcc_gpu::nn::card_name(lcc_gpu::nn::Card::Second).is_none(),
+    }
 }
 
 /// Run `make` for each card not tried yet, all at once (each on a thread of its own: a card's set-up runs the CPU's
