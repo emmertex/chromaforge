@@ -1026,6 +1026,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let show_film = crate::module::edge_visible(app, crate::module::Edge::Bottom) && !fullscreen;
     let film_h = if show_film { app.ui.film_height() } else { 0.0 };
     let mut canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
+    // the filter bar opens above the loupe, so Develop keeps its photo while filtering (#1317)
+    if app.ui.develop_filter_shown_here() && app.ui.develop_filter_bar && !fullscreen {
+        let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(canvas).layout(egui::Layout::top_down(egui::Align::Min)));
+        super::filterbar::show(app, &mut bar);
+        canvas.min.y = bar.min_rect().bottom().clamp(canvas.min.y, canvas.max.y);
+    }
     // a video: its control bar along the bottom of the canvas (photos keep the whole canvas)
     let mut video_state = None;
     if let Some(vid) = app.session.active().filter(|id| crate::video_ui::photo_is_video(app, *id)) {

@@ -193,6 +193,7 @@
   "Restore {} ignored faces": "Palauta {} ohitettua kasvoa",
   "Reviewed by {reviewer}, a marketplace maintainer, on {date}.": "Tarkastaja: {reviewer}, kauppapaikan ylläpitäjä, {date}.",
   "Reviewed by {reviewer}, a marketplace maintainer.": "Tarkastaja: {reviewer}, kauppapaikan ylläpitäjä.",
+  "Search online for “{q}”…": "Hae verkosta ”{q}”…",
   "Second graphics card not used: {why}": "Toista näytönohjainta ei käytetä: {why}",
   "Select {n} look-alikes": "Valitse {n} samannäköistä",
   "Selected cell {n}": "Valittu solu {n}",
