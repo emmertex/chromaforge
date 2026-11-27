@@ -33,6 +33,9 @@ pub const ASPECTS: &[&str] = &["landscape", "portrait", "square"];
 /// in [`crate::ColorLabel::ALL`] order.
 pub const LABELS: &[&str] = &["red", "yellow", "green", "blue", "purple", "none"];
 
+/// The pick flags a [`PropertiesCategory`] can narrow to (the `flag` rule's choices).
+pub const FLAGS: &[&str] = &["pick", "reject", "none"];
+
 /// How the conditions of one search group combine (issue #1135).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +90,9 @@ pub struct AdvancedSearch {
     /// Photograph information: camera, lens, exposure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub photograph: Option<PhotographCategory>,
+    /// Dates: when a photo was taken (a span, or a month and a day whatever the year), imported and edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dates: Option<DatesCategory>,
     /// Geographic position as the catalog reads it: the location fields and "has GPS".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationCategory>,
@@ -199,6 +205,50 @@ impl FileCategory {
     }
 }
 
+/// A span of dates, each end a year (`2026`), a month (`2026-05`) or a day (`2026-05-14`), either left out; both
+/// ends included.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DateSpan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+impl DateSpan {
+    pub fn is_empty(&self) -> bool {
+        self.from.as_deref().is_none_or(|d| d.trim().is_empty()) && self.to.as_deref().is_none_or(|d| d.trim().is_empty())
+    }
+}
+
+/// Dates (issue #1135): when a photo was taken, imported and last edited.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct DatesCategory {
+    /// Taken in this span.
+    #[serde(skip_serializing_if = "DateSpan::is_empty")]
+    pub captured: DateSpan,
+    /// Taken in this month (1–12) of any year.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub month: Option<u8>,
+    /// Taken on this day of the month (1–31), any month: with `month`, "on this day".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub day: Option<u8>,
+    /// Imported in this span.
+    #[serde(skip_serializing_if = "DateSpan::is_empty")]
+    pub imported: DateSpan,
+    /// Last edited in this span.
+    #[serde(skip_serializing_if = "DateSpan::is_empty")]
+    pub edited: DateSpan,
+}
+
+impl DatesCategory {
+    fn is_empty(&self) -> bool {
+        self.captured.is_empty() && self.month.is_none() && self.day.is_none() && self.imported.is_empty() && self.edited.is_empty()
+    }
+}
+
 /// Item properties: dimensions and shape, rating, color label.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -217,6 +267,12 @@ pub struct PropertiesCategory {
     pub label: Option<String>,
     /// One of [`ASPECTS`].
     pub aspect: Option<String>,
+    /// The pick flag: one of [`FLAGS`] (issue #1135).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
+    /// File size, megabytes (10⁶ bytes).
+    #[serde(skip_serializing_if = "Range::is_empty")]
+    pub file_size_mb: Range,
 }
 
 impl PropertiesCategory {
@@ -228,6 +284,8 @@ impl PropertiesCategory {
             && self.rating_op == RatingOp::default()
             && self.label.is_none()
             && self.aspect.is_none()
+            && self.flag.is_none()
+            && self.file_size_mb.is_empty()
     }
 }
 
@@ -277,6 +335,12 @@ pub struct PhotographCategory {
     /// Photos with no lens recorded too, as [`PhotographCategory::no_camera`] is for cameras.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_lens: bool,
+    /// Whether the flash fired (`None` = either).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+    /// Exposure bias (compensation), EV; negative values allowed.
+    #[serde(skip_serializing_if = "Range::is_empty")]
+    pub exposure_bias: Range,
 }
 
 impl PhotographCategory {
@@ -291,6 +355,8 @@ impl PhotographCategory {
             && self.lenses.iter().all(|l| l.trim().is_empty())
             && !self.no_camera
             && !self.no_lens
+            && self.flash.is_none()
+            && self.exposure_bias.is_empty()
     }
 }
 
@@ -376,6 +442,7 @@ impl AdvancedSearch {
             && self.properties.as_ref().is_none_or(PropertiesCategory::is_empty)
             && self.description.as_ref().is_none_or(DescriptionCategory::is_empty)
             && self.photograph.as_ref().is_none_or(PhotographCategory::is_empty)
+            && self.dates.as_ref().is_none_or(DatesCategory::is_empty)
             && self.location.as_ref().is_none_or(LocationCategory::is_empty)
             && self.media.as_ref().is_none_or(MediaCategory::is_empty)
             && self.faces.as_ref().is_none_or(FacesCategory::is_empty)
@@ -513,6 +580,13 @@ impl AdvancedSearch {
                 }
                 rules.push(json!({"field": "aspect", "op": "is", "value": aspect}));
             }
+            if let Some(flag) = p.flag.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                if !FLAGS.contains(&flag) {
+                    return Err(format!("pick flag: unknown flag {flag:?} (pick, reject or none)"));
+                }
+                rules.push(json!({"field": "flag", "op": "is", "value": flag}));
+            }
+            range_rules(&mut rules, "fileSize", &p.file_size_mb)?;
         }
         if let Some(d) = &self.description
             && !d.is_empty()
@@ -537,6 +611,29 @@ impl AdvancedSearch {
             range_rules(&mut rules, "iso", &p.iso)?;
             range_rules(&mut rules, "aperture", &p.aperture)?;
             shutter_rules(&mut rules, &p.shutter)?;
+            if let Some(fired) = p.flash {
+                rules.push(json!({"field": "flash", "op": "is", "value": fired}));
+            }
+            signed_range_rules(&mut rules, "exposureBias", &p.exposure_bias)?;
+        }
+        if let Some(d) = &self.dates
+            && !d.is_empty()
+        {
+            date_rules(&mut rules, "captureDate", &d.captured)?;
+            if let Some(month) = d.month {
+                if !(1..=12).contains(&month) {
+                    return Err(format!("capture month: {month} is not a month (1–12)"));
+                }
+                rules.push(json!({"field": "captureMonth", "op": "is", "value": month}));
+            }
+            if let Some(day) = d.day {
+                if !(1..=31).contains(&day) {
+                    return Err(format!("capture day: {day} is not a day of the month (1–31)"));
+                }
+                rules.push(json!({"field": "captureDay", "op": "is", "value": day}));
+            }
+            date_rules(&mut rules, "importDate", &d.imported)?;
+            date_rules(&mut rules, "editDate", &d.edited)?;
         }
         if let Some(l) = &self.location
             && !l.is_empty()
@@ -662,6 +759,54 @@ fn trimmed(list: &[String]) -> Option<Vec<&str>> {
 }
 
 /// A hostile number: a whole, non-negative, finite value, or an error naming `field`.
+/// A signed range's rules (exposure bias), each end a finite number.
+fn signed_range_rules(rules: &mut Vec<Value>, field: &str, range: &Range) -> Result<(), String> {
+    let check = |v: Option<f64>| match v {
+        Some(v) if !v.is_finite() => Err(format!("{field}: {v} is not a usable number")),
+        v => Ok(v),
+    };
+    let (min, max) = (check(range.min)?, check(range.max)?);
+    if let (Some(min), Some(max)) = (min, max)
+        && min > max
+    {
+        return Err(format!("{field}: the range {min} – {max} is reversed (the minimum is above the maximum)"));
+    }
+    match (min, max) {
+        (Some(v), Some(w)) => rules.push(json!({"field": field, "op": "between", "value": [v, w]})),
+        (Some(v), None) => rules.push(json!({"field": field, "op": "gte", "value": v})),
+        (None, Some(v)) => rules.push(json!({"field": field, "op": "lte", "value": v})),
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+/// A date span's rule: one `between`, an open end standing for the first or the last day there is, both ends
+/// included (a year or a month as an end takes all of it). Each end is checked as the rules read dates.
+fn date_rules(rules: &mut Vec<Value>, field: &str, span: &DateSpan) -> Result<(), String> {
+    let end = |v: &Option<String>| -> Result<Option<String>, String> {
+        match v.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            None => Ok(None),
+            Some(d) => crate::rules::rule_date(d)
+                .map(|_| Some(d.to_string()))
+                .map_err(|_| format!("{field}: {d:?} is not a date (a year 2026, a month 2026-05 or a day 2026-05-14)")),
+        }
+    };
+    let (from, to) = (end(&span.from)?, end(&span.to)?);
+    if let (Some(a), Some(b)) = (&from, &to)
+        && a > b
+        && !a.starts_with(b.as_str())
+    {
+        return Err(format!("{field}: the span {a} – {b} is reversed"));
+    }
+    if from.is_none() && to.is_none() {
+        return Ok(());
+    }
+    let from = from.unwrap_or_else(|| "0001".into());
+    let to = to.unwrap_or_else(|| "9999".into());
+    rules.push(json!({"field": field, "op": "between", "value": [from, to]}));
+    Ok(())
+}
+
 fn non_negative(field: &str, v: f64) -> Result<f64, String> {
     if !v.is_finite() {
         return Err(format!("{field}: {v} is not a usable number"));
@@ -997,6 +1142,71 @@ mod tests {
         let json = serde_json::to_value(pick(PhotographCategory { cameras: cam(&["A"]), no_camera: true, ..Default::default() })).unwrap();
         assert_eq!((json["photograph"]["cameras"][0].clone(), json["photograph"]["noCamera"].clone()), (json!("A"), json!(true)));
         assert!(serde_json::to_value(q()).unwrap().get("photograph").is_none());
+    }
+
+    #[test]
+    fn dates_flags_file_size_flash_and_bias_narrow_the_grid() {
+        let mut c = catalog();
+        c.photo_mut(PhotoId(1)).unwrap().captured = Some("2026-05-01T10:00:00".into());
+        c.photo_mut(PhotoId(2)).unwrap().captured = Some("2026-06-01T10:00:00".into());
+        c.photo_mut(PhotoId(1)).unwrap().file_size = 24_000_000;
+        c.photo_mut(PhotoId(1)).unwrap().flag = crate::Flag::Pick;
+        c.photo_mut(PhotoId(1)).unwrap().meta.flash = Some(true);
+        c.photo_mut(PhotoId(1)).unwrap().meta.exposure_bias = Some(-0.7);
+        c.photo_mut(PhotoId(2)).unwrap().file_size = 80_000_000;
+        c.photo_mut(PhotoId(2)).unwrap().imported = "2026-07-02T08:00:00".into();
+        c.photo_mut(PhotoId(2)).unwrap().edited = Some("2026-07-03T09:00:00".into());
+        let dates = |d: DatesCategory| AdvancedSearch { dates: Some(d), ..q() };
+        let span =
+            |from: &str, to: &str| DateSpan { from: (!from.is_empty()).then(|| from.to_string()), to: (!to.is_empty()).then(|| to.to_string()) };
+        // a span, either end open, a month as an end taking all of it
+        assert_eq!(matches(&c, &dates(DatesCategory { captured: span("2026-05", "2026-05"), ..Default::default() })), vec![PhotoId(1)]);
+        assert_eq!(matches(&c, &dates(DatesCategory { captured: span("2026-05-15", ""), ..Default::default() })), vec![PhotoId(2)]);
+        assert_eq!(matches(&c, &dates(DatesCategory { captured: span("", "2026-05-31"), ..Default::default() })), vec![PhotoId(1)]);
+        assert_eq!(matches(&c, &dates(DatesCategory { captured: span("2026", "2026"), ..Default::default() })), vec![PhotoId(1), PhotoId(2)]);
+        // a month and a day, whatever the year
+        assert_eq!(matches(&c, &dates(DatesCategory { month: Some(6), ..Default::default() })), vec![PhotoId(2)]);
+        assert_eq!(matches(&c, &dates(DatesCategory { month: Some(5), day: Some(1), ..Default::default() })), vec![PhotoId(1)]);
+        assert!(matches(&c, &dates(DatesCategory { day: Some(2), ..Default::default() })).is_empty());
+        // import and edit spans
+        assert_eq!(matches(&c, &dates(DatesCategory { imported: span("2026-07-01", "2026-07-31"), ..Default::default() })), vec![PhotoId(2)]);
+        assert_eq!(matches(&c, &dates(DatesCategory { edited: span("2026-07", ""), ..Default::default() })), vec![PhotoId(2)]);
+        // bad dates, months and days are actionable errors
+        for bad in [
+            DatesCategory { captured: span("May 2026", ""), ..Default::default() },
+            DatesCategory { captured: span("2026-06", "2026-05"), ..Default::default() },
+            DatesCategory { month: Some(13), ..Default::default() },
+            DatesCategory { day: Some(0), ..Default::default() },
+        ] {
+            assert!(dates(bad.clone()).to_filter().is_err(), "{bad:?}");
+        }
+        // pick flag and file size
+        let props = |p: PropertiesCategory| AdvancedSearch { properties: Some(p), ..q() };
+        assert_eq!(matches(&c, &props(PropertiesCategory { flag: Some("pick".into()), ..Default::default() })), vec![PhotoId(1)]);
+        assert_eq!(matches(&c, &props(PropertiesCategory { flag: Some("none".into()), ..Default::default() })), vec![PhotoId(2)]);
+        assert!(props(PropertiesCategory { flag: Some("starred".into()), ..Default::default() }).to_filter().is_err());
+        let size = PropertiesCategory { file_size_mb: Range { min: Some(50.0), max: None }, ..Default::default() };
+        assert_eq!(matches(&c, &props(size)), vec![PhotoId(2)]);
+        // flash and a negative exposure bias
+        let photo = |p: PhotographCategory| AdvancedSearch { photograph: Some(p), ..q() };
+        assert_eq!(matches(&c, &photo(PhotographCategory { flash: Some(true), ..Default::default() })), vec![PhotoId(1)]);
+        assert_eq!(matches(&c, &photo(PhotographCategory { flash: Some(false), ..Default::default() })), vec![PhotoId(2)]);
+        let bias = PhotographCategory { exposure_bias: Range { min: Some(-1.0), max: Some(-0.3) }, ..Default::default() };
+        assert_eq!(matches(&c, &photo(bias)), vec![PhotoId(1)]);
+        let reversed = PhotographCategory { exposure_bias: Range { min: Some(1.0), max: Some(-1.0) }, ..Default::default() };
+        assert!(photo(reversed).to_filter().is_err());
+        // a capture dated only to the month has that month but no day; one dated to the year has neither
+        c.photo_mut(PhotoId(2)).unwrap().captured = Some("1983-04".into());
+        assert_eq!(matches(&c, &dates(DatesCategory { month: Some(4), ..Default::default() })), vec![PhotoId(2)]);
+        assert!(matches(&c, &dates(DatesCategory { day: Some(1), month: Some(4), ..Default::default() })).is_empty());
+        c.photo_mut(PhotoId(2)).unwrap().captured = Some("1983".into());
+        assert!(matches(&c, &dates(DatesCategory { month: Some(1), ..Default::default() })).is_empty());
+        // they count as conditions, and travel as JSON in camelCase
+        let d = dates(DatesCategory { month: Some(5), ..Default::default() });
+        assert!(!d.is_empty());
+        assert_eq!(serde_json::to_value(&d).unwrap()["dates"]["month"], json!(5));
+        let p = props(PropertiesCategory { file_size_mb: Range { min: Some(1.0), max: None }, ..Default::default() });
+        assert_eq!(serde_json::to_value(&p).unwrap()["properties"]["fileSizeMb"]["min"], json!(1.0));
     }
 
     #[test]
