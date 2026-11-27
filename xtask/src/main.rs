@@ -19,6 +19,7 @@ mod ico;
 mod immich;
 mod layers;
 mod notes;
+mod onnxruntime;
 mod package_size;
 mod parity;
 mod quarantine;
@@ -77,6 +78,9 @@ commands:
                   the fork's message catalogs (crates/ui-egui/locales/fork/*.json): --check (in ci) fails when
                   one is out of key order, not in the catalog format, or not a JSON object of strings each key
                   once; --sort rewrites them in order (docs/localization.md)
+  onnxruntime fetch --dest DIR [--platform P]
+                  ONNX Runtime and its WebGPU plug-in for a desktop package: Microsoft's PyPI builds, pinned
+                  by sha256, unpacked with their licences into DIR (docs/onnxruntime.md)
   windows [--check]
                   every egui window in crates/ui-egui/src is listed in crates/ui-egui/windows.json as a
                   modal or an exception with its reason, and every entry still has its window (in ci)
@@ -185,6 +189,7 @@ fn main() -> ExitCode {
         Some("install") => dist::cmd_install(&root(), &rest),
         Some("package") => dist::cmd_package(&root(), &rest),
         Some("package-size") => package_size::run(&root(), &rest),
+        Some("onnxruntime") => onnxruntime::run(&root(), &rest),
         Some("rename-crates") => rename::run(&root(), &rest),
         Some("immich") => immich::run(&root(), &rest),
         Some("ico") => ico::run(&rest),
