@@ -20,7 +20,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use lcc_catalog::folders::{Mounts, volume_key};
+use lcc_catalog::folders::{Mounts, VolumeKeys};
 
 use super::IoContext;
 use super::job::JobState;
@@ -269,7 +269,9 @@ pub(crate) struct Stream<T: Send + 'static> {
     cancel: Arc<AtomicBool>,
     /// The caller's own cancel flag, read by the pool itself ([`Stream::with_cancel`]).
     linked: Option<Arc<AtomicBool>>,
-    mounts: Arc<Mounts>,
+    /// The volume keys of its jobs, from the mount list it read (per folder: an import keys a
+    /// folder once, not each file).
+    keys: VolumeKeys,
     next: usize,
 }
 
@@ -298,7 +300,7 @@ impl<T: Send + 'static> Stream<T> {
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
             linked: None,
-            mounts,
+            keys: VolumeKeys::new(mounts),
             next: 0,
         }
     }
@@ -314,8 +316,8 @@ impl<T: Send + 'static> Stream<T> {
     }
 
     /// The volume `path` is on, as this stream keys its jobs (from the mount list it read).
-    pub(crate) fn volume_of(&self, path: &str) -> lcc_catalog::folders::VolumeKey {
-        volume_key(path, &self.mounts)
+    pub(crate) fn volume_of(&mut self, path: &str) -> lcc_catalog::folders::VolumeKey {
+        self.keys.file(path)
     }
 
     /// Whether this stream runs its own scheduler (the pool couldn't run).
@@ -363,8 +365,8 @@ impl<T: Send + 'static> Stream<T> {
         for job in jobs {
             let index = self.next;
             self.next += 1;
-            let source = volume_key(&job.source, &self.mounts);
-            let dest = job.dest.as_deref().map(|d| volume_key(d, &self.mounts));
+            let source = self.keys.file(&job.source);
+            let dest = job.dest.as_deref().map(|d| self.keys.folder(d));
             let task =
                 Task { index, run: Some(job.run), dest: dest.clone().filter(|d| d != &source), succeeded: self.succeeded, tx: self.tx.clone() };
             submitted.push(Submitted { index, source, dest, skippable: job.skippable, id: self.ctx.shared.next_id(), task: Box::new(task) });

@@ -199,3 +199,86 @@ fn volume_of_is_volume_key_without_a_list() {
     assert_eq!(crate::folders::volume_of(&photo("relative/a.jpg")), None);
     assert_eq!(crate::folders::volume_of(&Photo::new(PhotoId(2), Source::Demo { scene: 0 }, "a.jpg", "JPEG", 3, 2, "2026-10-01T00:00:00")), None);
 }
+
+/// `VolumeKeys` keys every file as `volume_key` does (id and spelling), from its folder, across
+/// list kinds: a mount point, the startup disk's alias, case folding, `place()` alone, drive
+/// letters and shares, `..` inside and at the end, a trailing separator, relative and bare names.
+/// A folder that is itself a mount point keys as that mount, not as its parent's volume; a file
+/// is never one (keyed by its folder, also where `place()` alone would take its path for a
+/// volume's).
+#[test]
+fn volume_keys_key_each_file_as_volume_key_does() {
+    use crate::folders::VolumeKeys;
+    let lists = [
+        Mounts::from_points(["/", "/a", "/srv/nas"], false),
+        Mounts::from_volume_entries(["card", "Photo"], ["Macintosh HD"]),
+        Mounts::from_points(["/", "/Volumes/Photo"], true),
+        case_sensitive_none(),
+        Mounts::none(),
+    ];
+    let paths = [
+        "/a/x.jpg",
+        "/a/b/x.jpg",
+        "/a/x.jpg",
+        "/srv/nas/p/x.jpg",
+        "/srv/other/x.jpg",
+        "/Volumes/Macintosh HD/Users/me/x.jpg",
+        "/Volumes/Macintosh HD/x.jpg",
+        "/Volumes/macintosh hd/Volumes/card/x.jpg",
+        "/Volumes/Photo/x.jpg",
+        "/Volumes/PHOTO/y.jpg",
+        "/Volumes/card/x.jpg",
+        "/run/media/me/usb/x.jpg",
+        "D:\\photos\\x.jpg",
+        "d:/x.jpg",
+        "C:x.jpg",
+        "\\\\?\\UNC\\Server\\Share\\x.jpg",
+        "//server/share/x.jpg",
+        "/a/b/../x.jpg",
+        "/a/x/..",
+        "/srv/nas/.",
+        "/a/x/",
+        "x.jpg",
+        "",
+        "/",
+    ];
+    for m in lists {
+        let mut keys = VolumeKeys::new(std::sync::Arc::new(m.clone()));
+        for _ in 0..2 {
+            for p in paths {
+                let (got, want) = (keys.file(p), volume_key(p, &m));
+                assert_eq!((got.id(), got.name()), (want.id(), want.name()), "{p}");
+            }
+        }
+        for dir in ["/a", "/srv/nas", "/Volumes/Photo", "/Volumes/Macintosh HD", "/a/b"] {
+            let (got, want) = (keys.folder(dir), volume_key(dir, &m));
+            assert_eq!((got.id(), got.name()), (want.id(), want.name()), "{dir}");
+        }
+    }
+    let m = Mounts::from_points(["/", "/a"], false);
+    let mut keys = VolumeKeys::new(std::sync::Arc::new(m));
+    assert_eq!(keys.folder("/a").id(), "/a", "a mount point keyed as itself");
+    assert_eq!(keys.file("/a").id(), "/", "as a file: the folder holding it");
+    // a file where `place()` would see a volume (directly in `/Volumes`) is on the folder's
+    // volume, the startup disk
+    let mut keys = VolumeKeys::new(std::sync::Arc::new(Mounts::none()));
+    assert_eq!(volume_key("/Volumes/x.jpg", &Mounts::none()).name(), "/Volumes/x.jpg");
+    assert_eq!(keys.file("/Volumes/x.jpg").name(), "/");
+}
+
+/// At most `MAX_FOLDERS` folders are remembered (at, just below, just above: then it starts
+/// over), and a key keeps coming out right after that.
+#[test]
+fn volume_keys_remember_at_most_max_folders() {
+    use crate::folders::VolumeKeys;
+    let max = VolumeKeys::MAX_FOLDERS;
+    for (n, want) in [(max - 1, max - 1), (max, max), (max + 1, 1)] {
+        let m = Mounts::from_points(["/", "/a"], false);
+        let mut keys = VolumeKeys::new(std::sync::Arc::new(m.clone()));
+        for i in 0..n {
+            keys.file(&format!("/a/{i}/x.jpg"));
+        }
+        assert_eq!(keys.remembered(), want, "{n} folders");
+        assert_eq!(keys.file("/a/0/y.jpg"), volume_key("/a/0/y.jpg", &m));
+    }
+}

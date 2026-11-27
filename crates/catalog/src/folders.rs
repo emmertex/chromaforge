@@ -385,6 +385,65 @@ pub fn volume_key(path: &str, mounts: &Mounts) -> VolumeKey {
     key_in(path, mounts, true)
 }
 
+/// [`volume_key`] for many files under one mount list, remembered per folder: a file is keyed
+/// as the folder holding it (a file is never a mount point: a bind-mounted file, or a file where
+/// `place()` alone would see a volume, `/Volumes/x.jpg`, is keyed as its folder), so an import
+/// keys each of its folders once instead of each file, a copy's
+/// destination folder once for every copy into it. A path whose last name is not a file's
+/// (`.`, `..`, empty) or that names no folder is keyed on its own. Holds at most
+/// [`VolumeKeys::MAX_FOLDERS`] folders (then starts over).
+#[derive(Debug)]
+pub struct VolumeKeys {
+    mounts: std::sync::Arc<Mounts>,
+    by_folder: HashMap<String, VolumeKey>,
+}
+
+impl VolumeKeys {
+    /// Folders remembered at most.
+    pub const MAX_FOLDERS: usize = 4096;
+
+    pub fn new(mounts: std::sync::Arc<Mounts>) -> VolumeKeys {
+        VolumeKeys { mounts, by_folder: HashMap::new() }
+    }
+
+    /// The mount list the keys come from.
+    pub fn mounts(&self) -> &std::sync::Arc<Mounts> {
+        &self.mounts
+    }
+
+    /// The key of file `path`: [`volume_key`] of the folder holding it.
+    pub fn file(&mut self, path: &str) -> VolumeKey {
+        let folder = path.rfind(['/', '\\']).and_then(|i| {
+            let cut = i.checked_add(1)?;
+            let name = path.get(cut..)?;
+            if matches!(name, "" | "." | "..") { None } else { path.get(..cut) }
+        });
+        match folder {
+            Some(f) => self.folder(f),
+            None => volume_key(path, &self.mounts),
+        }
+    }
+
+    /// The key of folder `path` ([`volume_key`] of the folder itself, which may be a mount point).
+    pub fn folder(&mut self, path: &str) -> VolumeKey {
+        if let Some(k) = self.by_folder.get(path) {
+            return k.clone();
+        }
+        let k = volume_key(path, &self.mounts);
+        if self.by_folder.len() >= Self::MAX_FOLDERS {
+            self.by_folder.clear();
+        }
+        self.by_folder.insert(path.to_string(), k.clone());
+        k
+    }
+
+    /// Folders remembered (tests).
+    #[cfg(test)]
+    pub(crate) fn remembered(&self) -> usize {
+        self.by_folder.len()
+    }
+}
+
 /// [`volume_key`], following [`Mounts`]' other names of the startup disk when `aliases`.
 fn key_in(path: &str, mounts: &Mounts, aliases: bool) -> VolumeKey {
     let sp = split_path(path, false);
