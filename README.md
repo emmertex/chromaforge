@@ -6,12 +6,12 @@
 
 <p align="center">
   <b>Your photos. Your pixels. Your machine.</b><br>
-  A Lightroom Classic-style photo library and non-destructive raw developer, written in pure Rust.
+  A Lightroom Classic-style photo library and non-destructive raw developer, written in Rust.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="Licence: MIT" src="https://img.shields.io/badge/licence-MIT-blue"></a>
-  <img alt="Pure Rust" src="https://img.shields.io/badge/pure-Rust-orange">
+  <img alt="Rust" src="https://img.shields.io/badge/built_with-Rust-orange">
   <img alt="Platforms: macOS, Windows, Linux, web, Android" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20web%20%7C%20Android-lightgrey">
 </p>
 
