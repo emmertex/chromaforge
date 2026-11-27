@@ -473,7 +473,6 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.exportFolder", "Choose Export Folder…", None, ""),
     ("app.about", "About {app}", None, "Help"),
     ("app.checkForUpdates", "Check for Updates…", None, "Help"),
-    ("app.installUpdate", "Install Update and Relaunch", None, "Help"),
     ("app.openReleasePage", "Open the Release Page", None, ""),
     ("app.allFilesAccess", "Allow Access to All Files…", None, ""),
     ("app.systemInfo", "System Info…", None, "Help"),
@@ -2663,28 +2662,6 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 Err(e) => Err(e.to_string()),
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        "app.installUpdate" => Err("the web build updates by reloading the page".into()),
-        #[cfg(not(target_arch = "wasm32"))]
-        "app.installUpdate" => {
-            // the same install the dialog's button runs, without the plan in front of it
-            match app.session.execute("update.install", &json!({"confirm": true})) {
-                Ok(v) => {
-                    if let Some(message) = v.field("message").as_str() {
-                        app.toast(&ctx, message);
-                    }
-                    if v.field("exit").as_bool().unwrap_or(false) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    Ok(v)
-                }
-                // nothing downloaded yet: open the dialog, which explains what to do
-                Err(e) => {
-                    app.ui.dialog = Some(Dialog::Update);
-                    Err(e.to_string())
-                }
-            }
-        }
         // the web build has no updater: the list of releases
         #[cfg(target_arch = "wasm32")]
         "app.openReleasePage" => crate::links::open(app, &format!("{}/releases", lcc_brand::REPOSITORY.trim_end_matches('/'))),
@@ -3817,11 +3794,6 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
             app.session.active().is_some()
         }
         "photo.tagFromTracklog" => app.session.active().is_some() && app.services.pick_tracklog.is_some(),
-        // nothing downloaded, nothing to install (the dialog's own button says the same)
-        #[cfg(target_arch = "wasm32")]
-        "app.installUpdate" => false,
-        #[cfg(not(target_arch = "wasm32"))]
-        "app.installUpdate" => app.session.updater.staged().is_some(),
         "photo.editInPhotoCraft" | "photo.editInExternal" | "photo.editInPreset" => {
             app.session.active().is_some() && app.services.open_with.is_some()
         }

@@ -1257,6 +1257,17 @@ the selection, and *Apply to N Selected* the copy. Copy / Paste, Sync and preset
 Filters group carry each entry without its measurement (the targets read "Not measured yet"; use
 Measure N Selected), except a roll's (`_roll`), which is shared by design.
 
+**Measuring on its own, and a status line (ABI v1.1 proposal).** A manifest with `pc_analyze` may say
+`"analyze": "auto"` (default `"manual"`): each enabled entry of it on the open photo that has no measurement is
+then measured in the background without a click (added, pasted, synced or applied to other photos alike), once
+per entry until something drops its measurement; a failed run is reported in the panel and not retried by itself.
+`"analyzeParams": ["name", …]` names parameters whose change makes the stored measurement stale
+(a region, a sample point): changing one through `develop.pluginFilter.set` drops it, so an `auto` filter measures
+again and a `manual` one shows *Not measured*. Names that aren't the filter's own parameters are ignored. A
+measurement may carry `"_status"`: one line (at most 120 characters, printable, no line breaks) the panel shows
+beside *Measured*, "Base 0.82 / 0.61 / 0.44", say; anything else there is not shown. Hosts without these fields
+ignore them and measure only when asked.
+
 **A roll (ABI v1.1 proposal).** A module may also export
 `pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of
 UTF-8 JSON: a list of `count` objects its `pc_analyze` returned, one per photo. It returns, like

@@ -482,5 +482,7 @@ fn placeholder_manifest() -> Manifest {
         dropped: Vec::new(),
         sections: Vec::new(),
         shortcut: None,
+        analyze: crate::Analyze::Manual,
+        analyze_params: Vec::new(),
     }
 }
