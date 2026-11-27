@@ -132,6 +132,15 @@ Write-FontLicences (Join-Path $Stage 'FONT-LICENCES.txt') (Join-Path $Root 'asse
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage $AppExe) (Join-Path $Stage $CliExe)
 
+# ONNX Runtime and its WebGPU plug-in (pinned Microsoft builds, already signed by Microsoft) beside the app, for the AI
+# features on the graphics card (docs/onnxruntime.md). x86 has none pinned: the app then runs its own runners.
+$OrtPlatform = switch ($Arch) { 'x64' { 'windows-x86_64' } 'arm64' { 'windows-aarch64' } default { '' } }
+$OrtArgs = @()
+if ($OrtPlatform) {
+  Invoke-Native "cargo xtask onnxruntime fetch ($OrtPlatform)" { cargo xtask onnxruntime fetch --dest $Stage --platform $OrtPlatform }
+  $OrtArgs = @('-d', 'OnnxRuntime=1')
+}
+
 # ---- MSI ---------------------------------------------------------------------------------------
 # Extensions must match the WiX tool version (5.0.2, see release.yml). Re-adding is harmless.
 $WixVersion = '5.0.2'
@@ -154,7 +163,7 @@ Expand-BrandTemplate (Join-Path $PSScriptRoot 'app.wxs.in') $Wxs
 Invoke-Native 'wix build' {
   wix build $Wxs -arch $Arch -culture en-us @ExtArgs `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\app.ico')" `
-    -d "UiDialogBmp=$UiDialogBmp" -d "UiBannerBmp=$UiBannerBmp" `
+    -d "UiDialogBmp=$UiDialogBmp" -d "UiBannerBmp=$UiBannerBmp" @OrtArgs `
     -o $Msi
 }
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
@@ -166,6 +175,8 @@ $Portable = Join-Path $TargetDir "windows-package\$($Brand.binary)-$Version-wind
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
+Copy-Item (Join-Path $Stage '*.dll') $Portable -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $Stage '*-onnxruntime.txt') $Portable -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Stage 'FONT-LICENCES.txt') $Portable
 foreach ($f in 'README.md', 'LICENSE', 'NOTICE') {
   $p = Join-Path $Root $f
