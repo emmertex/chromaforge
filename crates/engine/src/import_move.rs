@@ -473,11 +473,9 @@ pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::
 /// SMB, against 17 MB/s in 1 MiB writes (upstream issue #3561).
 pub(crate) const COPY_CHUNK: usize = 1 << 20;
 
-/// Copy `from` into `to` in writes of about [`COPY_CHUNK`], however little each read returns.
-/// Returns the number of bytes copied. Still `io::copy`, through a [`io::BufWriter`] of that
-/// capacity: on Linux std sees through the `BufWriter` (and the `Take` below) to the files and
-/// copies in the kernel (`copy_file_range`, `sendfile`), and where the kernel declines, the copy
-/// std falls back to fills the buffer, so the writes stay large.
+/// Copy `from` into `to` in writes of [`COPY_CHUNK`], however little each read returns.
+/// Returns the number of bytes copied. Each write waits until the buffer is full (or the source
+/// ends), so the writes stay large on a share where every write waits for the server.
 ///
 /// The reads and the writes are separate calls, each counted for the thread's I/O job on its own
 /// volume and preceded by telling the job which volume it is on: a slow card or destination shows
