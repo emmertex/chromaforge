@@ -769,6 +769,7 @@ fn dispatch_and_readback(
     }
     enc.copy_buffer_to_buffer(src, 0, &staging, 0, out_bytes);
     let index = d.queue.submit([enc.finish()]);
+    crate::busy::submitted(&d.queue);
     let slice = staging.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |res| {

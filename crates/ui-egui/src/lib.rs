@@ -1123,6 +1123,9 @@ pub struct LccApp {
     preview_window: Option<bool>,
     /// The GPU preference last applied (`app.gpu`), to apply Settings changes once.
     gpu_applied: Option<bool>,
+    /// The GPU device is to be made in the background once the window has drawn
+    /// [`GPU_WARM_UP_AFTER_FRAMES`] frames ([`gpu_warm_up_due`]).
+    gpu_warm_up_pending: bool,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
     ml_device_applied: Option<String>,
@@ -1457,6 +1460,7 @@ impl LccApp {
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
+            gpu_warm_up_pending: false,
             gpu_cards_applied: None,
             ml_device_applied: None,
             gpu_notice: false,
@@ -2831,8 +2835,15 @@ impl LccApp {
             lcc_engine::gpu::set_enabled(self.ui.settings.gpu);
             // GPU device + kernels off the UI thread, once the window is up and only when GPU
             // rendering is on: a broken driver must not keep the window from appearing (issue #136)
-            if self.ui.settings.gpu {
+            self.gpu_warm_up_pending = self.ui.settings.gpu;
+        }
+        if self.gpu_warm_up_pending {
+            if gpu_warm_up_due(ctx.cumulative_frame_nr()) {
+                self.gpu_warm_up_pending = false;
                 lcc_engine::gpu::warm_up();
+            } else {
+                // an idle window draws no more frames on its own
+                ctx.request_repaint();
             }
         }
         // the SAM 3 model's folder: the default one until a person chooses another
@@ -4331,3 +4342,28 @@ mod tests_phone_menus;
 mod tests_pill_slider;
 #[cfg(test)]
 mod window_list;
+
+/// Frames the window draws before the GPU device is made in the background ([`gpu_warm_up_due`]).
+const GPU_WARM_UP_AFTER_FRAMES: u64 = 3;
+
+/// Whether the GPU device may be made now that the window has drawn `frames` frames. The window's
+/// first frames create its swapchain on the UI thread; making the device on another thread at the
+/// same time deadlocked inside the Vulkan loader with an implicit layer installed (RivaTuner's,
+/// OBS's capture hook: the UI thread waited on the loader's lock while the device thread waited
+/// in the layer), leaving the window hung on some starts. After those frames the UI thread only
+/// draws and presents.
+fn gpu_warm_up_due(frames: u64) -> bool {
+    frames >= GPU_WARM_UP_AFTER_FRAMES
+}
+
+#[cfg(test)]
+mod gpu_warm_up_tests {
+    /// The device is never made while the window's first frame (its swapchain) is being set up,
+    /// and is made once the window has drawn a few.
+    #[test]
+    fn the_gpu_warms_up_only_after_the_first_frames() {
+        assert!(!super::gpu_warm_up_due(0), "not before the first frame is drawn");
+        assert!(!super::gpu_warm_up_due(1), "not while the swapchain is new");
+        assert!((2..10).any(super::gpu_warm_up_due), "within the first few frames");
+    }
+}
