@@ -8,7 +8,7 @@
 # - full-macos / full-windows: the workspace build and every test (nextest + quarantine) on macOS and
 #   Windows, so the nightly full run covers all three desktop OSes.
 # - report: opens (or comments on) the "Nightly full run failing" issue when any job failed, and
-#   closes it on the next green run. release.yml refuses to draft a release on a commit whose latest
+#   closes it on the next green run, scheduled or dispatched on main (release.yml counts both). release.yml refuses to draft a release on a commit whose latest
 #   nightly (on it or an ancestor) is red.
 name: Nightly
 
@@ -233,7 +233,9 @@ jobs:
   report:
     name: Report (issue on failure)
     needs: [corpus, gpu-software-linux, gpu-software-windows, full, web-smoke]
-    if: ${{ always() && github.event_name == 'schedule' }}
+    # scheduled runs and dispatches on main: release.yml's gate counts a green dispatch, so it must
+    # close the issue too; a dispatch on another branch says nothing about main
+    if: ${{ always() && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     runs-on: [self-hosted, Linux, X64, lcc]
     timeout-minutes: 10
     permissions:

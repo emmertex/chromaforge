@@ -44,7 +44,8 @@ Copy and paste settings with `Cmd+C`/`Cmd+V` (`Cmd+Shift+C` to choose which). Ph
 panorama DNGs. Every slider is a develop control: `<cli> controls` lists ids and ranges.
 
 The row of tools under the histogram is Edit, Crop, Remove, Red Eye, Masking and Browse Profiles (the profile
-browser in the panels' place; a second click puts it away). Basic starts with Auto · B&W | HDR, then the profile's
+browser in the panels' place; a second click puts it away); the Compact layout adds Reset. Right-click the row to hide
+any button but Edit, or to move one left or right; Settings ▸ Develop ▸ Tool Row shows and hides them too. Basic starts with Auto · B&W | HDR, then the profile's
 Amount and white balance.
 
 ### Tool profiles
@@ -78,7 +79,8 @@ the photos in view.
   (`map.track`, `map.trackOffset`, `photo.autoTagTracklog`).
 - Saved locations with a radius; a **private** location keeps its photos' GPS out of every export. Drag a location's
   centre to move it and the handle on its edge to resize it; right-click ▸ **New Location Here…** or **Edit…** opens the
-  **Edit Location** panel (name, radius, private).
+  **Edit Location** panel (name, radius, private). In the list, a row's box is ticked when the selected photos are
+  inside the location (a dash when some are); ticking it moves them to its centre, as in Lightroom Classic.
 - Reverse geocoding is opt-in: offline from a downloaded GeoNames cities list (`map.geonamesDownload`, CC-BY 4.0) or
   online from a Nominatim-compatible server after consent. Nothing is sent without asking.
 - Tiles are cached on disk with a size limit; the app never bulk-prefetches.

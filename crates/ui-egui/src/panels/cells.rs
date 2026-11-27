@@ -82,6 +82,10 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
         if p.develop.orientation != lcc_geom::Orientation::Normal {
             badges.push(("rotated", Icon::RotateRight, crate::i18n::tr("Rotated or flipped").to_string(), Color32::WHITE));
         }
+        // as Lightroom Classic's GPS badge: the photo has a position; a click shows it on the map
+        if p.meta.gps.is_some() {
+            badges.push(("gps", Icon::MapPin, crate::i18n::tr("Has a GPS position (click to show it on the map)").to_string(), Color32::WHITE));
+        }
         if !p.meta.keywords.is_empty() {
             let names: Vec<&str> = p.meta.keywords.iter().map(|k| k.rsplit('|').next().unwrap_or(k)).collect();
             badges.push(("keywords", Icon::Tag, format!("{}: {}", crate::i18n::tr("Keywords"), names.join(", ")), Color32::WHITE));
@@ -136,6 +140,10 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
             };
             if let Some(cmd) = panel {
                 let _ = app.run(cmd, json!({}));
+            }
+            if key == "gps" {
+                let _ = app.run("module.map", json!({}));
+                crate::map::reveal_selection(app, true);
             }
         }
         x -= size + 4.0;

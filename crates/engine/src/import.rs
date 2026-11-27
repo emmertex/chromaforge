@@ -551,7 +551,9 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
     let preset = s.import_defaults.preset_for(raw, &p.meta.camera).and_then(|id| s.presets.iter().find(|x| x.id == id));
     match preset {
         Some(pr) => {
-            let look = std::sync::Arc::new(pr.apply(&base, 1.0));
+            // (a preset naming one white balance number is resolved on the photo's scale: issue #2910)
+            let info = crate::cmd::develop::wb_partial_names_one_number(&pr.settings).then(|| crate::media::source_info(p));
+            let look = std::sync::Arc::new(crate::presets::apply_preset_to_photo(pr, &base, None, 1.0, info.as_ref()));
             p.develop = look.clone();
             p.import_look = (*look != base).then_some(look);
         }
@@ -2105,12 +2107,17 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 p.sha1 = info.sha1.filter(|h| lcc_catalog::is_sha1_hex(h));
                 p.embedded_lens = info.embedded_lens.map(Box::new);
                 // a merged pixel-shift file says in its own XMP which frames it was made from: those in the library
-                // are found again (a frame that is not there stays in the list as not found)
+                // are found again, when the photos agree with what the file says (a frame that is not there, or whose
+                // photo does not agree, stays in the list as not found; see `Session::restored_merge_sources`)
+                let merged_path = match &p.source {
+                    Source::File { path } => path.clone(),
+                    Source::Demo { .. } => String::new(),
+                };
                 p.merge_sources = info
                     .xmp
                     .as_deref()
                     .and_then(lcc_raw::merge_provenance::Provenance::from_packet)
-                    .map(|prov| Box::new(crate::merge::restored_merge_sources(&s.catalog, &prov)));
+                    .map(|prov| Box::new(s.restored_merge_sources(&merged_path, &prov)));
                 p.set_preview_only(info.preview_only.clone());
                 // a clip's stream facts land with the photo record: one undo step with the import
                 p.video = info.video;
@@ -2246,7 +2253,9 @@ fn apply_settings(s: &Session, p: &mut Photo, opts: &ImportOptions, now: &str) {
     // the camera profile before the presets: a preset doesn't take it away unless the import says so
     let body = (!opts.preset_profile && p.develops_raw()).then(|| p.develop.profile.camera.clone()).filter(|c| !c.is_empty());
     for preset in opts.preset.iter().chain(&opts.presets) {
-        let mut d = preset.apply(&p.develop, 1.0);
+        // the same composition and white balance preparation as `preset.apply` (issue #2910)
+        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| crate::media::source_info(p));
+        let mut d = crate::presets::apply_preset_to_photo(preset, &p.develop, None, 1.0, info.as_ref());
         if let Some(cal) = &body {
             d.profile.camera.clone_from(cal);
         }

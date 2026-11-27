@@ -18,6 +18,11 @@ Written after 26.46.2; keep it current. CI mechanics: [`ci.md`](ci.md). Changelo
 4. **Fix failures on a `fix/release-<ver>-ci` branch** merged to `main` (re-merge `origin/main` first), never on `release`.
 5. **main → release:** branch `prep/release-<ver>-to-release` from `origin/release`, merge `origin/main`, PR to
    `release`, merge with `gh pr merge --admin --merge` (the ruleset wants a non-author approval; admins bypass).
+   **Nightly gate:** the Release workflow fails before any draft is made when the newest completed Nightly on the
+   release commit's history is red ([`ci.md`](ci.md) → *Release gate*). Check it before this step
+   (`gh run list --workflow nightly.yml -L 3`); if red, fix on `main`, dispatch Nightly
+   (`gh workflow run nightly.yml --ref main`), and push to `release` again once it is green (a fresh
+   `-to-release-2` branch from `origin/release` with `origin/main` merged).
 6. **Draft notes:** the workflow seeds the draft with generated notes. While the build runs, once the draft
    exists: `gh release edit v<ver> --notes-file docs/changelog/<ver>.md`. The final job reads the draft body for
    `latest.json` (the updater's notes), so do it before that job.
@@ -50,4 +55,8 @@ Written after 26.46.2; keep it current. CI mechanics: [`ci.md`](ci.md). Changelo
 - **Tests that press a toggling command** (`panel.presets`) must first put the panel in the state they expect.
 - **Never `pkill -f <run id>`** from the agent shell: it kills the shell itself. Stop background tasks properly.
 - `gh pr merge --auto` on a PR into `release` waits for an approval; use `--admin`.
+- **The Nightly's WARP job** (DX12's software adapter) catches shader bugs real GPUs hide: in 26.48.1 a `continue`
+  in `finish.wgsl`'s Recolor loop threw masked renders off. Reproduce with `WGPU_BACKEND=dx12
+  <PREFIX>_GPU_SOFTWARE=1 <PREFIX>_GPU_BACKEND=dx12 cargo test -p lcc-gpu --release --test it -- equivalence
+  --test-threads=1` on Windows; `git bisect --first-parent` over the merges finds the PR.
 - `[skip ci]` PRs bundled into another PR have no changelog entries; cross-check the generated PR list.

@@ -168,14 +168,26 @@ pub enum OsdMode {
     Always,
 }
 
+/// Which part of the app a change or a readout is about, for the two options under Show changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OsdArea {
+    /// A develop setting (a slider, a mask, a profile).
+    Develop,
+    /// Anything else: image metadata, the library, the view.
+    Elsewhere,
+}
+
 /// The on-screen readout in the the app window (TactileBridge's OSD), and the overlay that
 /// reports every change: one look for both.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "OsdFile")]
 pub struct OsdSettings {
-    /// Off switches the overlay off whatever `mode` says (older files have only this).
-    pub enabled: bool,
+    /// Off shows nothing.
     pub mode: OsdMode,
+    /// Show what happens in Develop (with `elsewhere`, never both off: see [`OsdSettings::set_areas`]).
+    pub in_develop: bool,
+    /// Show what happens anywhere else.
+    pub elsewhere: bool,
     /// Its size: 0.5–2 times the standard size.
     pub size: f64,
     /// 0.1–1.
@@ -189,11 +201,65 @@ pub struct OsdSettings {
     pub show_commands: bool,
 }
 
+/// What a settings file holds: the fields as older files wrote them (`enabled`), read once into [`OsdSettings`].
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct OsdFile {
+    /// Older files: false is Off whatever `mode` says.
+    enabled: Option<bool>,
+    mode: OsdMode,
+    in_develop: bool,
+    elsewhere: bool,
+    size: f64,
+    opacity: f64,
+    background: String,
+    display_ms: u32,
+    position: OsdPosition,
+    show_commands: bool,
+}
+
+impl Default for OsdFile {
+    fn default() -> Self {
+        let d = OsdSettings::default();
+        OsdFile {
+            enabled: None,
+            mode: d.mode,
+            in_develop: d.in_develop,
+            elsewhere: d.elsewhere,
+            size: d.size,
+            opacity: d.opacity,
+            background: d.background,
+            display_ms: d.display_ms,
+            position: d.position,
+            show_commands: d.show_commands,
+        }
+    }
+}
+
+impl From<OsdFile> for OsdSettings {
+    fn from(f: OsdFile) -> Self {
+        let mut s = OsdSettings {
+            mode: if f.enabled == Some(false) { OsdMode::Off } else { f.mode },
+            in_develop: true,
+            elsewhere: true,
+            size: f.size,
+            opacity: f.opacity,
+            background: f.background,
+            display_ms: f.display_ms,
+            position: f.position,
+            show_commands: f.show_commands,
+        };
+        s.set_areas(f.in_develop, f.elsewhere);
+        s
+    }
+}
+
 impl Default for OsdSettings {
     fn default() -> Self {
         OsdSettings {
-            enabled: true,
             mode: OsdMode::Always,
+            in_develop: true,
+            elsewhere: true,
             size: 1.0,
             opacity: 0.9,
             background: "#202020".into(),
@@ -205,15 +271,31 @@ impl Default for OsdSettings {
 }
 
 impl OsdSettings {
-    /// The mode in effect (`enabled` off is Off).
-    pub fn effective_mode(&self) -> OsdMode {
-        if self.enabled { self.mode } else { OsdMode::Off }
-    }
-
-    /// Choose a mode (Off also clears `enabled`, so older the app reads it as off).
+    /// Choose a mode.
     pub fn set_mode(&mut self, mode: OsdMode) {
         self.mode = mode;
-        self.enabled = mode != OsdMode::Off;
+    }
+
+    /// Choose the areas: never both off, so both off is read as both on.
+    pub fn set_areas(&mut self, in_develop: bool, elsewhere: bool) {
+        let both_off = !in_develop && !elsewhere;
+        self.in_develop = in_develop || both_off;
+        self.elsewhere = elsewhere || both_off;
+    }
+
+    /// Whether the overlay may show something about `area` that came from a control surface (`from_surface`) or
+    /// from anywhere else. The one answer to "who may show": every reader of the mode asks it.
+    pub fn allows(&self, area: OsdArea, from_surface: bool) -> bool {
+        let area_on = match area {
+            OsdArea::Develop => self.in_develop,
+            OsdArea::Elsewhere => self.elsewhere,
+        };
+        let mode_on = match self.mode {
+            OsdMode::Off => false,
+            OsdMode::Surface => from_surface,
+            OsdMode::Always => true,
+        };
+        mode_on && area_on
     }
 }
 
@@ -452,6 +534,38 @@ fn swap_encoders(map: &mut BTreeMap<String, crate::binding::Binding>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_overlay_reads_older_files_and_never_has_both_areas_off() {
+        use super::{OsdArea, OsdMode, OsdSettings};
+        let read = |j: &str| serde_json::from_str::<OsdSettings>(j).unwrap();
+        // a file from before `mode`: only `enabled`
+        assert_eq!(read(r#"{"enabled": false}"#).mode, OsdMode::Off);
+        assert_eq!(read(r#"{"enabled": true}"#).mode, OsdMode::Always);
+        assert_eq!(read(r#"{"enabled": false, "mode": "always"}"#).mode, OsdMode::Off, "as the older app read it");
+        assert_eq!(read(r#"{"mode": "surface"}"#).mode, OsdMode::Surface);
+        // from before the two options: both on; both off is read as both on
+        let o = read("{}");
+        assert!(o.in_develop && o.elsewhere);
+        let o = read(r#"{"inDevelop": false, "elsewhere": false}"#);
+        assert!(o.in_develop && o.elsewhere);
+        let o = read(r#"{"inDevelop": false}"#);
+        assert!(!o.in_develop && o.elsewhere);
+        // the file never carries `enabled` again
+        assert!(!serde_json::to_string(&o).unwrap().contains("enabled"));
+        // who may show: one answer from the mode and the area
+        let mut o = OsdSettings::default();
+        o.set_areas(false, true);
+        assert!(!o.allows(OsdArea::Develop, false) && o.allows(OsdArea::Elsewhere, false));
+        o.set_areas(true, false);
+        assert!(o.allows(OsdArea::Develop, false) && !o.allows(OsdArea::Elsewhere, true));
+        o.set_areas(false, false);
+        assert!(o.in_develop && o.elsewhere, "both off is both on");
+        o.set_mode(OsdMode::Surface);
+        assert!(!o.allows(OsdArea::Develop, false) && o.allows(OsdArea::Develop, true), "the surface's own readout only");
+        o.set_mode(OsdMode::Off);
+        assert!(!o.allows(OsdArea::Develop, true) && !o.allows(OsdArea::Elsewhere, true));
+    }
+
     #[test]
     fn older_formats_migrate() {
         // format 3 files merge the masks pages

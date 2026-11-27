@@ -56,7 +56,7 @@ Fixes #
   profiles/files, CC BY-NC/ND, no licence); anything permitting derivatives, sharing and commercial use is in —
   AGENTS.md → "Third-party sources". Name the source on a `Sources:` line. -->
 - **New dependencies, `unsafe`, build scripts, network access, spawned processes, deleted files, CI or `xtask` gate
-  changes:** <!-- each with its reason, or "none". Dependencies are pure Rust and use `workspace = true`; actions are
+  changes:** <!-- each with its reason, or "none". Dependencies are Rust (a C/C++ library only as AGENTS.md → "Rust first" allows) and use `workspace = true`; actions are
   pinned by SHA; downloads are checked against a sha256; nothing leaves the machine unless the person asked. -->
 
 ## Checklist
