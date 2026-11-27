@@ -825,18 +825,28 @@ fn call_done(r: &Report<R>) -> usize {
     r.outcomes.iter().filter(|o| !matches!(o, JobOutcome::NotStarted | JobOutcome::Cancelled)).count()
 }
 
-/// Cancel's 5 s rule exempts nothing: a computing job is abandoned after 5 s without progress
-/// (at, just below, just above).
+/// Cancel's 5 s rule counts silence as the stall rule does: a job computing (or flushing) isn't
+/// silent while its span lasts at most 10 × the stall time, so cancel waits for it (well past
+/// 5 s, up to the limit itself); past the limit it is abandoned after 5 s (just below, at).
 #[test]
-fn cancel_abandons_computing_jobs_after_5_s() {
-    for (by, abandoned) in [(CANCEL_SILENCE - 1, false), (CANCEL_SILENCE, true), (CANCEL_SILENCE + 1, true)] {
+fn cancel_waits_for_a_computing_span_up_to_ten_stall_times() {
+    let limit = STALL_WITH_BYTES * COMPUTING_FACTOR;
+    for (after, abandoned) in [(CANCEL_SILENCE - 1, false), (CANCEL_SILENCE, true)] {
         let h = H::new();
         let (call, latch) = computing_jobs(&h);
         call.cancel.store(true, Ordering::SeqCst);
         call.settle(&h, 3);
-        h.advance(by);
+        let mut t = 0;
+        while t < limit {
+            let step = (STALL_WITH_BYTES - SEC).min(limit - t);
+            h.advance(step);
+            t += step;
+            call.settle(&h, 3);
+            assert!(!call.finished(), "computing for {} s", t / SEC);
+        }
+        h.advance(after);
         call.settle(&h, 3);
-        assert_eq!(call.finished(), abandoned, "{by}");
+        assert_eq!(call.finished(), abandoned, "{after} past the span's limit");
         latch.release();
         let r = call.join();
         let cancelled = r.outcomes.iter().filter(|o| matches!(o, JobOutcome::Cancelled)).count();

@@ -958,8 +958,9 @@ impl Sched {
     fn tick(&mut self, now: u64, dt: u64) {
         self.take_cancels();
         // a job's bytes since the last tick are progress on the volume they moved on (a copy's
-        // reads on its source, its writes and read-back on its destination); a copy whose current
-        // call is on its other volume waits there, not here: it pauses this one's clock
+        // reads on its source, its writes and read-back on its destination); a job that isn't
+        // silent there without them ([`held`]) pauses the clocks: the stall clock (every call's
+        // jobs on the volume) and cancel's (each call's own)
         let mut silent: Vec<(u64, usize)> = Vec::new();
         for v in 0..self.vols.len() {
             let Some(pv) = self.vols.get(v) else { continue };
@@ -969,9 +970,8 @@ impl Sched {
             let key = pv.key.clone();
             let running = pv.running.clone();
             let stall_time = self.shared.stall_time(&key);
-            let mut progressed = false;
-            let mut paused_all = true;
-            let mut callers: Vec<(CallId, bool)> = Vec::new();
+            let mut volume = Seen::default();
+            let mut callers: Vec<(CallId, Seen)> = Vec::new();
             for (c, i) in running {
                 let Some(slot) = self.calls.get_mut(&c).and_then(|call| call.slots.get_mut(&i)) else { continue };
                 let Some(st) = slot.state.clone() else { continue };
@@ -987,33 +987,27 @@ impl Sched {
                     more
                 });
                 if mine {
-                    progressed = true;
                     self.shared.bytes_seen(&key, at);
                 }
+                let busy = held(&st, side, now, stall_time);
+                volume.add(mine, st.at_gate() || busy);
                 match callers.iter_mut().find(|(x, _)| *x == c) {
-                    Some(e) => e.1 |= mine,
-                    None => callers.push((c, mine)),
+                    Some(e) => e.1.add(mine, busy),
+                    None => callers.push((c, Seen::of(mine, busy))),
                 }
-                let computing = st.computing_for(now).is_some_and(|s| s <= stall_time.saturating_mul(COMPUTING_FACTOR));
-                let elsewhere = side.is_some_and(|s| st.on() == Some(s.other()));
-                paused_all &= st.at_gate() || computing || elsewhere;
             }
             // cancel's clock counts each call's own jobs here (another call's reads don't keep
             // a cancelled call waiting)
-            for (c, progressed) in callers {
+            for (c, seen) in callers {
                 if let Some(call) = self.calls.get_mut(&c)
                     && call.cancelling
                 {
                     let cv = call_vol(&mut call.vols, v);
-                    cv.cancel_silent = if progressed { 0 } else { cv.cancel_silent.saturating_add(dt) };
+                    cv.cancel_silent = seen.after(cv.cancel_silent, dt);
                 }
             }
             let Some(pv) = self.vols.get_mut(v) else { continue };
-            if progressed {
-                pv.silent = 0;
-            } else if !paused_all {
-                pv.silent = pv.silent.saturating_add(dt);
-            }
+            pv.silent = volume.after(pv.silent, dt);
             silent.push((pv.silent, v));
         }
         // the volume silent longest is judged first: a copy stuck on one of its volumes leaves
@@ -1067,6 +1061,55 @@ impl Sched {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Whether a running job (state `st`; a copy's `side` of the volume judged) that moved no byte on
+/// that volume since the last tick is still not silent there: inside a computing or flushing span
+/// no longer than [`COMPUTING_FACTOR`] stall times, or a copy whose current call is on its other
+/// volume (it waits there, not here). The one rule both clocks use (§5.2): the stall clock also
+/// holds while a job waits at the work gate; cancel's doesn't, as cancel ends such a wait itself
+/// (the job is abandoned, or told to skip its DNG step, at once).
+fn held(st: &JobState, side: Option<Side>, now: u64, stall_time: u64) -> bool {
+    let computing = st.computing_for(now).is_some_and(|s| s <= stall_time.saturating_mul(COMPUTING_FACTOR));
+    let elsewhere = side.is_some_and(|s| st.on() == Some(s.other()));
+    computing || elsewhere
+}
+
+/// What a tick saw of some running jobs on a volume: one moved bytes there, or every one is
+/// [`held`] (no job yet: held).
+#[derive(Clone, Copy)]
+struct Seen {
+    progressed: bool,
+    held: bool,
+}
+
+impl Default for Seen {
+    fn default() -> Seen {
+        Seen { progressed: false, held: true }
+    }
+}
+
+impl Seen {
+    fn of(progressed: bool, held: bool) -> Seen {
+        Seen { progressed, held }
+    }
+
+    fn add(&mut self, progressed: bool, held: bool) {
+        self.progressed |= progressed;
+        self.held &= held;
+    }
+
+    /// A silence clock at `silent` after `dt` more: back to 0 on progress, unchanged while every
+    /// job is held, else counting.
+    fn after(self, silent: u64, dt: u64) -> u64 {
+        if self.progressed {
+            0
+        } else if self.held {
+            silent
+        } else {
+            silent.saturating_add(dt)
         }
     }
 }
