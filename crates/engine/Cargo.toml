@@ -89,7 +89,7 @@ sha2 = { workspace = true }
 lcc-publish = { workspace = true }
 lcc-tether = { workspace = true }
 lcc-credentials = { workspace = true }
-lcc-webgallery = { workspace = true, features = ["sftp"] }
+lcc-webgallery = { workspace = true }
 lcc-plugins = { workspace = true }
 # M14.8: video clips in an export batch
 lcc-video-export = { workspace = true }
@@ -104,6 +104,10 @@ trash = { workspace = true }
 rustix = { workspace = true }
 
 [features]
+# SFTP upload in Web Gallery publishing (russh, whose ring backend compiles C). On for the apps;
+# a library user that only develops photos turns default features off.
+default = ["sftp"]
+sftp = ["lcc-webgallery/sftp"]
 # Opt-in cpal sound for targets without a default path (macOS / Windows always use cpal, Linux and
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
