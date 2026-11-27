@@ -209,7 +209,10 @@ fn a_failed_save_is_retried_by_flush() {
     let d = dir().unwrap();
     std::fs::create_dir_all(&d).unwrap();
     let path = d.join(file_name(body));
-    // a directory where the file goes makes the write fail
+    // the map is in memory first (a folder found when loading would be set aside as unreadable) …
+    let _ = record_pixels(body, "", "M", [100, 100], &shot(499, -30, 0.01, 100), &[hot(1, 1)]);
+    let _ = std::fs::remove_file(&path);
+    // … then a folder where the file goes makes every write fail
     std::fs::create_dir_all(&path).unwrap();
     for k in 0..8 {
         let _ = record_pixels(body, "", "M", [100, 100], &shot(500 + k, k as i64 * 30, 0.01, 100), &[hot(1, 1)]);
