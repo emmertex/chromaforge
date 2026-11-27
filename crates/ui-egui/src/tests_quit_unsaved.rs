@@ -145,3 +145,32 @@ fn damaged_settings_file_is_shown() {
     h.step();
     assert!(!has(&h, "button:noticeOk"));
 }
+
+/// Changes that can't be written are said by a message that stays while that is true and goes when saving works
+/// again (it is not the timed message it was).
+#[test]
+fn the_save_failed_message_stays_until_saving_works_again() {
+    let store = Unplugged::default();
+    let mut s = lcc_engine::Session::new();
+    let stores = LibraryStores { dir: "unplugged".into(), catalog: Box::new(store.clone()), files: Box::new(MemStore::new()), on_disk: false };
+    s.open_library_in(stores, false).unwrap();
+    let mut h = Headless::new(LccApp::new(s, Services { png: None, ..Default::default() }), [1200.0, 800.0], 1.0);
+    h.step();
+    let save_failed = |h: &Headless| h.app.ui.toasts.iter().find(|t| t.key.as_deref() == Some("save-failed")).cloned();
+
+    store.fail.store(true, Ordering::SeqCst);
+    let r = h.request("engine.execute", json!({"command": "album.create", "params": {"name": "Kept"}}), T);
+    assert_eq!(r["ok"], false, "{r}");
+    h.step();
+    let t = save_failed(&h).expect("a message that says so");
+    assert!(t.text.contains("drive unplugged") && t.kind == crate::ToastKind::Sticky, "{t:?}");
+    for _ in 0..1500 {
+        h.step();
+    }
+    assert!(save_failed(&h).is_some(), "still failing: still said");
+
+    store.fail.store(false, Ordering::SeqCst);
+    h.step_until(T, |h| h.app.session.unsaved().is_none());
+    h.step();
+    assert!(save_failed(&h).is_none(), "{:?}", h.app.ui.toasts);
+}

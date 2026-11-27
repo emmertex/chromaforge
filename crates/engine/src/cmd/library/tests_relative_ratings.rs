@@ -50,9 +50,10 @@ fn relative_ratings_clamp_each_photo_and_form_one_history_step() {
     // bounds active fallback explicit targets and errors preserve history
     {
         let mut s = session().unwrap();
+        let steps = s.undo.len();
         assert_eq!(s.execute("photo.decreaseRating", &json!({"ids": [1]})).unwrap()["changed"], 0);
         assert_eq!(s.execute("photo.increaseRating", &json!({"ids": [3]})).unwrap()["changed"], 0);
-        assert!(s.undo.is_empty());
+        assert_eq!(s.undo.len(), steps);
         s.selection = Selection { ids: vec![], active: Some(PhotoId(2)) };
         assert_eq!(s.execute("photo.increaseRating", &json!({})).unwrap()["changed"], 1);
         assert_eq!(ratings(&s).unwrap(), [0, 3, 5, 1]);

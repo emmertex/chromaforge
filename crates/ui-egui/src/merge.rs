@@ -225,7 +225,7 @@ pub fn reported(app: &mut LccApp, r: Result<Value, String>) -> Result<Value, Str
 /// A message on the window (the time of the frame it is said in is not known inside a command).
 fn say(app: &mut LccApp, text: String) {
     let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
-    app.ui.show_toast((text, now + 6.0, None));
+    app.ui.show_toast(crate::Toast::new(crate::ToastKind::Error, text, now));
 }
 
 /// Photo ▸ Photo Merge ▸ Delete Merge Sources: the other frames of the merged pixel-shift photo go to Recently Deleted,
@@ -470,14 +470,14 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     Err(e) => {
                         app.ui.status = e.to_string();
-                        app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
+                        app.toast_error(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
                     }
                 }
                 // a failed set doesn't stop the others
                 while !app.merge.batch.is_empty() {
                     match next_in_batch(app) {
                         Ok(()) => break,
-                        Err(e) => app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what)),
+                        Err(e) => app.toast_error(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what)),
                     }
                 }
             }

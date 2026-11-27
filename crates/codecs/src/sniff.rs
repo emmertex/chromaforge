@@ -191,6 +191,18 @@ fn tiff_is_raw(b: &[u8]) -> bool {
     if a100 {
         return true;
     }
+    // SRF (DSC-F828, DSC-V3): an IFD0 that looks like RGB but holds 12- or 14-bit samples, the raw in
+    // Sony's SRF blocks (same rule as lcc-raw); Sony's own TIFFs have 8- or 16-bit samples
+    let srf = sony
+        && t.ifd(ifd0).is_some_and(|(entries, _)| {
+            entries.iter().find(|e| e.tag == 0x0102 && e.typ == 3).is_some_and(|e| {
+                let at = if e.count <= 2 { Some(e.value_pos) } else { t.u32_at(e.value_pos).map(|p| p as usize) };
+                at.and_then(|p| t.u16_at(p)).is_some_and(|bits| matches!(bits, 12 | 14))
+            })
+        });
+    if srf {
+        return true;
+    }
     let mut stack = vec![ifd0];
     let mut seen = 0;
     while let Some(pos) = stack.pop() {
@@ -243,6 +255,48 @@ fn tiff_is_raw(b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A little-endian TIFF whose IFD0 has Make `make`, three samples of `bits` and RGB photometric.
+    fn rgb_tiff(make: &str, bits: u16) -> Vec<u8> {
+        let mut b = b"II*    ".to_vec();
+        let n: u16 = 3;
+        let data = 8 + 2 + 12 * n as u32 + 4;
+        let make_at = data;
+        let bits_at = data + 8;
+        b.extend(n.to_le_bytes());
+        let entry = |b: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32| {
+            b.extend(tag.to_le_bytes());
+            b.extend(typ.to_le_bytes());
+            b.extend(count.to_le_bytes());
+            b.extend(value.to_le_bytes());
+        };
+        entry(&mut b, 0x0102, 3, 3, bits_at);
+        entry(&mut b, 0x0106, 3, 1, 2);
+        entry(&mut b, 0x010f, 2, make.len() as u32 + 1, make_at);
+        b.extend(0u32.to_le_bytes());
+        let mut name = make.as_bytes().to_vec();
+        name.resize(8, 0);
+        b.extend(name);
+        for _ in 0..3 {
+            b.extend(bits.to_le_bytes());
+        }
+        b
+    }
+
+    /// SRF (Sony DSC-F828 / DSC-V3): RGB-looking IFD0 with 12- or 14-bit samples is a raw, as lcc-raw
+    /// reads it; Sony's 8- and 16-bit TIFFs and other makes' stay TIFFs.
+    #[test]
+    fn sony_srf_is_a_raw() {
+        assert_eq!(sniff(&rgb_tiff("SONY", 14)), Some(Format::RawTiffLike));
+        assert_eq!(sniff(&rgb_tiff("SONY", 12)), Some(Format::RawTiffLike));
+        assert_eq!(sniff(&rgb_tiff("SONY", 8)), Some(Format::Tiff));
+        assert_eq!(sniff(&rgb_tiff("SONY", 16)), Some(Format::Tiff));
+        assert_eq!(sniff(&rgb_tiff("NIKON", 14)), Some(Format::Tiff));
+        // cut short: no panic, still a TIFF
+        let mut cut = rgb_tiff("SONY", 14);
+        cut.truncate(cut.len() - 6);
+        assert!(sniff(&cut).is_some());
+    }
 
     #[test]
     fn magic_numbers() {

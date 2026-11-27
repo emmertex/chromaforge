@@ -337,7 +337,7 @@ fn run_choice(
         match app.run("photo.editIn", p) {
             Ok(r) => results.push(r),
             Err(e) => {
-                app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+                app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
                 return Err(e);
             }
         }
@@ -375,7 +375,7 @@ pub(crate) fn after_command(app: &mut LccApp, id: &str, r: &Value) {
         && let Err(e) = f(path, &editor)
     {
         let now = app.last_time;
-        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4, None));
+        app.ui.show_toast(crate::Toast::new(crate::ToastKind::Error, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now));
     }
 }
 
@@ -481,7 +481,7 @@ fn start_editor(app: &mut LccApp, tool: String, args: Vec<String>, label: String
     });
     if let Err(e) = spawned {
         let now = app.last_time;
-        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4, None));
+        app.ui.show_toast(crate::Toast::new(crate::ToastKind::Error, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now));
     }
 }
 
@@ -539,7 +539,7 @@ pub(crate) fn pump(app: &mut LccApp, ctx: &egui::Context) {
                 ROUND_TRIP.with_borrow_mut(|rt| rt.subscribed.remove(&port));
             }
             // a launch that failed on the worker (no such program, ...) is a toast, as a failed hand-off is
-            Msg::Error(e) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
+            Msg::Error(e) => app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         }
     }
     reload(app, ctx, changed);
@@ -878,7 +878,7 @@ pub(crate) fn run_preset(app: &mut LccApp, ctx: &egui::Context, p: &Value) -> Re
                 app.toast(ctx, what.to_string());
             }
         }
-        Err(e) => app.toast(ctx, e.clone()),
+        Err(e) => app.toast_error(ctx, e.clone()),
     }
     r
 }
@@ -1402,7 +1402,7 @@ mod tests {
         // Second try fails
         failed.store(true, std::sync::atomic::Ordering::SeqCst);
         after_command(&mut h.app, "photo.editIn", &result);
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert!(toast.contains("Couldn't open the editor") && toast.contains("no such editor"), "{toast:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1414,7 +1414,7 @@ mod tests {
         let tx = ROUND_TRIP.with_borrow(|rt| rt.tx.clone());
         tx.send(Msg::Error("no such editor".into())).unwrap();
         h.step();
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert!(toast.contains("Couldn't open the editor") && toast.contains("no such editor"), "{toast:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1582,7 +1582,7 @@ mod tests {
         let r = h.app.run(PRESET_COMMAND, json!({"preset": "Gimp", "mode": "sourceFile"})).unwrap();
         assert_eq!(r["opened"].as_u64(), Some(1));
         assert_eq!(started.lock().unwrap().first().map(|f| f.0.clone()), Some(vec![raw.to_string_lossy().to_string()]));
-        assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("Gimp")), "said what opened: {:?}", h.app.ui.toast());
+        assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("Gimp")), "said what opened: {:?}", h.app.ui.toast());
 
         // Edit a Copy is greyed out for a raw, and running it anyway says why, starting nothing
         started.lock().unwrap().clear();
@@ -1597,7 +1597,7 @@ mod tests {
         let e = h.app.run(PRESET_COMMAND, json!({"preset": "PhotoLab", "mode": "original"})).unwrap_err();
         assert!(e.contains("DSC_0001.NEF") && e.contains("an editor can't"), "{e}");
         assert_eq!(started.lock().unwrap().len(), 1, "the other photo was opened: {:?}", started.lock().unwrap());
-        assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("DSC_0001.NEF")), "{:?}", h.app.ui.toast());
+        assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("DSC_0001.NEF")), "{:?}", h.app.ui.toast());
 
         // nothing saved under that name: a clear error, nothing made or started
         assert!(h.app.run(PRESET_COMMAND, json!({"preset": "nope"})).is_err());

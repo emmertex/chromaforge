@@ -118,7 +118,7 @@ fn apply_on_a_selection_reports_and_create_says_why_it_cant() {
     scroll_to(&mut h, "button:vignettingCalibrationApply");
     click(&mut h, "button:vignettingCalibrationApply");
     h.step();
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(toast.contains('2'), "both photos without a reference are counted: {toast}");
     scroll_to(&mut h, "button:vignettingCalibrationCreate");
     click(&mut h, "button:vignettingCalibrationCreate");

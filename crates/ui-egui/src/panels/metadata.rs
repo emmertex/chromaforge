@@ -387,7 +387,7 @@ fn toolbar(app: &mut LccApp, ui: &mut egui::Ui, ids: &[u64]) {
                 if ui.button(n).clicked()
                     && let Err(e) = app.run("metadata.applyPreset", json!({"name": n, "ids": ids}))
                 {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
             }
             if !names.is_empty() {
@@ -609,7 +609,7 @@ pub(crate) fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], id
         && !(shared.is_none() && text.trim().is_empty())
         && let Err(e) = app.run("photo.setMeta", json!({"ids": ids, "gps": text.trim()}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     if let [p] = photos
         && let Some((la, lo)) = p.meta.gps
@@ -623,7 +623,7 @@ pub(crate) fn gps(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>], id
             {
                 let url = format!("https://www.openstreetmap.org/?mlat={la:.6}&mlon={lo:.6}#map=15/{la:.6}/{lo:.6}");
                 if let Err(e) = crate::links::open(app, &url) {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
             }
         });

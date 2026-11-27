@@ -1156,20 +1156,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // --- Recolor: each mask's main colour takes its target, keeping shading
     // (lcc_pipeline::recolor, after the colour grading, as the CPU finish does)
+    // (no `continue` here: WARP, DX12's software adapter, ran this loop's skipped masks wrongly and
+    // threw the render off by many LSB even with no Recolor at all)
     for (var m = 0u; m < nm; m++) {
-        let t = pu(F_MASK_OFF) + m * MASK_TERMS;
-        if (aux[t + MASK_RECOLOR] <= 0.0) {
-            continue;
-        }
+        let r = pu(F_MASK_OFF) + m * MASK_TERMS + MASK_RECOLOR;
         let a = masks[m * mn + mi];
-        if (a <= 0.0) {
-            continue;
+        if (aux[r] > 0.0 && a > 0.0) {
+            let tgt = vec4<f32>(aux[r + 1u], aux[r + 2u], aux[r + 3u], aux[r]);
+            let h = vec2<f32>(aux[r + 6u], aux[r + 7u]);
+            let win = vec2<f32>(aux[r + 8u], aux[r + 9u]);
+            d = oklab_inv(recolor_one(oklab(d), tgt, aux[r + 4u], aux[r + 5u], h, win, a));
         }
-        let r = MASK_RECOLOR + t;
-        let tgt = vec4<f32>(aux[r + 1u], aux[r + 2u], aux[r + 3u], aux[r]);
-        let h = vec2<f32>(aux[r + 6u], aux[r + 7u]);
-        let win = vec2<f32>(aux[r + 8u], aux[r + 9u]);
-        d = oklab_inv(recolor_one(oklab(d), tgt, aux[r + 4u], aux[r + 5u], h, win, a));
     }
 
     // --- process V10: the Tone Curve in its wide space, before the vignette and the gamut map (`finish::CurveSpace::apply`)
