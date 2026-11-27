@@ -49,6 +49,8 @@ lcc-ml = { workspace = true }
 miniz_oxide = { workspace = true }
 lcc-merge = { workspace = true }
 lcc-genfill = { workspace = true }
+# Crop ▸ Fill Edges: content-aware fill of a crop's area past the photo
+lcc-inpaint = { workspace = true }
 lcc-geocode = { workspace = true }
 lcc-psd = { workspace = true }
 lcc-actions = { workspace = true }
@@ -143,8 +145,6 @@ lcc-fidelity = { workspace = true }
 lcc-testkit = { workspace = true }
 # the catalog-upgrade test marks a store as an older build left it
 redb = { workspace = true }
-# genfill_check example: the mock provider fills with content-aware fill
-lcc-inpaint = { workspace = true }
 # HDR JPEG XL tests read the file's colour encoding
 jxl-oxide = { workspace = true }
 # the updater's end-to-end test builds a release with a real checksum, signed with a throwaway key

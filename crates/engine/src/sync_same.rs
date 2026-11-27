@@ -164,7 +164,7 @@ pub(crate) fn synced_crop(new: &Crop, adims: (f64, f64), odims: (f64, f64)) -> C
     let own = new.aspect.map(|(x, y)| f64::from(x) / f64::from(y.max(1))).or(Some(px.width() / px.height()));
     let own = own.filter(|s| s.is_finite() && *s > 0.0);
     let (Some(own), false) = (own, uncropped) else {
-        return Crop { geometry: crop_fit_angle(ow, oh, angle, None), aspect, flip_h: new.flip_h, flip_v: new.flip_v };
+        return Crop { geometry: crop_fit_angle(ow, oh, angle, None), aspect, flip_h: new.flip_h, flip_v: new.flip_v, extend: false };
     };
     // tightness: the crop's size against the largest crop of its own shape on the active photo
     let largest = crop_fit_angle(aw, ah, angle, Some(own)).rect_px(aw, ah);
@@ -194,7 +194,7 @@ pub(crate) fn synced_crop(new: &Crop, adims: (f64, f64), odims: (f64, f64)) -> C
         }
         at(want.lerp(mid, hi))
     };
-    Crop { geometry, aspect, flip_h: new.flip_h, flip_v: new.flip_v }
+    Crop { geometry, aspect, flip_h: new.flip_h, flip_v: new.flip_v, extend: false }
 }
 
 /// The last History batch id handed out (process-wide, so two sessions never share one).

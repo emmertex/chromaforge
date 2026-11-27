@@ -118,6 +118,12 @@ impl PatchSource for PhotoPatches {
         }
         self.cache.get(&self.dir.join(format!("{id}-{variant}.lcpatch")))
     }
+    fn edge_patch(&self, id: &str, variant: u32) -> Option<Arc<PatchLayer>> {
+        if !GenFill::valid_id(id) {
+            return None;
+        }
+        self.cache.get(&self.dir.join(crate::expand::EDGE_DIR).join(format!("{id}-{variant}.lcpatch")))
+    }
 }
 
 /// A session's own folder name (a new generation id).
@@ -794,7 +800,7 @@ impl crate::Session {
 
     /// The patches photo `p` shows, for its renders (`None` when no spot shows one).
     pub fn genfill_store(&self, p: &Photo) -> Option<GenStore> {
-        if !p.develop.spots.iter().any(|s| s.shown_gen().is_some()) {
+        if !p.develop.spots.iter().any(|s| s.shown_gen().is_some()) && p.develop.shown_edge_fill().is_none() {
             return None;
         }
         Some(GenStore(Arc::new(PhotoPatches { dir: self.genfill_dir(p.id), cache: self.genfill.cache.clone() })))
