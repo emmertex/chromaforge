@@ -99,6 +99,197 @@ pub fn probe_cancellable_with_progress(
     unread.into_iter().zip(probed).collect()
 }
 
+/// Reads originals batch after batch while the files of the batches that follow are read ahead
+/// (I/O spec §5.6): the batches stay what [`unread`] lists, applied in id order, so their
+/// results, duplicate pairs and journal batches are what [`probe_cancellable_with_progress`] per
+/// batch gives; only the reads are interleaved — across the volumes the next batches are on, and
+/// while a batch is applied. A read ahead for a photo the next batch doesn't list (the library
+/// changed meanwhile) is dropped; one the next batch lists is used as read, and the rest of the
+/// batch is read then.
+pub struct OriginalsReader {
+    probe: FileProbe,
+    #[cfg(not(target_arch = "wasm32"))]
+    ahead: Ahead,
+}
+
+impl std::fmt::Debug for OriginalsReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OriginalsReader").finish_non_exhaustive()
+    }
+}
+
+/// Files read ahead after a batch: at most this many batches' worth.
+pub const AHEAD_BATCHES: usize = 2;
+
+#[cfg(not(target_arch = "wasm32"))]
+type ProbeResult = std::result::Result<ProbeInfo, String>;
+
+/// A file read ahead: its read under way, or its result.
+#[cfg(not(target_arch = "wasm32"))]
+enum Ahead1 {
+    Fed,
+    Arrived(Box<ProbeResult>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct Ahead {
+    ctx: std::sync::Arc<crate::io_sched::IoContext>,
+    stream: Option<crate::io_sched::pool::Stream<ProbeResult>>,
+    reads: std::collections::HashMap<(PhotoId, String), Ahead1>,
+    by_index: std::collections::HashMap<usize, (PhotoId, String)>,
+}
+
+impl OriginalsReader {
+    pub fn new(probe: FileProbe) -> OriginalsReader {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            OriginalsReader::in_context(probe, crate::io_sched::IoContext::global().clone())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            OriginalsReader { probe }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn in_context(probe: FileProbe, ctx: std::sync::Arc<crate::io_sched::IoContext>) -> OriginalsReader {
+        OriginalsReader {
+            probe,
+            ahead: Ahead { ctx, stream: None, reads: std::collections::HashMap::new(), by_index: std::collections::HashMap::new() },
+        }
+    }
+
+    /// Read `batch` (as [`probe_cancellable_with_progress`] would: its results in its order,
+    /// `progress` with the files done, stopping before more once `cancel` is set) and start reading
+    /// `next` (the photos [`unread`] would list after it, at most [`AHEAD_BATCHES`] batches of
+    /// them) ahead. A cancel drops what was read ahead.
+    pub fn read(
+        &mut self,
+        batch: Vec<Unread>,
+        next: &[Unread],
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: &dyn Fn(usize),
+    ) -> Vec<(Unread, std::result::Result<ProbeInfo, String>)> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = next;
+            probe_cancellable_with_progress(&self.probe, batch, cancel, progress)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.read_ahead(batch, next, cancel, progress)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_ahead(
+        &mut self,
+        batch: Vec<Unread>,
+        next: &[Unread],
+        cancel: &std::sync::atomic::AtomicBool,
+        progress: &dyn Fn(usize),
+    ) -> Vec<(Unread, std::result::Result<ProbeInfo, String>)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        // (cancelled before it starts: nothing is read, as probe_all reads nothing)
+        if cancel.load(Relaxed) {
+            self.drop_ahead();
+            return batch.into_iter().map(|u| (u, Err("not probed".to_string()))).collect();
+        }
+        let key = |u: &Unread| (u.id, u.path.clone());
+        let limit = batch.len().saturating_mul(AHEAD_BATCHES);
+        let next = next.get(..limit.min(next.len())).unwrap_or(next);
+        // what was read ahead for photos listed neither now nor next is dropped
+        let keep: std::collections::HashSet<(PhotoId, String)> = batch.iter().chain(next).map(key).collect();
+        let a = &mut self.ahead;
+        a.reads.retain(|k, _| keep.contains(k));
+        a.by_index.retain(|_, k| keep.contains(k));
+        let fresh: Vec<&Unread> = batch.iter().chain(next).filter(|u| !a.reads.contains_key(&key(u))).collect();
+        if !fresh.is_empty() {
+            let probe = self.probe.clone();
+            let jobs = fresh
+                .iter()
+                .map(|u| {
+                    let (probe, path) = (probe.clone(), u.path.clone());
+                    crate::io_sched::IoJob::read(u.path.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> ProbeResult + Send>)
+                })
+                .collect();
+            let ctx = a.ctx.clone();
+            let stream = a
+                .stream
+                .get_or_insert_with(|| crate::io_sched::pool::Stream::open(&ctx, crate::import::workers(usize::MAX), std::result::Result::is_ok));
+            match stream.submit(jobs) {
+                Ok(r) => {
+                    for (k, u) in fresh.iter().enumerate() {
+                        let i = r.start.saturating_add(k);
+                        a.by_index.insert(i, key(u));
+                        a.reads.insert(key(u), Ahead1::Fed);
+                    }
+                }
+                // (from inside a file job: refused, as probe_all refuses it)
+                Err(e) => {
+                    for u in fresh {
+                        a.reads.insert(key(u), Ahead1::Arrived(Box::new(Err(format!("{}: {e}", u.path)))));
+                    }
+                }
+            }
+        }
+        let wanted: std::collections::HashSet<(PhotoId, String)> = batch.iter().map(key).collect();
+        let (mut done, mut forwarded) = (0usize, false);
+        let have = |a: &Ahead| wanted.iter().filter(|k| matches!(a.reads.get(*k), Some(Ahead1::Arrived(_)))).count();
+        done += have(&self.ahead);
+        progress(done);
+        while have(&self.ahead) < wanted.len() {
+            if !forwarded && cancel.load(Relaxed) {
+                // the batch's reads not started never start, and nothing more is read ahead
+                if let Some(s) = self.ahead.stream.as_mut() {
+                    s.cancel();
+                }
+                forwarded = true;
+            }
+            let a = &mut self.ahead;
+            let Some(s) = a.stream.as_mut() else { break };
+            let Some((i, o, _)) = s.recv_timeout(a.ctx.tick) else { continue };
+            let counted = !matches!(o, crate::io_sched::JobOutcome::NotStarted | crate::io_sched::JobOutcome::Cancelled);
+            let Some(k) = a.by_index.remove(&i) else { continue };
+            let r = crate::import::probe_outcome(o, &k.1, "not probed").map_err(crate::import::ProbeError::into_message);
+            if wanted.contains(&k) && counted {
+                done += 1;
+                progress(done);
+            }
+            a.reads.insert(k, Ahead1::Arrived(Box::new(r)));
+        }
+        let out = batch
+            .into_iter()
+            .map(|u| {
+                let r = match self.ahead.reads.remove(&key(&u)) {
+                    Some(Ahead1::Arrived(r)) => *r,
+                    _ => Err("not probed".to_string()),
+                };
+                (u, r)
+            })
+            .collect();
+        if forwarded {
+            self.drop_ahead();
+        }
+        out
+    }
+
+    /// Forget what was read ahead (a cancelled stream reads nothing more: the next read opens a
+    /// new one).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drop_ahead(&mut self) {
+        self.ahead.stream = None;
+        self.ahead.reads.clear();
+        self.ahead.by_index.clear();
+    }
+
+    /// Files read ahead and not used yet (tests).
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fn ahead_len(&self) -> usize {
+        self.ahead.reads.len()
+    }
+}
+
 /// What [`apply`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReadOriginals {
@@ -172,14 +363,20 @@ fn read_originals(s: &mut Session, p: &Value) -> Result<Value> {
     let mut tried = HashSet::new();
     let (mut updated, mut unreadable, mut checked, mut duplicates) = (Vec::new(), 0usize, 0usize, Vec::new());
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // the next batches' files are read while one is applied (and across their volumes)
+    let mut reader = OriginalsReader::new(fp);
     while checked < limit {
-        let batch = unread(&s.catalog, &tried, BATCH.min(limit - checked));
+        let n = BATCH.min(limit - checked);
+        // (one listing: this batch, then the ones after it, as far as the limit goes)
+        let ahead = n.saturating_mul(AHEAD_BATCHES).min(limit - checked - n);
+        let mut batch = unread(&s.catalog, &tried, n.saturating_add(ahead));
+        let next = batch.split_off(n.min(batch.len()));
         if batch.is_empty() {
             break;
         }
         checked = checked.saturating_add(batch.len());
         tried.extend(batch.iter().map(|u| u.id));
-        let r = apply(s, probe_cancellable_with_progress(&fp, batch, &cancel, &|_| {}))?;
+        let r = apply(s, reader.read(batch, &next, &cancel, &|_| {}))?;
         updated.extend(r.updated);
         unreadable = unreadable.saturating_add(r.unreadable);
         duplicates.extend(r.duplicates);
@@ -324,6 +521,137 @@ mod tests {
         // a session without file access refuses instead of marking everything read
         let mut bare = Session::new();
         assert!(bare.execute("library.readOriginals", &json!({})).is_err());
+    }
+
+    /// A probe giving files under `dup` one content (duplicates of each other), failing `offline`
+    /// files, counting its calls per path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn probe_counting(calls: Arc<std::sync::Mutex<Vec<String>>>) -> FileProbe {
+        Arc::new(move |path: &str| {
+            calls.lock().unwrap().push(path.to_string());
+            if path.contains("offline") {
+                return Err(format!("{path}: not found"));
+            }
+            let hash = if path.contains("dup") { "hash-dup".to_string() } else { format!("hash-{path}") };
+            Ok(ProbeInfo { width: 60, height: 40, file_size: 1234, format: "NEF".into(), content_hash: Some(hash), ..Default::default() })
+        })
+    }
+
+    /// Photos on two volumes (`/a`, `/b`), in id order alternating runs of each, with duplicates
+    /// and offline files among them.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn two_volume_photos() -> Vec<Photo> {
+        (1..=23u64)
+            .map(|i| {
+                let vol = if (i / 4) % 2 == 0 { "a" } else { "b" };
+                let name = match i {
+                    3 | 11 | 19 => format!("dup{i}"),
+                    7 | 16 => format!("offline{i}"),
+                    _ => format!("p{i}"),
+                };
+                unread_photo(i, &format!("/{vol}/{name}.NEF"))
+            })
+            .collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn context() -> Arc<crate::io_sched::IoContext> {
+        use crate::io_sched::clock::{FakeClock, SEC};
+        let clock = Arc::new(FakeClock::default());
+        clock.advance(1000 * SEC);
+        let points = vec!["/".to_string(), "/a".to_string(), "/b".to_string()];
+        let reader: crate::io_sched::mounts::MountReader = Arc::new(move || Some(lcc_catalog::folders::Mounts::from_points(points.clone(), false)));
+        Arc::new(crate::io_sched::IoContext::new(clock, reader, std::time::Duration::from_millis(1)))
+    }
+
+    /// The batches' results (updated, unreadable, duplicate pairs) and the photos' hashes after.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_all(s: &mut Session, batch: usize, reader: Option<&mut OriginalsReader>, probe: &FileProbe) -> (Vec<ReadOriginals>, Vec<Option<String>>) {
+        let mut tried = HashSet::new();
+        let mut out = Vec::new();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut reader = reader;
+        loop {
+            let mut listed = unread(&s.catalog, &tried, batch * (1 + AHEAD_BATCHES));
+            let next = listed.split_off(batch.min(listed.len()));
+            if listed.is_empty() {
+                break;
+            }
+            tried.extend(listed.iter().map(|u| u.id));
+            let results = match reader.as_deref_mut() {
+                Some(r) => r.read(listed, &next, &cancel, &|_| {}),
+                None => probe_cancellable_with_progress(probe, listed, &cancel, &|_| {}),
+            };
+            out.push(apply(s, results).unwrap());
+        }
+        let hashes = s.catalog.photos().map(|p| p.content_hash.clone()).collect();
+        (out, hashes)
+    }
+
+    /// The batches, their results, duplicate pairs and the photos' facts are those of one batch
+    /// after another; only the reads run ahead (each file read once).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn reading_ahead_gives_the_batches_of_one_after_another() {
+        for batch in [1, 3, 4, 7] {
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let probe = probe_counting(calls.clone());
+            let mut old = session_with(two_volume_photos(), probe.clone());
+            let want = read_all(&mut old, batch, None, &probe);
+            let mut new = session_with(two_volume_photos(), probe.clone());
+            let before = calls.lock().unwrap().len();
+            let mut reader = OriginalsReader::in_context(probe.clone(), context());
+            let got = read_all(&mut new, batch, Some(&mut reader), &probe);
+            assert_eq!(got, want, "batches of {batch}");
+            assert!(want.0.iter().any(|r| !r.duplicates.is_empty()), "duplicate pairs are found");
+            let mut read: Vec<String> = calls.lock().unwrap()[before..].to_vec();
+            read.sort();
+            let n = read.len();
+            read.dedup();
+            assert_eq!((n, read.len()), (23, 23), "batches of {batch}: each file read once");
+        }
+    }
+
+    /// At most `AHEAD_BATCHES` batches' worth of files are read ahead (at, just below, just above).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn reads_ahead_at_most_two_batches() {
+        let probe = probe_hashing(Arc::new(AtomicUsize::new(0)));
+        let batch: Vec<Unread> = (1..=3).map(|i| Unread { id: PhotoId(i), path: format!("/a/{i}.NEF") }).collect();
+        let limit = batch.len() * AHEAD_BATCHES;
+        for (n, want) in [(limit - 1, limit - 1), (limit, limit), (limit + 1, limit)] {
+            let next: Vec<Unread> = (100..100 + n as u64).map(|i| Unread { id: PhotoId(i), path: format!("/b/{i}.NEF") }).collect();
+            let mut reader = OriginalsReader::in_context(probe.clone(), context());
+            let r = reader.read(batch.clone(), &next, &Arc::new(AtomicBool::new(false)), &|_| {});
+            assert!(r.iter().all(|(_, x)| x.is_ok()));
+            assert_eq!(reader.ahead_len(), want, "{n} listed next");
+        }
+    }
+
+    /// A read ahead for a photo the next batch doesn't list is dropped (the library changed); the
+    /// next batch's own photos are read then. A cancel drops what was read ahead.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_stale_read_ahead_is_dropped_and_cancel_drops_the_rest() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = probe_counting(calls.clone());
+        let u = |i: u64, p: &str| Unread { id: PhotoId(i), path: p.into() };
+        let mut reader = OriginalsReader::in_context(probe, context());
+        let cancel = Arc::new(AtomicBool::new(false));
+        reader.read(vec![u(1, "/a/1.NEF")], &[u(2, "/a/2.NEF"), u(3, "/b/3.NEF")], &cancel, &|_| {});
+        // photo 2 was relinked meanwhile: listed with another file, read again; 3 is used as read
+        let r = reader.read(vec![u(2, "/b/2-moved.NEF"), u(3, "/b/3.NEF")], &[], &cancel, &|_| {});
+        assert_eq!(r[1].1.as_ref().unwrap().content_hash.as_deref(), Some("hash-/b/3.NEF"));
+        let read = calls.lock().unwrap().clone();
+        assert_eq!(read.iter().filter(|p| p.ends_with("3.NEF")).count(), 1, "{read:?}");
+        assert!(read.contains(&"/b/2-moved.NEF".to_string()));
+        assert_eq!(reader.ahead_len(), 0);
+        // cancelled: nothing is read, and what was read ahead is forgotten
+        reader.read(vec![u(4, "/a/4.NEF")], &[u(5, "/a/5.NEF")], &cancel, &|_| {});
+        cancel.store(true, Ordering::SeqCst);
+        let r = reader.read(vec![u(5, "/a/5.NEF")], &[], &cancel, &|_| {});
+        assert!(r[0].1.is_err(), "cancelled: not read");
+        assert_eq!(reader.ahead_len(), 0);
     }
 
     #[test]

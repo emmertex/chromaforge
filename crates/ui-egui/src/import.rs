@@ -554,21 +554,23 @@ impl ImportRun {
         let ctx = ctx.clone();
         let work = move || {
             let files = job.expand(&queue);
-            for chunk in files.chunks(lcc_engine::import::batch_size()) {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                let prepared = match lcc_engine::guard::catch("import", || job.prepare_files(chunk.to_vec(), &cancel)) {
-                    Ok(p) => p,
-                    Err(_) => break, // logged; the files readied so far are added
-                };
-                if let Err(unsent) = tx.send(prepared) {
-                    // the import was dropped: nothing will add these, so take back what a Move placed
-                    unsent.0.rollback();
-                    break;
-                }
-                ctx.request_repaint();
-            }
+            // batch by batch, in order, while every source's reads and copies run at once
+            let streamed = lcc_engine::guard::catch("import", || {
+                job.prepare_stream(files, &cancel, |prepared| match tx.send(prepared) {
+                    Ok(()) => {
+                        ctx.request_repaint();
+                        true
+                    }
+                    Err(unsent) => {
+                        // the import was dropped: nothing will add these, so take back what a Move
+                        // placed (the batches not handed over yet are taken back the same way)
+                        unsent.0.rollback();
+                        false
+                    }
+                })
+            });
+            // (a panic is logged; the batches readied so far are added)
+            drop(streamed);
             ctx.request_repaint();
         };
         std::thread::Builder::new().name("lc-import".into()).spawn(work).map(|_| Runner::Thread(rx)).map_err(|e| format!("could not start: {e}"))

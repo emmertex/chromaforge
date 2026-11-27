@@ -20,6 +20,9 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
   reported as "volume not responding" while the others are read; Cancel returns even while a drive hangs; a file that
   crashes the reader fails alone. Work reading the same drive at the same time (the review beside Reading originals,
   say) shares that drive's readers and takes turns, instead of each adding its own.
+- With Copy or Move, several cards or drives are copied into the destination side by side; names, rename sequence
+  numbers, duplicates (a backup card's copy of a file already copied) and the order photos join the library stay
+  what they were, and each card is read only a little ahead of its copies.
 - During Copy or Move, a card or destination drive that stops answering stops only its own copies: those not yet
   started fail "volume not responding", one under way is reported "outcome unknown" (it may still finish, leaving a
   file in the destination folder that the library doesn't list; the original is always kept). The message at the end

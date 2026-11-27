@@ -1,11 +1,13 @@
-//! The I/O scheduler (`adaptive-io-spec` PRs 1–3): bulk file reads and copies queued per volume,
+//! The I/O scheduler (`adaptive-io-spec` PRs 1–4): bulk file reads and copies queued per volume,
 //! so a call over several drives or cards reads them at once, and a volume that stops answering
 //! is contained (its files fail "volume not responding"; the others go on; cancel returns).
 //!
 //! One pool for the process ([`pool`], PR 3): every call's jobs go to one scheduler ([`sched`])
 //! run by a supervisor thread, with today's limits ([`crate::import::workers`]) shared by every
 //! call on a volume; the abandoned-job registry and the volumes' history ([`shared`]) are
-//! process-wide. The work gate's job-aware wait is
+//! process-wide. An import's reads ahead and copies go through it as streams
+//! (`import/stream.rs`, PR 4), as do the originals read ahead after a Lightroom import
+//! ([`crate::cmd::read_originals::OriginalsReader`]). The work gate's job-aware wait is
 //! [`crate::memory::WorkGate::acquire_for_job`]; byte counting is [`crate::bounded_read`]'s capped
 //! counting reader.
 

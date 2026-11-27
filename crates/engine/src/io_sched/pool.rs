@@ -313,6 +313,11 @@ impl<T: Send + 'static> Stream<T> {
         self
     }
 
+    /// The volume `path` is on, as this stream keys its jobs (from the mount list it read).
+    pub(crate) fn volume_of(&self, path: &str) -> lcc_catalog::folders::VolumeKey {
+        volume_key(path, &self.mounts)
+    }
+
     /// Whether this stream runs its own scheduler (the pool couldn't run).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn own_scheduler(&self) -> bool {

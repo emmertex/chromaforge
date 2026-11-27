@@ -6,8 +6,8 @@
 //! can't be read (an offline drive) is not tried again until then.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lcc_catalog::PhotoId;
 use lcc_engine::cmd::read_originals;
@@ -34,6 +34,9 @@ pub struct OriginalsState {
     total: u64,
     /// How many photos had been tried when this run started.
     run_start: usize,
+    /// Reads the batches, the next ones' files read ahead meanwhile (kept from batch to batch;
+    /// dropped when the run stops).
+    reader: Option<Arc<Mutex<read_originals::OriginalsReader>>>,
 }
 
 /// Look again for originals to read (called when an import has added photos without reading them).
@@ -60,10 +63,13 @@ pub fn tick(app: &mut LccApp) {
         app.ui.originals.idle = true;
         return;
     };
-    let batch = read_originals::unread(&app.session.catalog, &state.tried, BATCH);
+    // one listing: this batch, then the photos after it, whose files are read ahead
+    let mut batch = read_originals::unread(&app.session.catalog, &state.tried, BATCH.saturating_mul(1 + read_originals::AHEAD_BATCHES));
+    let next = batch.split_off(BATCH.min(batch.len()));
     if batch.is_empty() {
         app.ui.originals.idle = true;
         app.ui.originals.total = 0;
+        app.ui.originals.reader = None;
         return;
     }
     let state = &mut app.ui.originals;
@@ -78,14 +84,14 @@ pub fn tick(app: &mut LccApp) {
     let done_before = (state.tried.len().saturating_sub(state.run_start) as u64).min(total);
     state.tried.extend(batch.iter().map(|u| u.id));
     state.running = true;
+    let reader = state.reader.get_or_insert_with(|| Arc::new(Mutex::new(read_originals::OriginalsReader::new(probe)))).clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let stopped = cancel.clone();
     let work = move |task: lcc_engine::activity::TaskHandle| {
         task.progress(done_before, total);
-        read_originals::probe_cancellable_with_progress(&probe, batch, &worker_cancel, &|done| {
-            task.progress(done_before.saturating_add(done as u64).min(total), total)
-        })
+        let mut reader = reader.lock().unwrap_or_else(PoisonError::into_inner);
+        reader.read(batch, &next, &worker_cancel, &|done| task.progress(done_before.saturating_add(done as u64).min(total), total))
     };
     let done = move |app: &mut LccApp, _ctx: &egui::Context, results| {
         if app.session.library_generation() != library {
@@ -96,6 +102,7 @@ pub fn tick(app: &mut LccApp) {
         if stopped.load(Ordering::Relaxed) {
             app.ui.originals.idle = true;
             app.ui.originals.total = 0;
+            app.ui.originals.reader = None;
         }
         match read_originals::apply(&mut app.session, results) {
             Ok(r) => {
