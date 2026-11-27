@@ -86,7 +86,9 @@ the keyboard focus, so Return presses it. Things that can go wrong:
 - An update installed through the Windows installer (`.msi`): the app quits, the installer runs and
   the app starts again when it is done. When the installer wants a Windows restart as part of it
   (rare), the app starts after that restart instead. Start-menu shortcuts — and taskbar entries
-  pinned from them — keep working across updates.
+  pinned from them — keep working across updates. If the installer fails, or Windows' permission prompt
+  is declined, nothing is started; the next start writes the reason to the app's log, and the installer's
+  own log is `update-install.log` beside the download.
 - A Windows copy unpacked from the portable zip (with or without `portable.txt`) updates itself: the new zip is
   unpacked beside the program, its files replace the copy's own, and the new version starts once the app has quit.
   Only the zip's files are replaced; `portable.txt`, the portable data folder and anything else you put there stay.

@@ -11,7 +11,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## File Settings ▸ Format
 - **JPEG**: **Quality** 1–100; **Limit file size (KB)** finds the quality that fits; when it has to go below **Quality**, the message after the export and the command-line tool say which quality it settled on.
-- **PNG**, **TIFF**, **PSD** (flat, 8/16-bit, no layers), **WebP**, **AVIF**.
+- **PNG**, **TIFF**, **PSD** (flat, 8/16-bit, no layers), **AVIF**.
+- **WebP**: lossy at **Quality** 1–100 by default; tick **Lossless** for an exact copy (bigger files). Lossy WebP needs a desktop build; the web and Android apps export lossless WebP only and show the box ticked and greyed out. Presets saved before lossy WebP existed now export lossy; tick **Lossless** in them to keep the old output.
 - **JPEG XL**: native builds only; lossy or lossless, 8/16-bit.
 - **OpenEXR**: the finished photo scene-linear for compositing and grading (Nuke, Resolve, Blender). **Bit depth** 16-bit half float (default) or 32-bit float; **Primaries** Linear Rec. 2020 (the working space) or ACEScg. Lossless ZIP compression; the primaries and white point are written into the file's `chromaticities` attribute. Photos edited in HDR keep their values above white with **HDR output** on; others are clipped at white like any other export. Transparency is flattened onto white.
 
