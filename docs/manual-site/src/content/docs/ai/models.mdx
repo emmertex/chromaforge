@@ -197,6 +197,7 @@ Write-Host "SAM 3 installed successfully in $Dest"
 ## Hardware
 
 - **GPU** is used where it gives the same result faster: Metal on macOS for SAM 3, wgpu (Vulkan, DirectX 12, Metal) for denoise, search and face models. Elsewhere SAM runs on the CPU.
+- **ONNX Runtime**: the Windows, Linux (x86-64 and ARM64) and Apple silicon downloads include ONNX Runtime with its WebGPU plug-in. AI Denoise and AI Super Resolution use it first on the graphics card AI work goes to (DirectX 12 on Windows, Vulkan on Linux, Core ML or Metal on a Mac, or CUDA on an NVIDIA card that has it installed), then the built-in GPU code, then the CPU. Each is checked against the CPU result before it is used. Settings ▸ **AI Denoise** shows which one runs, for example "ONNX Runtime (WebGPU)". On Linux, WebGPU needs the Vulkan loader (`libvulkan1` or `vulkan-loader`).
 - Settings ▸ **AI Denoise** ▸ Speed: Automatic, Graphics card or Processor. Settings ▸ **AI Models** and **Performance**: choose the device for search (Automatic, a named card, or CPU). Settings ▸ **Faces**: choose **Face models device** (Automatic, CPU, or a specific card) and **GPU precision** (Automatic, FP16, or FP32).
 - A GPU error falls back to the CPU for that job; the reason is shown.
 - SAM 3 is large: it uses several GB of memory and is unloaded after 10 idle minutes.
