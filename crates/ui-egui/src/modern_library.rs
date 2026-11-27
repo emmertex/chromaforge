@@ -120,6 +120,9 @@ fn search(app: &mut LccApp, ui: &egui::Ui, area: Rect) {
             .frame(false)
             .show(&mut child);
         crate::access::label(&r.response, "Search photos");
+        if r.ending.is_some() {
+            app.session.end_typing();
+        }
         if text != current && change.is_none() {
             change = Some(if app.ui.semantic_search { json!({"semantic": text}) } else { json!({"text": text}) });
         }

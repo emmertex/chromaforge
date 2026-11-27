@@ -1839,6 +1839,35 @@ impl Manager {
         out
     }
 
+    /// Whether any enabled plug-in's manifest satisfies `f` (nothing runs).
+    pub fn any_hook(&self, f: impl Fn(&crate::Manifest) -> bool) -> bool {
+        !self.with_hook(f).is_empty()
+    }
+
+    /// The before-import call for one file: the first enabled plug-in with the `beforeImport`
+    /// hook (in install order) is asked `{"hook": "beforeImport", "path", "size", "source"}`,
+    /// with the file lent for reading. `None` when there is no such plug-in; nothing runs.
+    pub fn before_import_call(&mut self, path: &str, size: u64, source: &Value) -> Option<Result<PendingCall>> {
+        let id = self.with_hook(|m| m.hooks.before_import).into_iter().next()?;
+        let req = json!({"hook": "beforeImport", "path": path, "size": size, "source": source});
+        Some(self.begin(&id, req, vec![PathBuf::from(path)]))
+    }
+
+    /// The after-import calls for one committed batch: each enabled plug-in with the
+    /// `afterImport` hook gets `{"hook": "afterImport", "photos": [photo.inspect JSON],
+    /// "source"}`. One `(plugin id, its call or why it can't be made)` per plug-in; nothing runs.
+    #[allow(clippy::type_complexity)]
+    pub fn after_import_calls(&mut self, imported: &[Value], source: &Value) -> Vec<(String, Result<PendingCall>)> {
+        self.with_hook(|m| m.hooks.after_import)
+            .into_iter()
+            .map(|id| {
+                let req = json!({"hook": "afterImport", "photos": imported, "source": source});
+                let call = self.begin(&id, req, Vec::new());
+                (id, call)
+            })
+            .collect()
+    }
+
     /// The destination's request; `args` given (not null) are remembered for its dialog.
     fn destination_request(&mut self, id: &str, destination: &str, args: &Value, files: &[&Value]) -> Result<Value> {
         let p = self.plugins.get(id).ok_or_else(|| Error::NotFound(id.into()))?;

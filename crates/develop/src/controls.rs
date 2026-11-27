@@ -392,6 +392,7 @@ controls! {
     "grain.seed" => grain.seed, "Seed", Grain, 0, 99999, 0, 1, 0, Plain;
     "grain.response" => grain.response, "Response", Grain, -100, 100, 0, 1, 0, Centered;
     "lensBlur.amount" => lens_blur.amount, "Blur Amount", LensBlur, 0, 100, 50, 1, 0, Plain => Ramp;
+    "lensBlur.boost" => lens_blur.boost, "Boost", LensBlur, 0, 100, 0, 1, 0, Plain;
     "lensBlur.focalDistance" => lens_blur.focal_distance, "Focal Distance", LensBlur, 0, 100, 0, 1, 0, Plain;
     "lensBlur.focalRange" => lens_blur.focal_range, "Focal Range", LensBlur, 0, 100, 20, 1, 0, Plain;
     "lensBlur.focusSize" => lens_blur.focus_size, "Focus Area", LensBlur, 0, 0.5, 0, 0.01, 2, Plain;

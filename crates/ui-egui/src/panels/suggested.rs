@@ -157,7 +157,7 @@ pub fn apply(app: &mut LccApp, ctx: &egui::Context, d: Decision) {
     let reply = match app.run(cmd, params) {
         Ok(reply) => reply,
         Err(error) => {
-            app.toast(ctx, error);
+            app.toast_error(ctx, error);
             return;
         }
     };
@@ -201,7 +201,7 @@ pub fn apply(app: &mut LccApp, ctx: &egui::Context, d: Decision) {
     if d.verdict == Verdict::Reject && decided > 0 {
         // a rejection changes no photo, so there is no undo step to reach for: the toast carries the way back
         let faces: Vec<serde_json::Value> = keys.iter().map(|(photo, index)| json!({"photo": photo, "index": index})).collect();
-        app.toast_with_action(ctx, text, crate::i18n::tr("Undo"), "faces.undoSuggestionDecision", json!({"faces": faces}), 10.0);
+        app.toast_with_action(ctx, text, crate::i18n::tr("Undo"), "faces.undoSuggestionDecision", json!({"faces": faces}));
     } else {
         app.toast(ctx, text);
     }

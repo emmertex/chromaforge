@@ -60,6 +60,8 @@ fn session(dir: &Path) -> (Session, Arc<AtomicU64>) {
     let m = ms.clone();
     s.video.clock = Box::new(move || m.load(Ordering::SeqCst) as f64 / 1000.0);
     select(&mut s, 900);
+    // the tests look at the history of the clip's own changes, not at the selecting
+    s.undo.clear();
     (s, ms)
 }
 

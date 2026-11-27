@@ -79,6 +79,22 @@ fn tools_list_has_helpers_and_every_command() {
     assert!(r["result"]["tools"].as_array().unwrap().iter().all(|t| !t["name"].as_str().unwrap().starts_with("cmd_")));
 }
 
+#[test]
+fn face_maintenance_commands_are_exposed_and_dispatch_in_headless_mcp() {
+    let mut backend = Headless::demo();
+    let names: std::collections::HashSet<String> = backend.session.commands().iter().map(|c| command_tool_name(c.id)).collect();
+    for id in ["faces.maintain", "faces.scanStatus", "faces.reset"] {
+        let name = command_tool_name(id);
+        assert!(names.contains(&name), "MCP discovers {id} as {name}");
+    }
+    let status = call_tool(&mut backend, "cmd_faces_scanStatus", &json!({}));
+    assert!(!status.is_error, "{status:?}");
+    let value: Value = serde_json::from_str(status.content[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(value["state"], "idle");
+    let reset = call_tool(&mut backend, "cmd_faces_reset", &json!({}));
+    assert!(reset.is_error, "the destructive reset still enforces confirmation through MCP");
+}
+
 /// The `import` helper passes the copy options through: a folder template files the copy.
 #[test]
 fn import_tool_copies_with_a_folder_template() {

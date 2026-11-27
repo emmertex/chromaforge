@@ -243,7 +243,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some((id, reset)) = action {
         ui.data_mut(|d| d.remove::<(f64, Value)>(cache));
         if let Err(e) = act(app, &id, reset) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     if app.services.pick_folder.is_none() {

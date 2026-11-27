@@ -128,7 +128,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
         Ok(report) => {
             adopt(&mut app.ui.settings, &report);
             apply(&app.ui.settings);
-            app.toast_for(ctx, crate::i18n::tr(&report.summary).to_string(), 12.0);
+            app.toast(ctx, crate::i18n::tr(&report.summary).to_string());
         }
         Err(e) if e == "cancelled" => app.toast(ctx, crate::i18n::tr("Test stopped: the settings are as they were.").to_string()),
         Err(e) => app.toast_error(ctx, format!("{}: {e}", crate::i18n::tr("Test my machine failed"))),

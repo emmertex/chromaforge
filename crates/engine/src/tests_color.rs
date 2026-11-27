@@ -472,6 +472,106 @@ fn one_field_wb_preset_apply_keeps_the_other_field_on_its_scale() {
     assert_eq!(back.wb, look.wb, "a preset made from the photo puts its whole white balance back: {:?} vs {:?}", back.wb, look.wb);
 }
 
+/// A preset applied to a photo goes through one function whether it is the `preset.apply` command, a hover
+/// preview, or an import (the default preset): a hand-written preset naming one white balance number (either one,
+/// on either scale) gives the same white balance in all three, on a photo edited in Kelvin and on one edited
+/// relative to its as-shot white. Import used to call the source-free `Preset::apply`, which stored the number
+/// without the photo's as-shot white (adapted from upstream #2896).
+#[test]
+fn one_field_wb_preset_gives_the_same_result_in_command_preview_and_import() {
+    use lcc_catalog::{MediaKind, Op, Photo, Source};
+    use lcc_develop::{Preset, WbMode, WbScale};
+    let as_shot = (4986.0, -2.0);
+    let photo = |camera: &str| {
+        let mut p = Photo::new(
+            lcc_catalog::PhotoId(1),
+            Source::File { path: "/photos/one-field.arw".into() },
+            "one-field.arw",
+            "ARW",
+            64,
+            64,
+            "2026-01-01T00:00:00",
+        );
+        p.kind = MediaKind::Raw;
+        p.meta.camera = camera.into();
+        p.as_shot_wb = Some(as_shot);
+        p.develop = std::sync::Arc::new(p.camera_defaults());
+        p
+    };
+    let one_field = |name: &str, wb: serde_json::Value| Preset {
+        id: format!("user.{name}"),
+        name: name.into(),
+        group: "User".into(),
+        settings: json!({ "wb": wb }),
+        favorite: false,
+        builtin: false,
+    };
+    let presets = [
+        one_field("temp-only", json!({"temp": 5800.0})),
+        one_field("tint-only", json!({"tint": 9.0})),
+        one_field("kelvin-temp", json!({"scale": "kelvin", "temp": 6500.0})),
+        one_field("kelvin-tint", json!({"scale": "kelvin", "tint": 6.0})),
+        one_field("relative-temp", json!({"scale": "legacy", "temp": 6800.0})),
+    ];
+    for camera in ["SONY ILCE-7M3", "Nobody X1"] {
+        for preset in &presets {
+            let mut s = Session::new();
+            let p = photo(camera);
+            let id = p.id;
+            s.catalog.apply(Op::AddPhoto { photo: Box::new(p.clone()) }).unwrap();
+            s.presets.push(preset.clone());
+            let why = format!("{camera}, {}", preset.name);
+            let before = (*s.develop_of(id).unwrap()).clone();
+            let preview = s.preset_applied(id, preset, 1.0).unwrap();
+            s.execute("library.select", &json!({"ids": [id.0], "active": id.0})).unwrap();
+            s.execute("preset.apply", &json!({"id": preset.id})).unwrap();
+            let command = (*s.develop_of(id).unwrap()).clone();
+            // import: the photo is not in a catalog yet
+            let mut imported = p;
+            s.import_defaults.raw_preset = Some(preset.id.clone());
+            crate::import::apply_import_defaults(&s, &mut imported);
+            assert_eq!(preview, command, "{why}: preview and command");
+            assert_eq!(imported.develop.wb, command.wb, "{why}: import and command");
+            assert_eq!(command.wb.mode, WbMode::Custom, "{why}: the preset's number replaces As Shot: {:?}", command.wb);
+            assert_ne!(command.wb, before.wb, "{why}");
+            if camera.starts_with("SONY") {
+                assert_eq!(command.wb.scale, WbScale::Kelvin, "{why}: the photo stays on the scale it is edited on: {:?}", command.wb);
+            }
+        }
+    }
+}
+
+/// Zero Amount changes nothing, and not by being applied and undone: the photo keeps As Shot and every setting
+/// through the command and the preview, even for a preset whose white balance preparation would write Custom
+/// values (adapted from upstream #2896).
+#[test]
+fn zero_amount_preset_keeps_as_shot_mode_and_settings() {
+    use lcc_develop::{Preset, WbMode};
+    let mut s = Session::new();
+    let id = add_raw(&mut s, "zero.arw", "SONY ILCE-7M3", (4986.0, -2.0));
+    let preset = Preset {
+        id: "user.zero".into(),
+        name: "Zero".into(),
+        group: "User".into(),
+        settings: json!({"wb": {"temp": 5800.0}, "light": {"exposure": 1.0}}),
+        favorite: false,
+        builtin: false,
+    };
+    s.presets.push(preset.clone());
+    s.execute("library.select", &json!({"ids": [id.0], "active": id.0})).unwrap();
+    let before = (*s.develop_of(id).unwrap()).clone();
+    assert_eq!(before.wb.mode, WbMode::AsShot);
+    let info = s.source_info(id);
+    for amount in [0.0, -1.0, f64::NAN] {
+        assert_eq!(crate::presets::apply_preset_to_photo(&preset, &before, None, amount, Some(&info)), before, "at {amount}");
+        assert_eq!(s.preset_applied(id, &preset, amount).unwrap(), before, "panel preview at {amount}");
+    }
+    s.execute("preset.apply", &json!({"id": preset.id, "amount": 0})).unwrap();
+    let after = (*s.develop_of(id).unwrap()).clone();
+    assert_eq!(after, before);
+    assert_eq!(after.wb.mode, WbMode::AsShot);
+}
+
 /// A mask's local Point Color: picked into the mask, adjusted, rendered only inside it, deleted;
 /// hostile arguments are errors. Then the mask's local Color Mixer.
 #[test]

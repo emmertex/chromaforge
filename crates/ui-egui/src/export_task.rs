@@ -139,7 +139,7 @@ fn start_next(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 return;
             }
-            Err(e) => app.toast_for(ctx, crate::i18n::tr_format!("A waiting export could not start: {e}", e = e), 15.0),
+            Err(e) => app.toast_error(ctx, crate::i18n::tr_format!("A waiting export could not start: {e}", e = e)),
         }
     }
 }
@@ -359,7 +359,7 @@ pub fn poll_photos(app: &mut LccApp, ctx: &egui::Context) {
             let outcome = job.json();
             let msg = apple_photos_note(&outcome);
             if outcome.get("error").is_some() {
-                app.toast_for(ctx, msg, 15.0);
+                app.toast_error(ctx, msg);
             } else {
                 app.toast(ctx, msg);
             }
@@ -415,6 +415,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             }
             // Photos refused (permission, not installed…): leave the way out on screen longer
             let mut photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
+            let export_failed = r.is_err();
             let msg = match r {
                 Ok((files, photos, _)) => {
                     let sheet = files.first().filter(|f| f["contactSheet"] == true);
@@ -479,8 +480,8 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Err(e) => e,
             };
-            if photos_failed {
-                app.toast_for(ctx, msg, 15.0);
+            if photos_failed || export_failed {
+                app.toast_error(ctx, msg);
             } else {
                 app.toast(ctx, msg);
             }

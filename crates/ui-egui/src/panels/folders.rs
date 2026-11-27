@@ -40,7 +40,7 @@ pub fn subfolder_photos_item(app: &mut LccApp, ui: &mut egui::Ui) {
     register(ui.ctx(), "folderShowSubfolderPhotos", r.rect);
     if r.clicked() {
         if let Err(e) = app.run("library.showSubfolderPhotos", json!({"on": on})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         ui.close();
     }
@@ -57,7 +57,7 @@ fn add_folder_items(app: &mut LccApp, ui: &mut egui::Ui, can_create: bool) {
         if add.clicked() {
             // File ▸ Import from Folder…: the dialog and the scan run off the UI thread (#734)
             if let Err(e) = app.run("file.addFolder", json!({})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }

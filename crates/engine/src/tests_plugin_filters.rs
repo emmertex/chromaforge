@@ -58,7 +58,10 @@ fn install(s: &mut Session, id: &str) -> Value {
 }
 
 fn install_bytes(s: &mut Session, id: &str, bytes: &[u8]) -> Value {
-    let dir = std::env::temp_dir().join(format!("lcc-filter-test-{}-{id}", std::process::id()));
+    // a directory of this call's own: tests run in parallel and may install the same id
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("lcc-filter-test-{}-{n}-{id}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("f.wasm");
     std::fs::write(&path, bytes).unwrap();

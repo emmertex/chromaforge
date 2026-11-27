@@ -24,7 +24,7 @@ use ls::runtime::Shown;
 use ls::settings::{OsdMode, OsdPosition};
 use serde_json::{Value, json};
 
-use super::settings::{choices, hint, row};
+use super::settings::{choices, row};
 use crate::LccApp;
 use crate::i18n::{tr, tr_format};
 use crate::theme::Tokens;
@@ -57,6 +57,9 @@ pub struct Readout {
 pub struct ActionShown {
     pub report: ChangeReport,
     pub at: f64,
+    /// A sample from Settings → Notifications: it shows as a report from a control surface would, so it appears
+    /// under Control surface only too.
+    pub test: bool,
 }
 
 /// The surface's own readout: (readout, since when in s).
@@ -78,7 +81,7 @@ pub fn surface_content(app: &LccApp) -> Option<(Readout, f64)> {
             Readout { title, value: v.map(|v| spec.format(v)).unwrap_or_default(), bar: v.map(|v| spec.position(v)), icon, caption: String::new() }
         }
         // a command without a short label of its own names itself by id: show its registry label
-        Shown::Command { label, icon } => {
+        Shown::Command { label, icon, .. } => {
             let text = if !label.contains(' ') && label.contains('.') {
                 crate::surface::registry_label(app, label).unwrap_or_else(|| label.clone())
             } else {
@@ -201,6 +204,17 @@ pub fn describe(app: &LccApp, r: &ChangeReport) -> Readout {
     }
 }
 
+/// The part of the app a change report is about: a develop setting (a slider, a mask, a profile) or anything else.
+pub fn report_area(r: &ChangeReport) -> ls::settings::OsdArea {
+    if r.kind == ChangeKind::Develop || r.control.is_some() { ls::settings::OsdArea::Develop } else { ls::runtime::command_area(&r.command) }
+}
+
+/// Whether the overlay may show `r`: its mode and its area's option, asked of the settings' one rule. Change reports
+/// never come from a control surface (its own readout is `surface_content`).
+pub(crate) fn report_allowed(app: &LccApp, r: &ChangeReport) -> bool {
+    app.surface.settings().osd.allows(report_area(r), false)
+}
+
 /// Take the newest change report, when the mode shows them (each once).
 fn take_report(app: &mut LccApp) {
     let Some(r) = app.session.last_change.as_ref() else { return };
@@ -208,22 +222,31 @@ fn take_report(app: &mut LccApp) {
         return;
     }
     app.surface.osd_seq = r.seq;
-    if app.surface.settings().osd.effective_mode() != OsdMode::Always {
+    if !report_allowed(app, r) {
         return;
     }
     let report = r.clone();
     let at = app.surface.now();
-    app.surface.action = Some(ActionShown { report, at });
+    app.surface.action = Some(ActionShown { report, at, test: false });
 }
 
 /// What the pill shows now and its age (s): the newest of the surface's readout and the last
 /// change (the surface's wins a tie: a dial's readout names the value it turns, with its bar).
 pub fn current(app: &mut LccApp) -> Option<(Readout, f64)> {
     take_report(app);
+    peek(app)
+}
+
+/// [`current`] without taking the last change report first, for readers that only look (`ui.inspect`).
+pub fn peek(app: &LccApp) -> Option<(Readout, f64)> {
     let now = app.surface.now();
     let surface = surface_content(app);
-    let mode = app.surface.settings().osd.effective_mode();
-    let action = app.surface.action.as_ref().filter(|_| mode == OsdMode::Always).map(|a| (describe(app, &a.report), a.at));
+    let action = app
+        .surface
+        .action
+        .as_ref()
+        .filter(|a| app.surface.settings().osd.allows(report_area(&a.report), a.test))
+        .map(|a| (describe(app, &a.report), a.at));
     let (r, at) = match (surface, action) {
         (Some(s), Some(a)) => {
             if a.1 > s.1 + 0.05 {
@@ -335,51 +358,40 @@ pub fn paint(ctx: &egui::Context, area: Rect, osd: &ls::settings::OsdSettings, r
 pub const MODES: &[(OsdMode, &str)] = &[(OsdMode::Off, "Off"), (OsdMode::Surface, "Control surface only"), (OsdMode::Always, "Always")];
 /// Where it sits (TactileBridge's names).
 pub const POSITIONS: &[(OsdPosition, &str)] =
-    &[(OsdPosition::Bottom, "Down"), (OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
+    &[(OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Bottom, "Down"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
 
-/// Settings, Interface, Overlay (also in Settings, Controls): one set of settings for every
-/// overlay.
-pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    crate::surface::ensure_loaded(app);
-    let mut s = app.surface.settings().osd.clone();
-    let before = s.clone();
-    super::settings::heading_help(ui, t, "On-Screen Overlay", "changeOverlay");
-    let mut mode = s.effective_mode();
-    row(ui, t, "Show changes", |ui| {
-        if choices(ui, "osdMode", MODES, &mut mode) {
-            s.set_mode(mode);
-        }
-    });
-    hint(ui, t, "A short note in the window for every change: a slider's value, a rating, a profile applied, and how many photos it changed.");
+/// The five controls the overlay pill and the messages share (Settings ▸ Notifications): size, opacity, how long,
+/// where, and the background. `messages` picks the ids they register under (`slider:osd.size`, `field:osdBackground`;
+/// `slider:messages.size`…).
+pub fn look_editor(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    messages: bool,
+    (size, opacity, display_ms, position, background): (&mut f64, &mut f64, &mut u32, &mut OsdPosition, &mut String),
+) {
+    let (size_id, opacity_id, time_id, position_id, background_id) = if messages {
+        ("slider:messages.size", "slider:messages.opacity", "slider:messages.duration", "messagesPosition", "field:messagesBackground")
+    } else {
+        ("slider:osd.size", "slider:osd.opacity", "slider:osd.duration", "osdPosition", "field:osdBackground")
+    };
     row(ui, t, "Size", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.size, 0.5..=2.0).fixed_decimals(2).suffix("×"));
-        crate::widgets::register(ui.ctx(), "slider:osd.size", r.rect);
+        let r = ui.add(egui::Slider::new(size, 0.5..=2.0).fixed_decimals(2).suffix("×"));
+        crate::widgets::register(ui.ctx(), size_id, r.rect);
     });
     row(ui, t, "Opacity", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.opacity, 0.1..=1.0).fixed_decimals(2));
-        crate::widgets::register(ui.ctx(), "slider:osd.opacity", r.rect);
+        let r = ui.add(egui::Slider::new(opacity, 0.1..=1.0).fixed_decimals(2));
+        crate::widgets::register(ui.ctx(), opacity_id, r.rect);
     });
     row(ui, t, "Shown for", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.display_ms, 500..=10_000).suffix(" ms"));
-        crate::widgets::register(ui.ctx(), "slider:osd.duration", r.rect);
+        let r = ui.add(egui::Slider::new(display_ms, 500..=10_000).suffix(" ms"));
+        crate::widgets::register(ui.ctx(), time_id, r.rect);
     });
     row(ui, t, "Position", |ui| {
-        choices(ui, "osdPosition", POSITIONS, &mut s.position);
+        choices(ui, position_id, POSITIONS, position);
     });
     row(ui, t, "Background", |ui| {
-        crate::text_field::TextField::singleline("field:osdBackground", &mut s.background).width(90.0).show(ui);
+        crate::text_field::TextField::singleline(background_id, background).width(90.0).show(ui);
     });
-    if s != before {
-        let colour_ok = ls::settings::rgb(&s.background).is_some();
-        let rt = app.surface.runtime.settings_mut();
-        if colour_ok {
-            rt.osd = s;
-            app.surface.changed();
-        } else {
-            // keep the half-typed colour in the field without applying it
-            rt.osd.background = s.background;
-        }
-    }
 }
 
 // ------------------------------------------------------------------------------------- commands
@@ -393,7 +405,7 @@ fn parse_mode(s: &str) -> Option<OsdMode> {
     })
 }
 
-fn parse_position(s: &str) -> Option<OsdPosition> {
+pub(crate) fn parse_position(s: &str) -> Option<OsdPosition> {
     Some(match s.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
         "down" | "bottom" => OsdPosition::Bottom,
         "downlow" | "bottomedge" => OsdPosition::BottomEdge,
@@ -403,15 +415,21 @@ fn parse_position(s: &str) -> Option<OsdPosition> {
     })
 }
 
-fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
-    let position = match osd.position {
+pub(crate) fn position_name(p: OsdPosition) -> &'static str {
+    match p {
         OsdPosition::Bottom => "down",
         OsdPosition::BottomEdge => "downLow",
         OsdPosition::Top => "up",
         OsdPosition::TopEdge => "upHigh",
-    };
+    }
+}
+
+fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
+    let position = position_name(osd.position);
     json!({
-        "mode": osd.effective_mode(),
+        "mode": osd.mode,
+        "inDevelop": osd.in_develop,
+        "elsewhere": osd.elsewhere,
         "size": osd.size,
         "opacity": osd.opacity,
         "displayMs": osd.display_ms,
@@ -420,7 +438,14 @@ fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
     })
 }
 
-/// `osd.*` commands: `osd.settings {mode?, size?, opacity?, displayMs?, position?, background?}`
+/// What the pill is doing now, for `osd.state` and `ui.inspect`: its settings, the readout it holds with its age, and
+/// `held` (kept off the photo while an on-photo tool is in use, note 15).
+pub fn state_json(app: &LccApp) -> Value {
+    let shown = peek(app).map(|(r, age)| json!({"title": r.title, "value": r.value, "caption": r.caption, "icon": r.icon, "ageS": age}));
+    json!({"settings": settings_json(&app.surface.settings().osd), "shown": shown, "held": app.surface.osd_held})
+}
+
+/// `osd.*` commands: `osd.settings {mode?, inDevelop?, elsewhere?, size?, opacity?, displayMs?, position?, background?}`
 /// (every overlay setting; replies with them all), `osd.mode {mode?}` (no mode: the next one,
 /// Off → Control surface only → Always, for a console key) and `osd.state` (what it shows now).
 pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
@@ -431,6 +456,17 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             if let Some(m) = p.get("mode") {
                 let m = m.as_str().and_then(parse_mode).ok_or("osd.settings: `mode` is off, surface or always")?;
                 osd.set_mode(m);
+            }
+            if p.get("inDevelop").is_some() || p.get("elsewhere").is_some() {
+                let flag = |key: &str, now: bool| match p.get(key) {
+                    None => Ok(now),
+                    Some(v) => v.as_bool().ok_or_else(|| format!("osd.settings: `{key}` is true or false")),
+                };
+                let (in_develop, elsewhere) = (flag("inDevelop", osd.in_develop)?, flag("elsewhere", osd.elsewhere)?);
+                if !in_develop && !elsewhere {
+                    return Err("osd.settings: `inDevelop` and `elsewhere` can't both be off; turn off Show changes with `mode`".into());
+                }
+                osd.set_areas(in_develop, elsewhere);
             }
             if let Some(v) = p.get("size") {
                 osd.size = v.as_f64().filter(|v| v.is_finite()).ok_or("osd.settings: `size` must be a number (0.5–2)")?.clamp(0.5, 2.0);
@@ -453,7 +489,7 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         "osd.mode" => {
             let next = match p.get("mode") {
                 Some(m) => m.as_str().and_then(parse_mode).ok_or("osd.mode: `mode` is off, surface or always")?,
-                None => match osd.effective_mode() {
+                None => match osd.mode {
                     OsdMode::Off => OsdMode::Surface,
                     OsdMode::Surface => OsdMode::Always,
                     OsdMode::Always => OsdMode::Off,
@@ -462,9 +498,8 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             osd.set_mode(next);
         }
         "osd.state" => {
-            let shown = current(app).map(|(r, age)| json!({"title": r.title, "value": r.value, "caption": r.caption, "icon": r.icon, "ageS": age}));
-            // `held`: kept off the photo while an on-photo tool is in use (note 15)
-            return Ok(json!({"settings": settings_json(&osd), "shown": shown, "held": app.surface.osd_held}));
+            take_report(app);
+            return Ok(state_json(app));
         }
         other => return Err(format!("unknown command `{other}`")),
     }

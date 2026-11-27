@@ -137,6 +137,7 @@ pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "Vi
 /// Order inside submenus whose items come from the registry: (menu, submenu, ids and `---`).
 /// Items not listed follow in registry order, dialogs (labels ending in `…`) last.
 const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
+    ("Library", "Faces", &["faces.detect=Find Faces Again…", "faces.clearAndRescan", "---", "dialog.faceMaintenance"]),
     (
         "Photo",
         "Develop Settings",
@@ -1482,7 +1483,7 @@ pub fn show_in_window(app: &mut LccApp, ui: &mut egui::Ui, max_width: f32) -> f3
         if let Err(e) = r
             && matches!(id.as_str(), "app.export" | "app.exportPrevious" | "file.backupLibrary" | "file.restoreLibrary")
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     ui.cursor().left() - start
@@ -1648,6 +1649,26 @@ mod tests {
         a.ui.module = crate::module::ModuleId::Library;
         a.ui.view = ViewMode::Compare;
         check(&a);
+    }
+
+    #[test]
+    fn face_actions_are_grouped_in_the_library_faces_submenu() {
+        let app = app();
+        let bar = menu_bar(&app);
+        let Some((_, library)) = bar.iter().find(|(title, _)| title == "Library") else { panic!("Library menu") };
+        let Some(MenuNode::Submenu { children, .. }) =
+            library.iter().find(|node| matches!(node, MenuNode::Submenu { label, .. } if label == "Faces"))
+        else {
+            panic!("Library ▸ Faces submenu")
+        };
+        let actions = ["faces.detect", "faces.clearAndRescan", "dialog.faceMaintenance"];
+        for id in actions {
+            assert!(find(children, id).is_some(), "{id} is in Library ▸ Faces");
+        }
+        assert!(
+            !library.iter().any(|node| matches!(node, MenuNode::Item { id, .. } if actions.contains(&id.as_str()))),
+            "face actions do not add separate top-level Library rows"
+        );
     }
 
     fn find<'a>(nodes: &'a [MenuNode], id: &str) -> Option<&'a MenuNode> {
@@ -2250,7 +2271,7 @@ mod tests {
             h.step();
         }
         // (read at once: a toast keeps the UI repainting until it expires, so settling would outlive it)
-        let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+        let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
         assert!(toast.contains(refusal), "the refusal is shown: {toast:?}");
     }
 
@@ -2281,7 +2302,7 @@ mod tests {
         let bad_dir = dir.join("nonexistent_subdir");
         let err = run_item(&mut app, "file.findMissing", json!({"folder": bad_dir.to_string_lossy(), "wait": true})).unwrap_err();
         assert!(err.contains("not a folder"), "expected 'not a folder' error, got: {err}");
-        assert!(app.ui.toast().map(|t| t.0.contains("not a folder")).unwrap_or(false), "toast should reflect failure");
+        assert!(app.ui.toast().map(|t| t.text.contains("not a folder")).unwrap_or(false), "toast should reflect failure");
         assert!(app.ui.last_find_missing.is_none(), "last_find_missing must remain None on failure");
 
         // 2. Invalid timeout parameters are rejected cleanly
