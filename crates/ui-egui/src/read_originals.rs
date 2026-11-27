@@ -92,9 +92,7 @@ pub fn tick(app: &mut LccApp) {
         return;
     };
     // one listing: this batch, then the photos after it, whose files are read ahead
-    let size = batch_size(state);
-    let mut batch = read_originals::unread(&app.session.catalog, &state.tried, size.saturating_mul(1 + read_originals::AHEAD_BATCHES));
-    let next = batch.split_off(size.min(batch.len()));
+    let (batch, next) = read_originals::next_batch(&app.session.catalog, &state.tried, batch_size(state), usize::MAX);
     if batch.is_empty() {
         app.ui.originals.idle = true;
         app.ui.originals.total = 0;

@@ -61,6 +61,18 @@ pub fn unread(cat: &Catalog, skip: &HashSet<PhotoId>, limit: usize) -> Vec<Unrea
     out
 }
 
+/// The next batch to read and the photos after it whose files are read ahead
+/// ([`OriginalsReader::read`]): at most `batch` photos [`unread`] lists (leaving out `skip`), then
+/// at most [`AHEAD_BATCHES`] batches' worth more, all within `limit` photos (`usize::MAX`: no
+/// limit). One listing, so both come from the same library state. No file-system calls.
+pub fn next_batch(cat: &Catalog, skip: &HashSet<PhotoId>, batch: usize, limit: usize) -> (Vec<Unread>, Vec<Unread>) {
+    let n = batch.min(limit);
+    let ahead = n.saturating_mul(AHEAD_BATCHES).min(limit.saturating_sub(n));
+    let mut listed = unread(cat, skip, n.saturating_add(ahead));
+    let next = listed.split_off(n.min(listed.len()));
+    (listed, next)
+}
+
 /// How many library photos' originals are still to be read. No file-system calls.
 pub fn count_unread(cat: &Catalog) -> usize {
     cat.photos().filter(|p| is_unread(p) && crate::cmd::missing::checked_path(p).is_some()).count()
@@ -377,11 +389,7 @@ fn read_originals(s: &mut Session, p: &Value) -> Result<Value> {
     // the next batches' files are read while one is applied (and across their volumes)
     let mut reader = OriginalsReader::new(fp);
     while checked < limit {
-        let n = BATCH.min(limit - checked);
-        // (one listing: this batch, then the ones after it, as far as the limit goes)
-        let ahead = n.saturating_mul(AHEAD_BATCHES).min(limit - checked - n);
-        let mut batch = unread(&s.catalog, &tried, n.saturating_add(ahead));
-        let next = batch.split_off(n.min(batch.len()));
+        let (batch, next) = next_batch(&s.catalog, &tried, BATCH, limit.saturating_sub(checked));
         if batch.is_empty() {
             break;
         }
@@ -583,8 +591,7 @@ mod tests {
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
         let mut reader = reader;
         loop {
-            let mut listed = unread(&s.catalog, &tried, batch * (1 + AHEAD_BATCHES));
-            let next = listed.split_off(batch.min(listed.len()));
+            let (listed, next) = next_batch(&s.catalog, &tried, batch, usize::MAX);
             if listed.is_empty() {
                 break;
             }
@@ -597,6 +604,29 @@ mod tests {
         }
         let hashes = s.catalog.photos().map(|p| p.content_hash.clone()).collect();
         (out, hashes)
+    }
+
+    /// The batch and its look-ahead stay within the limit (at, just below, just above the batch,
+    /// and the batch plus its look-ahead): the batch first, then at most two batches more.
+    #[test]
+    fn the_next_batch_and_its_look_ahead_stay_within_the_limit() {
+        let photos = (1..=20u64).map(|i| unread_photo(i, &format!("/x/{i}.NEF"))).collect();
+        let s = session_with(photos, probe_hashing(Arc::new(AtomicUsize::new(0))));
+        let none = HashSet::new();
+        let lens = |limit| {
+            let (b, n) = next_batch(&s.catalog, &none, 3, limit);
+            (b.len(), n.len())
+        };
+        for (limit, want) in [(0, (0, 0)), (2, (2, 0)), (3, (3, 0)), (4, (3, 1)), (8, (3, 5)), (9, (3, 6)), (10, (3, 6)), (usize::MAX, (3, 6))] {
+            assert_eq!(lens(limit), want, "limit {limit}");
+        }
+        let (b, n) = next_batch(&s.catalog, &none, 3, usize::MAX);
+        let ids: Vec<u64> = b.iter().chain(&n).map(|u| u.id.0).collect();
+        assert_eq!(ids, (1..=9).collect::<Vec<_>>(), "in id order, the batch first");
+        // fewer photos than the look-ahead: what there is
+        let skip: HashSet<PhotoId> = (1..=16).map(PhotoId).collect();
+        let (b, n) = next_batch(&s.catalog, &skip, 3, usize::MAX);
+        assert_eq!((b.len(), n.len()), (3, 1));
     }
 
     /// The batches, their results, duplicate pairs and the photos' facts are those of one batch
