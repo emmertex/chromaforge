@@ -102,7 +102,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         crate::access::choice(&resp, label, on);
         let arrow_resp = arrow_r.map(|ar| {
             register(ui.ctx(), "navigator:customMenu", ar);
-            ui.interact(ar, egui::Id::new("navigator-custom-menu"), Sense::click())
+            let r = ui.interact(ar, egui::Id::new("navigator-custom-menu"), Sense::click());
+            crate::access::button(&r, crate::i18n::tr("Click Zoom Ratio"));
+            r
         });
         let hovered = resp.hovered() || arrow_resp.as_ref().is_some_and(egui::Response::hovered);
         let col = if on || hovered { t.text } else { t.text_dim };
