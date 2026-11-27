@@ -173,6 +173,7 @@ fn candidates<'a>(data: &'a [u8], ifd: &Ifd, base: u64, out: &mut Vec<&'a [u8]>)
         }
     }
     if matches!(ifd.u16(t::COMPRESSION), Some(6) | Some(7) | Some(34892))
+        && !is_mask_or_depth(ifd)
         && let Ok(info) = ifd.image()
         && let Some(chunk) = info.single_chunk(data.len() as u64)
         && let Some(s) = chunk_bytes(data, &chunk)
@@ -189,6 +190,16 @@ fn candidates<'a>(data: &'a [u8], ifd: &Ifd, base: u64, out: &mut Vec<&'a [u8]>)
     {
         out.push(s);
     }
+}
+
+/// A transparency or semantic mask (an iPhone ProRAW DNG's sky or skin matte, a grey JPEG of the picture's shape) or a
+/// DNG depth map: not a picture of the photo, so never its preview (#1391: a ProRAW DNG whose only other JPEG is its
+/// sky matte showed the matte as its thumbnail).
+fn is_mask_or_depth(ifd: &Ifd) -> bool {
+    const MASK_BITS: u32 = 0x4 | 0x8; // NewSubFileType: transparency mask, depth map (DNG 1.5)
+    const PHOTOMETRIC_DEPTH: u16 = 51177;
+    ifd.u32(t::NEW_SUBFILE_TYPE).is_some_and(|k| k & MASK_BITS != 0)
+        || matches!(ifd.u16(t::PHOTOMETRIC), Some(t::photometric::MASK | PHOTOMETRIC_DEPTH))
 }
 
 /// The largest embedded preview, if any: a JPEG, or (DNG 1.7) a JPEG XL file, or for a Hasselblad 3FR / FFF, which
@@ -801,6 +812,39 @@ mod tests {
             ifd0.add_sub_ifd(ifd(j));
         }
         TiffWriter::default().write(&[ifd0]).unwrap()
+    }
+
+    /// #1391: an iPhone ProRAW DNG keeps no preview, only its tiled raw image and a grey sky matte (a one-strip JPEG
+    /// in a semantic-mask IFD); the matte is not the photo's preview, so the thumbnail renders the raw instead.
+    #[test]
+    fn a_semantic_mask_or_depth_map_is_never_the_preview() {
+        let photo = sized_jpeg(1008, 756, 3, 40);
+        let matte = sized_jpeg(2016, 1512, 1, 60);
+        let tagged = |j: &[u8], subfile: u32, photometric: u16| {
+            let mut ifd = IfdBuilder::new();
+            ifd.set(t::NEW_SUBFILE_TYPE, Value::Long(vec![subfile]));
+            ifd.set(t::COMPRESSION, Value::Short(vec![34892]));
+            ifd.set(t::PHOTOMETRIC, Value::Short(vec![photometric]));
+            ifd.set(t::IMAGE_WIDTH, Value::Long(vec![1]));
+            ifd.set(t::IMAGE_LENGTH, Value::Long(vec![1]));
+            ifd.set_image(ImageData::Strips { rows_per_strip: 1, strips: vec![j.to_vec()] });
+            ifd
+        };
+        let write = |subs: Vec<IfdBuilder>| {
+            let mut ifd0 = IfdBuilder::new();
+            ifd0.set(t::IMAGE_WIDTH, Value::Long(vec![1]));
+            for s in subs {
+                ifd0.add_sub_ifd(s);
+            }
+            TiffWriter::default().write(&[ifd0]).unwrap()
+        };
+        let only_matte = write(vec![tagged(&matte, t::SUBFILE_SEMANTIC_MASK, t::photometric::MASK)]);
+        assert_eq!(embedded_preview(&only_matte), None, "the sky matte is not a preview");
+        assert_eq!(embedded_preview_covering(&only_matte, 100), None);
+        let depth = write(vec![tagged(&matte, 8, 51177)]);
+        assert_eq!(embedded_preview(&depth), None, "nor is a depth map");
+        let both = write(vec![tagged(&matte, t::SUBFILE_SEMANTIC_MASK, t::photometric::MASK), tagged(&photo, 1, 6)]);
+        assert_eq!(embedded_preview(&both).unwrap(), photo, "a real preview beside it still wins, though smaller");
     }
 
     /// A stand-in decodes the smallest JPEG that covers its box and shows the same picture as the largest: not a
