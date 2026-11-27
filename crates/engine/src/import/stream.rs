@@ -618,7 +618,7 @@ impl<'a> Run<'a> {
     }
 
     fn on_probe(&mut self, job: &ImportJob, index: usize, outcome: JobOutcome<ProbeResult>) {
-        if !matches!(outcome, JobOutcome::NotStarted | JobOutcome::Cancelled) {
+        if outcome.counts_as_done() {
             job.read_done.fetch_add(1, Relaxed);
         }
         let Some(p) = self.probe_index.remove(&index) else { return };
@@ -634,7 +634,7 @@ impl<'a> Run<'a> {
 
     fn on_transfer(&mut self, job: &mut ImportJob, index: usize, outcome: JobOutcome<PreparedItem>) {
         let Some(tid) = self.transfer_index.remove(&index) else { return };
-        if !matches!(outcome, JobOutcome::NotStarted | JobOutcome::Cancelled) {
+        if outcome.counts_as_done() {
             job.done.fetch_add(1, Relaxed);
         }
         let item = match self.pending.get(&tid) {

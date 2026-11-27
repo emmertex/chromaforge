@@ -258,7 +258,7 @@ impl OriginalsReader {
             let a = &mut self.ahead;
             let Some(s) = a.stream.as_mut() else { break };
             let Some((i, o, _)) = s.recv_timeout(a.ctx.tick) else { continue };
-            let counted = !matches!(o, crate::io_sched::JobOutcome::NotStarted | crate::io_sched::JobOutcome::Cancelled);
+            let counted = o.counts_as_done();
             let Some(k) = a.by_index.remove(&i) else { continue };
             let r = crate::import::probe_outcome(o, &k.1, "not probed").map_err(crate::import::ProbeError::into_message);
             if wanted.contains(&k) && counted {

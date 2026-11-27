@@ -48,6 +48,16 @@ pub(crate) enum JobOutcome<T> {
     SchedulerStopped,
 }
 
+impl<T> JobOutcome<T> {
+    /// Whether a call's progress counts this outcome as a file done: every outcome but a job that
+    /// cancel kept from starting ([`JobOutcome::NotStarted`]) or left behind
+    /// ([`JobOutcome::Cancelled`]). The one rule for [`super::pool::run_jobs`]' `done` and every
+    /// streaming caller's own count.
+    pub(crate) fn counts_as_done(&self) -> bool {
+        !matches!(self, JobOutcome::NotStarted | JobOutcome::Cancelled)
+    }
+}
+
 /// What one job did (R9): bytes it moved, its time, its wait at the work gate.
 #[derive(Clone, Debug)]
 pub(crate) struct JobMetrics {

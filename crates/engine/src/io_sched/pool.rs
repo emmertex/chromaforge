@@ -487,7 +487,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         let next = stream.recv_timeout(ctx.tick);
         if let Some((i, o, m)) = next {
             if let Some(slot) = outcomes.get_mut(i).filter(|s| s.is_none()) {
-                if !matches!(o, JobOutcome::NotStarted | JobOutcome::Cancelled) {
+                if o.counts_as_done() {
                     done.fetch_add(1, Ordering::Relaxed);
                 }
                 *slot = Some(o);
