@@ -1,6 +1,7 @@
 //! Copies through the scheduler (I/O spec §7, "Copies (PR 2)"), on fake volumes: a copy holds a
 //! slot on its source and its destination (R3), R4(a) counts only volumes whose work doesn't
-//! also need this one, a copy's bytes and completion are progress on both of its volumes, a hung
+//! also need this one, a copy's bytes are progress on the volume they moved on and its completion
+//! on both, a copy stuck on one of its volumes is declared there and not on the other, a hung
 //! destination fails its own queue only, and cancel skips a copy's DNG step instead of abandoning
 //! it. The real copy path (`import::run_transfers`) is tested in `import/tests_transfers.rs`.
 
@@ -14,7 +15,7 @@ use lcc_catalog::folders::{Mounts, VolumeKey, volume_key};
 use super::clock::{FakeClock, SEC};
 use super::run::{IoJob, JobOutcome};
 use super::shared::{COMPUTING_FACTOR, RECOVERY_EVERY, STALL_WITH_BYTES};
-use super::tests::{H, Latch, R, bytes, job, ok_count, vnr_count, wait_until};
+use super::tests::{H, Latch, R, bytes, job, ok_count, vnr_count, wait_until, wrote};
 
 /// A copy from `source` into `dest`.
 fn copy(source: &str, dest: &str, f: impl FnOnce() -> R + Send + 'static) -> IoJob<R> {
@@ -271,13 +272,15 @@ fn spinner(path: &str, dest: Option<&str>, stop: &Arc<AtomicBool>) -> IoJob<R> {
     }
 }
 
-/// `n` copies from `src` into `dst` that move a byte, say they started, then hang until `latch`.
+/// `n` copies from `src` into `dst` that read a byte and write one, say they started, then hang
+/// in their destination until `latch`.
 fn hung_copies(src: &str, dst: &str, n: usize, tag: &str, latch: &Arc<Latch>, started: &Arc<AtomicUsize>) -> Vec<IoJob<R>> {
     (0..n)
         .map(|i| {
             let (latch, started) = (latch.clone(), started.clone());
             copy(&format!("{src}/{tag}{i}"), &format!("{dst}/out"), move || {
                 bytes(1);
+                wrote(1);
                 started.fetch_add(1, Ordering::SeqCst);
                 latch.wait();
                 Ok(i as u32)
@@ -325,6 +328,104 @@ fn a_hung_destination_fails_its_queue_while_others_finish() {
     assert!(!h.ctx.shared.blocked(&key("/a/x"), h.now()), "the card is not");
     hung.release();
     wait_until(|| h.ctx.shared.entries() == 0, "late returns to leave the registry");
+}
+
+/// The card's only running jobs are copies into a destination that hangs (a library import reads
+/// everything before it copies; every app import ends that way): the destination is declared and
+/// blocked, not the card (both fell silent at once; the copies wait in the destination), and a
+/// read of the card runs afterwards. And the other way round: copies that hang
+/// reading their card declare the card, not the destination, even where the destination is the
+/// volume seen first.
+#[test]
+fn a_copy_stuck_on_one_volume_is_declared_there_not_on_the_other() {
+    let h = H::new();
+    let (hung, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut jobs = hung_copies("/a", "/b", 2, "h", &hung, &started);
+    jobs.extend(hung_copies("/a", "/b", 2, "q", &hung, &started));
+    let call = h.start(jobs, 2);
+    wait_until(|| started.load(Ordering::SeqCst) == 2, "two copies hung in /b");
+    call.settle(&h, 3);
+    h.advance(STALL_WITH_BYTES - 1);
+    call.settle(&h, 3);
+    assert!(!call.finished(), "just under the stall time");
+    h.advance(1);
+    let r = call.join();
+    let got: Vec<Option<(String, bool)>> = r.outcomes.iter().map(|o| vnr(Some(o))).collect();
+    let b = |abandoned| Some(("/b".to_string(), abandoned));
+    assert_eq!(got, [b(true), b(true), b(false), b(false)], "{:?}", r.outcomes);
+    assert!(h.ctx.shared.blocked(&key("/b/x"), h.now()), "the hung destination is blocked");
+    assert!(!h.ctx.shared.blocked(&key("/a/x"), h.now()), "the card is not");
+    let (r, _) = h.run(
+        vec![job("/a/read", || {
+            bytes(1);
+            Ok(7)
+        })],
+        2,
+    );
+    assert!(matches!(r.outcomes.first(), Some(JobOutcome::Done(Ok(7)))), "the card is read: {:?}", r.outcomes);
+    hung.release();
+    wait_until(|| h.ctx.shared.entries() == 0, "late returns to leave the registry");
+
+    // a hung card: its copies read a byte, then hang reading it (the destination, /b, is the
+    // first volume of the call: a read on it goes first)
+    let h = H::new();
+    let (hung, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut jobs = vec![job("/b/w", || {
+        bytes(1);
+        Ok(0)
+    })];
+    jobs.extend((0..2).map(|i| {
+        let (hung, started) = (hung.clone(), started.clone());
+        copy(&format!("/a/{i}"), "/b/out", move || {
+            bytes(1);
+            started.fetch_add(1, Ordering::SeqCst);
+            hung.wait();
+            Ok(i)
+        })
+    }));
+    let call = h.start(jobs, 2);
+    wait_until(|| started.load(Ordering::SeqCst) == 2 && call.done.load(Ordering::SeqCst) == 1, "two copies hung on /a");
+    call.settle(&h, 3);
+    h.advance(STALL_WITH_BYTES);
+    let r = call.join();
+    let got: Vec<Option<(String, bool)>> = r.outcomes.iter().map(|o| vnr(Some(o))).collect();
+    let a = Some(("/a".to_string(), true));
+    assert_eq!(got, [None, a.clone(), a], "{:?}", r.outcomes);
+    assert!(h.ctx.shared.blocked(&key("/a/x"), h.now()), "the hung card is blocked");
+    assert!(!h.ctx.shared.blocked(&key("/b/x"), h.now()), "the destination is not");
+    hung.release();
+    wait_until(|| h.ctx.shared.entries() == 0, "late returns to leave the registry");
+}
+
+/// A copy's source reads are progress on its card only: a copy stuck in a destination isn't kept
+/// alive there by another copy that keeps reading its own card into the same destination. The
+/// destination stalls 30 s after the stuck copy's write (at, not just below); the reading card is
+/// not declared.
+#[test]
+fn a_copys_reads_are_not_progress_on_its_destination() {
+    for (by, stalled) in [(STALL_WITH_BYTES - 1, false), (STALL_WITH_BYTES, true)] {
+        let h = H::new();
+        let (hung, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut jobs = hung_copies("/a", "/b", 1, "h", &hung, &started);
+        jobs.push(spinner("/c/clip.mov", Some("/b/out"), &stop));
+        let call = h.start(jobs, 4);
+        wait_until(|| started.load(Ordering::SeqCst) == 1, "the copy hung in /b");
+        call.settle(&h, 3);
+        h.advance(by);
+        call.settle(&h, 3);
+        assert_eq!(call.finished(), stalled, "{by} ns");
+        stop.store(true, Ordering::SeqCst);
+        hung.release();
+        let r = call.join();
+        if stalled {
+            assert_eq!(vnr(r.outcomes.first()), Some(("/b".into(), true)), "{:?}", r.outcomes);
+            assert!(!h.ctx.shared.blocked(&key("/c/x"), h.now()), "the reading card is not declared");
+        } else {
+            assert_eq!(ok_count(&r), 2, "{:?}", r.outcomes);
+        }
+        wait_until(|| h.ctx.shared.entries() == 0, "late returns to leave the registry");
+    }
 }
 
 /// A copy's bytes count on its destination: once they did, the destination's stall time is 30 s
@@ -441,7 +542,7 @@ fn one_slow_2_gb_copy_is_never_declared_stalled() {
     assert_eq!(vnr_count(&r), 0);
     assert!(h.now() - start > STALL_WITH_BYTES, "the copy took {} s of the fake clock", (h.now() - start) / SEC);
     let m = r.metrics.first().and_then(Option::as_ref).unwrap();
-    assert_eq!(m.bytes, size, "every byte counted");
+    assert_eq!((m.moved.read, m.moved.written, m.moved.read_back), (size, size, 0), "every byte counted, read and written");
     assert_eq!(m.dest.as_ref().map(VolumeKey::id), Some("/b"));
 }
 

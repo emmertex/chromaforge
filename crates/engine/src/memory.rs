@@ -477,6 +477,14 @@ pub(crate) fn flushing() -> Computing {
     computing()
 }
 
+/// Run `flush` (a file's `sync_all`/`sync_data`) as [`flushing`]: the one way an I/O job flushes
+/// what it wrote (a copy's file, Copy as DNG's temp file), so every such flush pauses the stall
+/// clock alike.
+pub(crate) fn while_flushing<T>(flush: impl FnOnce() -> T) -> T {
+    let _flushing = flushing();
+    flush()
+}
+
 impl Drop for Computing {
     fn drop(&mut self) {
         if let Some(j) = &self.0 {

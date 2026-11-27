@@ -203,9 +203,10 @@ fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
     Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("no free temp file name in {}", dir.display())))
 }
 
-/// Write a temp file next to `path` with what `fill` writes, synced to disk when `sync`. On
-/// failure the temp file is removed. Returns its path and length.
-fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(PathBuf, u64)> {
+/// Write a temp file next to `path` with what `fill` writes, synced to disk when `sync` is given
+/// (the sync runs through its [`WriteProgress::flushing`]). On failure the temp file is removed.
+/// Returns its path and length.
+fn write_temp(path: &Path, sync: Option<&dyn WriteProgress>, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(PathBuf, u64)> {
     let (tmp, file) = create_temp(path)?;
     let r = (|| {
         let limit = FAIL_AFTER.with(Cell::get);
@@ -214,8 +215,8 @@ fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> i
         w.flush()?;
         let n = w.n;
         let f = w.inner.into_inner().map_err(|e| e.into_error())?;
-        if sync {
-            counted_sync(&f)?;
+        if let Some(p) = sync {
+            p.flushing(&mut || counted_sync(&f))?;
         }
         Ok(n)
     })();
@@ -251,7 +252,7 @@ pub fn write_atomic_nosync(path: &Path, data: &[u8]) -> io::Result<()> {
 fn replace_with(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<u64> {
     let real = replace_target(path)?;
     let path = real.as_path();
-    let (tmp, n) = write_temp(path, sync, fill)?;
+    let (tmp, n) = write_temp(path, sync.then_some(&NoProgress as &dyn WriteProgress), fill)?;
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -295,25 +296,47 @@ pub fn write_new(path: &Path, data: &[u8]) -> io::Result<()> {
 /// `IMG_1.dng`, `IMG_1-2.dng`, …): the file is written once and then given the first name that
 /// is not taken. Returns that name; `AlreadyExists` when every candidate is taken.
 pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8]) -> io::Result<PathBuf> {
-    write_new_unique_progress(candidates, data, &|_| {})
+    write_new_unique_progress(candidates, data, &NoProgress)
 }
 
 /// Bytes per write (and at most per read back) of [`write_new_unique_progress`], so `progress`
 /// hears from a slow volume often.
 const PROGRESS_CHUNK: usize = 4 << 20;
 
+/// What [`write_new_unique_progress`] tells its caller as it goes, so a caller watching a slow
+/// volume sees it moving, and can mark the new file's flush, which moves no byte it sees (the
+/// device writes what the page cache holds: seconds per gigabyte on a slow drive).
+pub trait WriteProgress {
+    /// `n` more bytes written to the new file (at most 4 MiB at a time).
+    fn wrote(&self, n: usize);
+    /// `n` more bytes of it read back to check it.
+    fn read_back(&self, n: usize);
+    /// Run `flush`, the new file's sync to disk, and return its result.
+    fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()>;
+}
+
+/// A [`WriteProgress`] no one listens to.
+pub struct NoProgress;
+
+impl WriteProgress for NoProgress {
+    fn wrote(&self, _: usize) {}
+    fn read_back(&self, _: usize) {}
+    fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        flush()
+    }
+}
+
 /// [`write_new_unique`], telling `progress` the bytes it writes and reads back as it goes (at most
-/// 4 MiB at a time), so a caller watching a slow volume sees it moving. The temp file's flush is
-/// not reported.
-pub fn write_new_unique_progress(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8], progress: &dyn Fn(usize)) -> io::Result<PathBuf> {
+/// 4 MiB at a time), and running the temp file's flush through it.
+pub fn write_new_unique_progress(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8], progress: &dyn WriteProgress) -> io::Result<PathBuf> {
     let mut candidates = candidates.peekable();
     let Some(first) = candidates.peek().cloned() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name to write"));
     };
-    let (tmp, _) = write_temp(&first, true, &mut |w| {
+    let (tmp, _) = write_temp(&first, Some(progress), &mut |w| {
         for chunk in data.chunks(PROGRESS_CHUNK) {
             w.write_all(chunk)?;
-            progress(chunk.len());
+            progress.wrote(chunk.len());
         }
         Ok(())
     })?;
@@ -367,7 +390,7 @@ fn publish_new_by_rename(tmp: &Path, path: &Path, before_claim: &dyn Fn()) -> io
 }
 
 /// Does the file at `path` hold exactly `data`?
-fn same_content(path: &Path, data: &[u8], progress: &dyn Fn(usize)) -> io::Result<bool> {
+fn same_content(path: &Path, data: &[u8], progress: &dyn WriteProgress) -> io::Result<bool> {
     use std::io::Read;
     let mut f = File::open(path)?;
     if f.metadata()?.len() != data.len() as u64 {
@@ -382,7 +405,7 @@ fn same_content(path: &Path, data: &[u8], progress: &dyn Fn(usize)) -> io::Resul
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        progress(k);
+        progress.read_back(k);
         if data.get(at..at + k) != buf.get(..k) {
             return Ok(false);
         }
@@ -748,20 +771,49 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
-    /// Progress hears every byte written and every byte read back, never more than 4 MiB at a
-    /// time (an empty file: nothing; a file of exactly 4 MiB, one write; 4 MiB + 1, two).
+    /// What a [`WriteProgress`] heard: (written, read back) chunks, and the syncs made inside its
+    /// `flushing` and outside it.
+    #[derive(Default)]
+    struct Heard {
+        wrote: std::sync::Mutex<Vec<usize>>,
+        read_back: std::sync::Mutex<Vec<usize>>,
+        synced_inside: Cell<u64>,
+    }
+
+    impl WriteProgress for Heard {
+        fn wrote(&self, n: usize) {
+            self.wrote.lock().unwrap().push(n);
+        }
+        fn read_back(&self, n: usize) {
+            self.read_back.lock().unwrap().push(n);
+        }
+        fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+            let before = syncs_on_this_thread();
+            let r = flush();
+            self.synced_inside.set(self.synced_inside.get() + syncs_on_this_thread() - before);
+            r
+        }
+    }
+
+    /// Progress hears every byte written and every byte read back, each as its own kind, never
+    /// more than 4 MiB at a time (an empty file: nothing; a file of exactly 4 MiB, one write;
+    /// 4 MiB + 1, two), and the temp file's sync runs inside its `flushing` (the folder's after
+    /// the name is given doesn't).
     #[test]
     fn new_files_report_their_progress() {
         for len in [0usize, 1, PROGRESS_CHUNK - 1, PROGRESS_CHUNK, PROGRESS_CHUNK + 1, 2 * PROGRESS_CHUNK + 7] {
             let d = temp(&format!("progress-{len}"));
             let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-            let seen = std::sync::Mutex::new(Vec::new());
-            let got = write_new_unique_progress(&mut std::iter::once(d.join("a.dng")), &data, &|n| seen.lock().unwrap().push(n)).unwrap();
+            let heard = Heard::default();
+            let syncs = syncs_on_this_thread();
+            let got = write_new_unique_progress(&mut std::iter::once(d.join("a.dng")), &data, &heard).unwrap();
             assert_eq!(fs::read(&got).unwrap(), data);
-            let seen = seen.into_inner().unwrap();
-            assert_eq!(seen.iter().sum::<usize>(), 2 * len, "{len}: written and read back");
-            assert!(seen.iter().all(|&n| n > 0 && n <= PROGRESS_CHUNK), "{len}: {seen:?}");
-            assert!(seen.len() >= 2 * len.div_ceil(PROGRESS_CHUNK), "{len}: {seen:?}");
+            let (wrote, back) = (heard.wrote.into_inner().unwrap(), heard.read_back.into_inner().unwrap());
+            assert_eq!((wrote.iter().sum::<usize>(), back.iter().sum::<usize>()), (len, len), "{len}: written and read back");
+            assert!(wrote.iter().chain(&back).all(|&n| n > 0 && n <= PROGRESS_CHUNK), "{len}: {wrote:?} {back:?}");
+            assert_eq!(wrote.len(), len.div_ceil(PROGRESS_CHUNK), "{len}: {wrote:?}");
+            assert_eq!(heard.synced_inside.get(), 1, "{len}: the temp file's sync, through `flushing`");
+            assert!(syncs_on_this_thread() - syncs > 1, "{len}: and the folder's, outside it");
             let _ = fs::remove_dir_all(&d);
         }
     }

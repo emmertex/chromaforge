@@ -1,7 +1,10 @@
 //! One call's scheduler (PR 1 and 2, §5.2–5.4 of the I/O spec): per-volume queues, round-robin
 //! admission, today's limits, the stall rule, cancel, and the abandoned-job registry's block and
 //! recovery rules. A copy holds a slot on its source and its destination (one when both are the
-//! same volume), and its bytes and completion are progress on both. The calling thread does the
+//! same volume); its reads are progress on its source, its writes and read-back on its
+//! destination, its completion on both, and while its current call is on one of the two it is
+//! waiting there, not on the other (so a hung destination is declared, not the card that feeds
+//! it). The calling thread does the
 //! bookkeeping, waking at every result and at least every tick; worker threads run the jobs and
 //! send results over a channel, so a job that never returns can be left behind.
 
@@ -13,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use lcc_catalog::folders::{VolumeKey, volume_key};
 
 use super::IoContext;
-use super::job::JobState;
+use super::job::{JobState, Moved, Side};
 use super::shared::{AbandonKind, Admission, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Shared, WAKE_JUMP};
 
 /// One unit of file work: the file it reads (its volume decides its queue), where it writes, if
@@ -51,13 +54,16 @@ pub(crate) enum JobOutcome<T> {
     Panicked(String),
 }
 
-/// What one job did (R9): bytes it read, its time, its wait at the work gate.
+/// What one job did (R9): bytes it moved, its time, its wait at the work gate.
 #[derive(Clone, Debug)]
 pub(crate) struct JobMetrics {
     pub(crate) volume: VolumeKey,
     /// A copy's destination volume, when not the source's.
     pub(crate) dest: Option<VolumeKey>,
+    /// Every byte it moved (`moved`'s total).
     pub(crate) bytes: u64,
+    /// Its bytes by kind: read (on its source), written and read back (on its destination).
+    pub(crate) moved: Moved,
     /// Nanoseconds from start to end (or to abandonment).
     pub(crate) wall: u64,
     /// Nanoseconds of that spent waiting at work gates.
@@ -91,10 +97,12 @@ struct Finished<T> {
 fn execute<T>(run: Box<dyn FnOnce() -> T + Send + 'static>, job: &Arc<JobState>, dest: Option<VolumeKey>) -> (Result<T, String>, JobMetrics) {
     let (t0, w0) = (job.now(), crate::memory::gate_wait_nanos());
     let result = crate::memory::with_job(Some(job.clone()), || crate::guard::catch("reading the file", run));
+    let moved = job.moved();
     let metrics = JobMetrics {
         volume: job.volume.clone(),
         dest,
-        bytes: job.bytes(),
+        bytes: moved.total(),
+        moved,
         wall: job.now().saturating_sub(t0),
         gate_wait: crate::memory::gate_wait_nanos().saturating_sub(w0),
         gate_failure: job.gate_failure(),
@@ -128,8 +136,9 @@ struct Slot<T> {
     id: u64,
     run: Option<Box<dyn FnOnce() -> T + Send + 'static>>,
     state: Option<Arc<JobState>>,
-    /// Bytes seen at the last tick.
-    seen: u64,
+    /// Bytes seen at the last tick: every byte of a job on one volume, else a copy's bytes on its
+    /// source and on its destination.
+    seen: [u64; 2],
     /// When it started (monotonic ns).
     started: u64,
     /// The volume it runs as the recovery job of.
@@ -254,7 +263,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
             id: ctx.shared.next_id(),
             run: Some(job.run),
             state: None,
-            seen: 0,
+            seen: [0; 2],
             started: 0,
             recovery: None,
             outcome: None,
@@ -361,11 +370,21 @@ fn woke_late(ctx: &IoContext, dm: u64, inline: u64) -> bool {
     ctx.late_tick_is_wake && dm.saturating_sub(inline) > period.saturating_add(WAKE_JUMP)
 }
 
+/// Job `slot`'s side on volume `v`: `None` when it isn't a copy between two volumes (all its I/O
+/// is on `v`).
+fn side_on<T>(slot: &Slot<T>, v: usize) -> Option<Side> {
+    slot.dest.map(|_| if slot.vol == v { Side::Source } else { Side::Dest })
+}
+
 /// Per-volume totals of a call (R9): debug log, and stderr under `<PREFIX>_PROFILE`.
 fn log_metrics(metrics: &[Option<JobMetrics>]) {
     let mut per: Vec<(&VolumeKey, u64, u64, u64, u64, u64)> = Vec::new();
-    // (a copy counts on its source and its destination)
-    for (m, v) in metrics.iter().flatten().flat_map(|m| std::iter::once((m, &m.volume)).chain(m.dest.as_ref().map(|d| (m, d)))) {
+    // (a copy counts on its source, with the bytes it read, and on its destination, with those it
+    // wrote and read back)
+    for (m, v, bytes) in metrics.iter().flatten().flat_map(|m| match &m.dest {
+        Some(d) => vec![(m, &m.volume, m.moved.on(Side::Source)), (m, d, m.moved.on(Side::Dest))],
+        None => vec![(m, &m.volume, m.bytes)],
+    }) {
         let row = match per.iter().position(|r| r.0 == v) {
             Some(i) => per.get_mut(i),
             None => {
@@ -375,7 +394,7 @@ fn log_metrics(metrics: &[Option<JobMetrics>]) {
         };
         if let Some(r) = row {
             r.1 = r.1.saturating_add(1);
-            r.2 = r.2.saturating_add(m.bytes);
+            r.2 = r.2.saturating_add(bytes);
             r.3 = r.3.saturating_add(m.wall);
             r.4 = r.4.saturating_add(m.gate_wait);
             r.5 = r.5.saturating_add(u64::from(m.gate_failure.is_some()));
@@ -630,7 +649,7 @@ impl<T: Send + 'static> Call<'_, T> {
         let shared = &self.ctx.shared;
         let state = Arc::new(JobState::new(slot.id, key, shared.clock.clone(), Arc::downgrade(shared)));
         slot.state = Some(state.clone());
-        slot.seen = 0;
+        slot.seen = [0; 2];
         slot.started = now;
         self.seq += 1;
         for v in [Some(home), dest].into_iter().flatten() {
@@ -741,10 +760,12 @@ impl<T: Send + 'static> Call<'_, T> {
                 dest = Some(vol.key.clone());
             }
         }
+        let moved = state.moved();
         let metrics = JobMetrics {
             volume: state.volume.clone(),
             dest,
-            bytes: state.bytes(),
+            bytes: moved.total(),
+            moved,
             wall: now.saturating_sub(started),
             gate_wait: 0,
             gate_failure: state.gate_failure(),
@@ -776,19 +797,9 @@ impl<T: Send + 'static> Call<'_, T> {
         if !self.cancelling && self.cancel.load(Ordering::Relaxed) {
             self.begin_cancel();
         }
-        // a job's bytes since the last tick are progress on each of its volumes (a copy: both)
-        let mut moved: Vec<usize> = Vec::new();
-        for vol in &self.vols {
-            for &i in &vol.running {
-                let Some(slot) = self.slots.get_mut(i) else { continue };
-                let Some(st) = &slot.state else { continue };
-                let b = st.bytes();
-                if b > slot.seen {
-                    slot.seen = b;
-                    moved.push(i);
-                }
-            }
-        }
+        // a job's bytes since the last tick are progress on the volume they moved on (a copy's
+        // reads on its source, its writes and read-back on its destination); a copy whose current
+        // call is on its other volume waits there, not here: it pauses this one's clock
         let mut silent: Vec<(u64, usize)> = Vec::new();
         for v in 0..self.vols.len() {
             let Some(vol) = self.vols.get(v) else { continue };
@@ -800,13 +811,24 @@ impl<T: Send + 'static> Call<'_, T> {
             let mut progressed = false;
             let mut paused_all = true;
             for &i in &vol.running {
-                let Some(st) = self.slots.get(i).and_then(|s| s.state.as_ref()) else { continue };
-                if moved.contains(&i) {
+                let Some(slot) = self.slots.get_mut(i) else { continue };
+                let Some(st) = slot.state.clone() else { continue };
+                let side = side_on(slot, v);
+                let (bytes, at, seen) = match side {
+                    None => (st.bytes(), st.last_bytes(), slot.seen.get_mut(0)),
+                    Some(s @ Side::Source) => (st.moved().on(s), st.last_bytes_on(s), slot.seen.get_mut(0)),
+                    Some(s @ Side::Dest) => (st.moved().on(s), st.last_bytes_on(s), slot.seen.get_mut(1)),
+                };
+                if let Some(seen) = seen
+                    && bytes > *seen
+                {
+                    *seen = bytes;
                     progressed = true;
-                    self.ctx.shared.bytes_seen(&key, st.last_bytes());
+                    self.ctx.shared.bytes_seen(&key, at);
                 }
                 let computing = st.computing_for(now).is_some_and(|s| s <= stall_time.saturating_mul(COMPUTING_FACTOR));
-                paused_all &= st.at_gate() || computing;
+                let elsewhere = side.is_some_and(|s| st.on() == Some(s.other()));
+                paused_all &= st.at_gate() || computing || elsewhere;
             }
             let cancelling = self.cancelling;
             let Some(vol) = self.vols.get_mut(v) else { continue };
@@ -825,7 +847,8 @@ impl<T: Send + 'static> Call<'_, T> {
         }
         // the volume silent longest is judged first: a copy stuck on one of its volumes leaves
         // the other when that one is declared, so the other isn't declared with it unless it is
-        // silent as long (then the source, created first, goes first)
+        // silent as long (a copy whose stuck call named no volume pauses neither: then the
+        // source, created first, goes first)
         silent.sort_by_key(|&(s, v)| (std::cmp::Reverse(s), v));
         for (_, v) in silent {
             let Some(vol) = self.vols.get(v) else { continue };

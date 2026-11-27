@@ -134,10 +134,18 @@ pub(super) fn job(path: &str, f: impl FnOnce() -> R + Send + 'static) -> IoJob<R
     IoJob::read(path.to_string(), Box::new(f))
 }
 
-/// Count `n` bytes for the thread's job (as the capped counting reader does).
+/// Count `n` bytes for the thread's job (as the capped counting reader does): read from its source.
 pub(super) fn bytes(n: usize) {
     if let Some(j) = crate::memory::current_job() {
         j.add_bytes(n);
+    }
+}
+
+/// Count `n` bytes written to the thread's job's destination (as a copy's counting writer does):
+/// its current call is then on the destination.
+pub(super) fn wrote(n: usize) {
+    if let Some(j) = crate::memory::current_job() {
+        j.add(super::job::ByteKind::Written, n);
     }
 }
 

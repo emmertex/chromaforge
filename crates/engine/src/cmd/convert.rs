@@ -8,6 +8,7 @@ use lcc_catalog::{MediaKind, Op, Source};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_active, has_selection};
+use crate::io_sched::job::{ByteKind, Side};
 use crate::{Result, Session};
 
 /// `<stem>.dng`, then `<stem>-2.dng`, `<stem>-3.dng`… next to `path`.
@@ -31,12 +32,16 @@ pub(crate) fn write_dng_for(s: &Session, path: &str, packet: String) -> std::res
 
 /// [`write_dng_with`] without the session (imports convert on a worker thread).
 ///
-/// Run as an I/O scheduler job (Copy as DNG), its reads and writes count as progress and the
-/// decode, encode and check between them as computing (§5.2 of the I/O spec).
+/// The raw is read as any media file (a regular file of at most
+/// [`crate::bounded_read::MAX_MEDIA_BYTES`]). Run as an I/O scheduler job (Copy as DNG, where the
+/// raw is the copy just made), its reads and writes count as progress on the destination, the
+/// decode, encode and check between them as computing, and the DNG's flush as flushing (§5.2 of
+/// the I/O spec).
 pub(crate) fn write_dng_with(file_bytes: Option<&crate::merge::ByteReader>, path: &str, packet: String) -> std::result::Result<String, String> {
     let bytes = match file_bytes {
         Some(r) => r(path)?,
-        None => crate::bounded_read::read_counted(Path::new(path)).map_err(|e| format!("{path}: {e}"))?,
+        None => crate::bounded_read::read_bounded_as(Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES, ByteKind::ReadBack)
+            .map_err(|e| format!("{path}: {e}"))?,
     };
     let dng = {
         // pure CPU, between the read of the raw and the write of the DNG
@@ -57,10 +62,30 @@ pub(crate) fn write_dng_with(file_bytes: Option<&crate::merge::ByteReader>, path
         }
         dng
     };
-    let count = |n: usize| crate::bounded_read::count_bytes(u64::try_from(n).unwrap_or(u64::MAX));
-    let out = lcc_catalog::safe_file::write_new_unique_progress(&mut dng_names(path), &dng, &count)
+    crate::bounded_read::on(Side::Dest);
+    let out = lcc_catalog::safe_file::write_new_unique_progress(&mut dng_names(path), &dng, &JobWrites)
         .map_err(|e| format!("{path}: could not write its DNG ({e}); the raw is kept"))?;
     Ok(out.to_string_lossy().to_string())
+}
+
+/// The DNG's write as the thread's I/O job sees it: bytes written and read back on the
+/// destination, and the temp file's flush as [`crate::memory::while_flushing`], as a copy's own
+/// flush is (a large DNG flushed to a slow drive or a share is not a stall).
+struct JobWrites;
+
+impl lcc_catalog::safe_file::WriteProgress for JobWrites {
+    fn wrote(&self, n: usize) {
+        crate::bounded_read::count_bytes(ByteKind::Written, u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    fn read_back(&self, n: usize) {
+        crate::bounded_read::count_bytes(ByteKind::ReadBack, u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    fn flushing(&self, flush: &mut dyn FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+        crate::bounded_read::on(Side::Dest);
+        crate::memory::while_flushing(flush)
+    }
 }
 
 fn convert(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1049,5 +1074,58 @@ mod tests {
         for id in [2, 3, 4, 5] {
             assert_eq!(cat.photo(PhotoId(id)).unwrap().meta.title, "My copy", "{id}");
         }
+    }
+
+    /// A job state for the thread, on a fake clock.
+    fn job() -> std::sync::Arc<crate::io_sched::JobState> {
+        let clock: std::sync::Arc<dyn crate::io_sched::clock::Clock> = std::sync::Arc::new(crate::io_sched::clock::FakeClock::default());
+        let key = lcc_catalog::folders::volume_key("/a", &lcc_catalog::folders::Mounts::none());
+        std::sync::Arc::new(crate::io_sched::JobState::new(1, key, clock, std::sync::Weak::new()))
+    }
+
+    /// Copy as DNG's write, as its job sees it: the DNG's bytes written and read back count as such
+    /// (on the destination), and its temp file's flush runs as flushing, so the stall clock pauses
+    /// for it as for a copy's flush (the computing span is open during the flush, closed after).
+    #[test]
+    fn a_dngs_write_counts_its_bytes_and_flushes_as_flushing() {
+        use lcc_catalog::safe_file::WriteProgress;
+        let job = job();
+        let spans = crate::memory::with_job(Some(job.clone()), || {
+            JobWrites.wrote(10);
+            JobWrites.read_back(4);
+            let mut during = None;
+            JobWrites
+                .flushing(&mut || {
+                    during = Some(job.computing_for(job.now()).is_some());
+                    Ok(())
+                })
+                .unwrap();
+            (during, job.computing_for(job.now()).is_some())
+        });
+        assert_eq!(spans, (Some(true), false), "computing during the flush only");
+        let m = job.moved();
+        assert_eq!((m.read, m.written, m.read_back), (0, 10, 4));
+        assert_eq!(job.on(), Some(Side::Dest));
+    }
+
+    /// The raw is read as a media file: a FIFO in its place (which `std::fs::read` would open and
+    /// wait on for a writer forever) is refused at once, and nothing is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_the_raw_is_refused_without_waiting() {
+        let dir = std::env::temp_dir().join(format!("lcc-dng-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("a.nef");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.to_string_lossy().to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(write_dng_with(None, &path, String::new()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a FIFO must not be opened and waited on");
+        assert!(got.as_ref().is_err_and(|e| e.contains("not a regular file")), "{got:?}");
+        assert!(!dir.join("a.dng").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
