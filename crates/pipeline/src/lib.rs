@@ -135,7 +135,7 @@ pub struct SourceInfo {
     pub white_scale: Option<f32>,
     /// Raw sources: the green row of the inverse of the colour model's development (look gain, matrix, white-balance
     /// multipliers): the raw green a developed pixel stands for is `probe · pixel`. A base curve reads it to anchor its
-    /// input on the sensor's green at any white balance, as Capture One does ([`local::film_white_scale`]). `None`: not
+    /// input on the sensor's green, so a neutral meets the curve at the same input at any white balance ([`local::film_white_scale`]). `None`: not
     /// known (as `white_scale`), the as-shot `white_scale` is used.
     pub green_probe: Option<[f32; 3]>,
     /// Segmentation mattes stored in the file (DNG semantic masks): AI masks use them.

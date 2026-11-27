@@ -47,8 +47,8 @@ pub fn wb_matrix_for(info: &SourceInfo, s: &DevelopSettings) -> Option<[[f32; 3]
 }
 
 /// What a base curve divides the scene value by under the photo's white balance: the luminance the render gives a
-/// neutral whose raw green is 1, so a neutral of raw green `g` meets the curve at `g` at any white balance (Capture One
-/// anchors green at 1; the multipliers here are normalised to their minimum, and a white balance change moves the
+/// neutral whose raw green is 1, so a neutral of raw green `g` meets the curve at `g` at any white balance (the curve is
+/// green-anchored; the multipliers here are normalised to their minimum, and a white balance change moves the
 /// pixels afterwards, so sensor white's luminance is not constant). A source that does not know its colour model
 /// (`green_probe` unset) keeps the as-shot `white_scale`.
 pub fn film_white_scale(info: &SourceInfo, s: &DevelopSettings) -> f32 {
