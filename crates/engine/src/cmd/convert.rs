@@ -46,7 +46,7 @@ pub(crate) fn write_dng_with(file_bytes: Option<&crate::merge::ByteReader>, path
     let dng = {
         // pure CPU, between the read of the raw and the write of the DNG
         let _computing = crate::memory::computing();
-        let mut raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let mut raw = crate::raw_decoder::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
         crate::camera_preview::with_starting_colour(&mut raw, &bytes);
         drop(bytes);
         let dng = lcc_raw::write_dng(&raw, &lcc_raw::DngWriteOptions { xmp: (!packet.is_empty()).then_some(packet), ..Default::default() })
@@ -582,7 +582,7 @@ fn decode_photo(s: &Session, id: lcc_catalog::PhotoId) -> std::result::Result<(S
         Some(r) => r(path)?,
         None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
     };
-    let raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let raw = crate::raw_decoder::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
     Ok((path.clone(), raw, bytes))
 }
 

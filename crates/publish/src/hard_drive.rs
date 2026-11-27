@@ -48,7 +48,14 @@ impl HardDrive {
     /// `wanted`, or the first of `a-2.jpg`, `a-3.jpg`, ... (the app's naming for clashes) whose file
     /// and sidecars don't belong to another photo. Files of this photo's previous publication
     /// don't count: a re-publish replaces them.
+    ///
+    /// A file of the wanted name holding exactly these bytes is taken as this photo's too: a run stopped before it
+    /// recorded what it sent (a crash, a power cut, the app closed) left it, and the next run would otherwise send the
+    /// photo again as `a-2.jpg` beside it (issue #1376). Its sidecars go with it.
     fn free_name(&self, wanted: &str, up: &Upload<'_>) -> String {
+        if up.previous.is_none() && self.holds(wanted, up.bytes) {
+            return wanted.to_string();
+        }
         let own = |n: &str| up.previous.is_some_and(|p| n == p || up.sidecars.iter().any(|(ext, _)| with_ext(p, ext) == n));
         let taken = |n: &str| !own(n) && self.folder.join(n).exists();
         let free = |n: &str| !taken(n) && !up.sidecars.iter().any(|(ext, _)| taken(&with_ext(n, ext)));
@@ -66,6 +73,14 @@ impl HardDrive {
             })
             .find(|n| free(n))
             .unwrap_or_else(|| wanted.to_string())
+    }
+}
+
+impl HardDrive {
+    /// Whether the collection's file `name` holds exactly `bytes` (compared only when the sizes agree).
+    fn holds(&self, name: &str, bytes: &[u8]) -> bool {
+        let path = self.folder.join(name);
+        std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64) && std::fs::read(&path).is_ok_and(|b| b == bytes)
     }
 }
 

@@ -483,6 +483,53 @@ fn webp_lossless_exact() {
     assert_eq!(d.xmp.as_deref(), Some("<w/>"));
 }
 
+/// Lossy WebP (#1482) decodes close to its source, keeps its metadata and alpha, gets smaller at a lower quality,
+/// and refuses what WebP can't hold instead of panicking; a build without it says so.
+#[test]
+fn webp_lossy_close_with_metadata() {
+    let img = gradient(64, 48);
+    let icc = write_named(NamedSpace::Srgb);
+    let exif = minimal_exif(6);
+    let meta = EncodeMeta { icc: Some(&icc), exif: Some(&exif), xmp: Some("<w/>"), ..Default::default() };
+    let e = EncodeImage::rgba8(&img);
+    if !WEBP_LOSSY {
+        assert!(encode_webp_lossy(&e, 90, &meta).is_err());
+        return;
+    }
+    let bytes = encode_webp_lossy(&e, 90, &meta).unwrap();
+    assert_eq!(sniff(&bytes), Some(Format::WebP));
+    let d = decode(&bytes, DecodeOptions::default()).unwrap();
+    assert_eq!((d.image.width, d.image.height, d.orientation), (64, 48, 6));
+    assert_eq!(d.icc.as_deref(), Some(&icc[..]));
+    assert_eq!(d.xmp.as_deref(), Some("<w/>"));
+    let got = d.to_srgb8();
+    let err: f64 =
+        got.data.iter().zip(&img.data).flat_map(|(a, b)| (0..3).map(move |k| (a[k] as f64 - b[k] as f64).abs())).sum::<f64>() / (64.0 * 48.0 * 3.0);
+    assert!(err < 6.0, "mean error {err}");
+    // no metadata: the encoder's own file
+    let plain = encode_webp_lossy(&e, 90, &EncodeMeta::default()).unwrap();
+    assert!(decode(&plain, DecodeOptions::default()).is_ok());
+    // alpha survives
+    let mut see = img.clone();
+    see.data.iter_mut().enumerate().for_each(|(i, p)| p[3] = if i % 2 == 0 { 255 } else { 0 });
+    let a = encode_webp_lossy(&EncodeImage::rgba8(&see), 90, &meta).unwrap();
+    let d = decode(&a, DecodeOptions::default()).unwrap();
+    assert!(d.alpha.is_some(), "the transparency is kept");
+    // grey and RGB inputs
+    let grey = vec![128u8; 16 * 8];
+    assert!(encode_webp_lossy(&EncodeImage::new(16, 8, 1, Samples::U8(&grey)), 50, &meta).is_ok());
+    // a smaller file at a lower quality
+    let noisy: Vec<u8> = (0..128 * 96 * 3).map(|i| ((i * 7919) % 251) as u8).collect();
+    let n = EncodeImage::new(128, 96, 3, Samples::U8(&noisy));
+    assert!(encode_webp_lossy(&n, 20, &meta).unwrap().len() < encode_webp_lossy(&n, 95, &meta).unwrap().len());
+    // hostile: too wide, quality out of range, wrong depth
+    let wide = vec![0u8; (WEBP_MAX_SIDE as usize + 1) * 3];
+    assert!(encode_webp_lossy(&EncodeImage::new(WEBP_MAX_SIDE + 1, 1, 3, Samples::U8(&wide)), 90, &meta).is_err());
+    assert!(encode_webp_lossy(&n, 0, &meta).is_ok() && encode_webp_lossy(&n, 255, &meta).is_ok());
+    let deep = vec![0u16; 4 * 4 * 3];
+    assert!(encode_webp_lossy(&EncodeImage::new(4, 4, 3, Samples::U16(&deep)), 90, &meta).is_err());
+}
+
 #[test]
 fn gif_and_bmp_decode() {
     use image::ImageEncoder;
