@@ -131,6 +131,18 @@ fn landscape_class(raw: &str) -> Option<&'static str> {
     }
 }
 
+/// The whole-mask Feather a new mask starts with: a People mask of the eyebrows alone comes soft (#1458), since
+/// the brows' thin hard-edged shape reads as drawn-on once adjusted, as in Lightroom; everything else starts at 0.
+fn default_feather(shape: &MaskShape) -> f64 {
+    match shape {
+        MaskShape::People { parts, .. } if !parts.is_empty() && parts.iter().all(|n| n.eq_ignore_ascii_case("Eyebrows")) => EYEBROW_FEATHER,
+        _ => 0.0,
+    }
+}
+
+/// The Feather an eyebrows-only People mask starts with.
+pub(crate) const EYEBROW_FEATHER: f64 = 30.0;
+
 /// The People parts `mask.add {kind: "people"}` takes (Lightroom's names; none: Entire Person).
 const PEOPLE_PARTS: &[&str] =
     &["Entire Person", "Face Skin", "Body Skin", "Eyebrows", "Eye Sclera", "Iris and Pupil", "Eyes", "Lips", "Teeth", "Hair", "Clothes"];
@@ -526,7 +538,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|landscape|luminanceRange|colorRange|object|prompt, ...shape params (landscape: class sky|water|vegetation|mountains|architecture|natural ground|artificial ground, loose names like building, sand or road work; the last four need the EoMT scene model, else ModelMissing) (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?}: AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|landscape|luminanceRange|colorRange|object|prompt, ...shape params (landscape: class sky|water|vegetation|mountains|architecture|natural ground|artificial ground, loose names like building, sand or road work; the last four need the EoMT scene model, else ModelMissing) (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?}: AI kinds need the SAM 3 model; a People mask of the eyebrows alone starts with Feather 30; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
@@ -547,12 +559,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 let next = s.active().and_then(|id| s.develop_of(id)).map(|d| d.next_mask_id()).unwrap_or(1);
                 // the next-mask settings (what was dialed in with no mask selected)
                 let adjust = super::mask_effects::new_mask_adjust(s, &kind);
+                let feather = default_feather(&shape);
                 let out = masks_edit(s, "mask.add", "Add Mask", |masks, active| {
                     masks.push(Mask {
                         id: next,
                         name: name.unwrap_or_else(|| format!("Mask {next}")),
                         components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
                         adjust,
+                        feather,
                         ..Default::default()
                     });
                     *active = Some(next);
@@ -2094,6 +2108,17 @@ mod tests_color_range {
 #[cfg(test)]
 mod pick_tests {
     use super::*;
+
+    // issue #1458: an eyebrows-only People mask starts soft; others (and eyebrows with other parts) start hard
+    #[test]
+    fn eyebrow_masks_start_feathered() {
+        let people = |parts: &[&str]| MaskShape::People { person: 0, parts: parts.iter().map(|s| s.to_string()).collect(), who: None, seg: None };
+        assert_eq!(default_feather(&people(&["Eyebrows"])), EYEBROW_FEATHER);
+        assert_eq!(default_feather(&people(&["eyebrows"])), EYEBROW_FEATHER);
+        assert_eq!(default_feather(&people(&["Eyebrows", "Lips"])), 0.0);
+        assert_eq!(default_feather(&people(&[])), 0.0);
+        assert_eq!(default_feather(&MaskShape::Sky), 0.0);
+    }
 
     // issue #1145: the mask Hue clamps to ±180°, hostile values never pass through
     #[test]

@@ -251,7 +251,7 @@ fn learn_pixels(path: &str, only: Option<&str>, clear: bool, cleared: &Mutex<Has
     let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).map_err(|e| format!("{path}: {e}"))?;
     let _permit = crate::memory::work_gate().acquire(len.saturating_mul(3));
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let raw = lcc_raw::decode(&bytes).map_err(|e| e.to_string())?;
+    let raw = crate::raw_decoder::decode(&bytes).map_err(|e| e.to_string())?;
     drop(bytes);
     let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
     let m = &raw.metadata;
@@ -448,7 +448,7 @@ fn calibrate(_s: &mut Session, p: &Value) -> Result<Value> {
     for path in paths.iter().take(200) {
         let r = (|| -> std::result::Result<Value, String> {
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let raw = lcc_raw::decode(&bytes).map_err(|e| e.to_string())?;
+            let raw = crate::raw_decoder::decode(&bytes).map_err(|e| e.to_string())?;
             let df = lcc_raw::darkframe::analyze(&raw)?;
             let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
             let body = match str_param(p, "body") {
@@ -485,7 +485,7 @@ fn pixel_defects(s: &mut Session, p: &Value) -> Result<Value> {
     let Source::File { path } = &ph.source else { return Err(bad(c, "not a file")) };
     let on = ph.develop.sensor.fixes_pixels();
     let bytes = std::fs::read(path).map_err(|e| bad(c, format!("{path}: {e}")))?;
-    let raw = lcc_raw::decode(&bytes).map_err(|e| bad(c, e.to_string()))?;
+    let raw = crate::raw_decoder::decode(&bytes).map_err(|e| bad(c, e.to_string()))?;
     let m = &raw.metadata;
     let body = sensor_maps::body_key(m.serial_number.as_deref(), Some(&ph.file_name));
     let found = detect(&raw, &Thresholds::LEARN);
