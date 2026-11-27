@@ -394,6 +394,138 @@ pub fn encode_webp_lossless(img: &EncodeImage, meta: &EncodeMeta) -> Result<Vec<
     Ok(out)
 }
 
+/// Whether this build writes lossy WebP ([`encode_webp_lossy`]): desktop builds with the `webp-lossy` feature.
+pub const WEBP_LOSSY: bool = cfg!(all(feature = "webp-lossy", not(any(target_arch = "wasm32", target_os = "android"))));
+
+/// Longest side a WebP file can have.
+pub const WEBP_MAX_SIDE: u32 = 16383;
+
+/// Encode lossy WebP (VP8, and VP8L-compressed alpha when the image has some) at `quality` 1..=100 through libwebp,
+/// with `meta`'s ICC profile, EXIF and XMP in an extended (`VP8X`) file. Grey images are written as RGB. An error
+/// for samples other than 8-bit, sides past [`WEBP_MAX_SIDE`], or a build without [`WEBP_LOSSY`].
+pub fn encode_webp_lossy(img: &EncodeImage, quality: u8, meta: &EncodeMeta) -> Result<Vec<u8>> {
+    img.validate()?;
+    let Samples::U8(s) = img.samples else {
+        return Err(Error::Encode("WebP needs 8-bit samples".into()));
+    };
+    if img.width == 0 || img.height == 0 || img.width > WEBP_MAX_SIDE || img.height > WEBP_MAX_SIDE {
+        return Err(Error::Encode(format!("WebP images are at most {WEBP_MAX_SIDE} pixels a side ({} × {})", img.width, img.height)));
+    }
+    let n = img.width as usize * img.height as usize;
+    let ch = img.channels as usize;
+    let alpha = ch == 2 || ch == 4;
+    let px: Vec<u8> = s
+        .chunks_exact(ch.max(1))
+        .take(n)
+        .flat_map(|c| match *c {
+            [g] => [g, g, g, 255],
+            [g, a] => [g, g, g, a],
+            [r, g, b] => [r, g, b, 255],
+            [r, g, b, a, ..] => [r, g, b, a],
+            _ => [0, 0, 0, 255],
+        })
+        .enumerate()
+        .filter(|(i, _)| alpha || i % 4 != 3)
+        .map(|(_, v)| v)
+        .collect();
+    if px.len() != n * if alpha { 4 } else { 3 } {
+        return Err(Error::Encode("WebP: fewer samples than the image needs".into()));
+    }
+    let bitstream = webp_lossy_bitstream(&px, alpha, img.width, img.height, quality.clamp(1, 100))?;
+    webp_with_metadata(&bitstream, img.width, img.height, meta)
+}
+
+#[cfg(all(feature = "webp-lossy", not(any(target_arch = "wasm32", target_os = "android"))))]
+fn webp_lossy_bitstream(px: &[u8], alpha: bool, w: u32, h: u32, quality: u8) -> Result<Vec<u8>> {
+    let layout = if alpha { webp::PixelLayout::Rgba } else { webp::PixelLayout::Rgb };
+    // (the sizes were checked against `px` above: the wrapper's own check can't fail)
+    let enc = webp::Encoder::new(px, layout, w, h);
+    let out = enc.encode_simple(false, f32::from(quality)).map_err(|e| Error::Encode(format!("WebP: {e:?}")))?;
+    Ok(out.to_vec())
+}
+
+#[cfg(not(all(feature = "webp-lossy", not(any(target_arch = "wasm32", target_os = "android")))))]
+fn webp_lossy_bitstream(_px: &[u8], _alpha: bool, _w: u32, _h: u32, _quality: u8) -> Result<Vec<u8>> {
+    Err(Error::Encode("lossy WebP is not available in this build (lossless WebP is)".into()))
+}
+
+/// A RIFF chunk: tag, little-endian size, payload, padded to an even length.
+fn riff_chunk(out: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) -> Result<()> {
+    let len = u32::try_from(payload.len()).map_err(|_| Error::Encode("WebP: a chunk over 4 GB".into()))?;
+    out.extend_from_slice(tag);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(payload);
+    if payload.len() % 2 == 1 {
+        out.push(0);
+    }
+    Ok(())
+}
+
+/// The chunks of a WebP file after `RIFF size WEBP`, as (tag, payload); `None` when it isn't one.
+fn webp_chunks(file: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
+    if file.get(0..4)? != b"RIFF" || file.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut at = 12usize;
+    while at < file.len() {
+        let tag: [u8; 4] = file.get(at..at + 4)?.try_into().ok()?;
+        let len = u32::from_le_bytes(file.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+        let body = file.get(at + 8..at.checked_add(8)?.checked_add(len)?)?;
+        out.push((tag, body));
+        at = at.checked_add(8)?.checked_add(len)?.checked_add(len % 2)?;
+    }
+    Some(out)
+}
+
+/// `bitstream` (a simple or extended WebP file from the encoder) rewritten as an extended file carrying `meta`'s
+/// ICC profile, EXIF and XMP, in the order the WebP container specification gives (VP8X, ICCP, ALPH, VP8, EXIF, XMP).
+/// Unchanged when `meta` has none of them.
+fn webp_with_metadata(bitstream: &[u8], w: u32, h: u32, meta: &EncodeMeta) -> Result<Vec<u8>> {
+    let xmp = meta.xmp.map(str::as_bytes);
+    if meta.icc.is_none() && meta.exif.is_none() && xmp.is_none() {
+        return Ok(bitstream.to_vec());
+    }
+    let chunks = webp_chunks(bitstream).ok_or_else(|| Error::Encode("WebP: the encoder made no WebP file".into()))?;
+    let image: Vec<_> = chunks.iter().filter(|(t, _)| t == b"ALPH" || t == b"VP8 " || t == b"VP8L").collect();
+    let has_alpha = image.iter().any(|(t, _)| t == b"ALPH");
+    let mut flags = 0u8;
+    if meta.icc.is_some() {
+        flags |= 0x20;
+    }
+    if has_alpha {
+        flags |= 0x10;
+    }
+    if meta.exif.is_some() {
+        flags |= 0x08;
+    }
+    if xmp.is_some() {
+        flags |= 0x04;
+    }
+    let mut vp8x = vec![flags, 0, 0, 0];
+    vp8x.extend_from_slice(&(w.saturating_sub(1)).to_le_bytes()[..3]);
+    vp8x.extend_from_slice(&(h.saturating_sub(1)).to_le_bytes()[..3]);
+    let mut body = b"WEBP".to_vec();
+    riff_chunk(&mut body, b"VP8X", &vp8x)?;
+    if let Some(icc) = meta.icc {
+        riff_chunk(&mut body, b"ICCP", icc)?;
+    }
+    for (tag, payload) in image {
+        riff_chunk(&mut body, tag, payload)?;
+    }
+    if let Some(exif) = meta.exif {
+        riff_chunk(&mut body, b"EXIF", exif)?;
+    }
+    if let Some(xmp) = xmp {
+        riff_chunk(&mut body, b"XMP ", xmp)?;
+    }
+    let len = u32::try_from(body.len()).map_err(|_| Error::Encode("WebP: file over 4 GB".into()))?;
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
 /// Encode AVIF (sRGB, 4:4:4, 10-bit AV1) with `ravif` (rav1e). 8-bit samples are widened by the
 /// encoder; 16-bit samples keep 10 bits of precision (BT.601 full-range YCbCr computed here).
 /// `quality` 1..=100, `speed` 1 (slow) ..= 10. EXIF is embedded; ICC is not supported by the muxer

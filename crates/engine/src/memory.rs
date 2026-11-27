@@ -719,11 +719,38 @@ pub fn set_release_hook(f: fn()) {
 }
 
 /// Return freed memory to the system now (after large temporaries were dropped: a decode, an
-/// import). No-op without a hook.
+/// import). No-op without a hook, and on a thread running [`holding_freed_memory`] (an export lane),
+/// which releases once when it ends instead.
 pub fn release() {
+    if HOLDING.with(std::cell::Cell::get) {
+        return;
+    }
     if let Some(f) = RELEASE.get() {
         f();
     }
+}
+
+thread_local! {
+    /// This thread keeps freed memory for its next photo ([`holding_freed_memory`]).
+    static HOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` keeping the memory it frees for the process to reuse: its [`release`] calls do nothing, and one release
+/// follows at the end. For an export lane (#1416): giving the pages back after every photo's decode only made
+/// the next photo fault them all in again, about a tenth of a batch export's processor time in system calls and
+/// page faults (measured on 500 and 7,504 raws), without lowering its peak memory.
+pub fn holding_freed_memory<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HOLDING.with(|h| h.set(self.0));
+            if !self.0 {
+                release();
+            }
+        }
+    }
+    let _restore = Restore(HOLDING.with(|h| h.replace(true)));
+    f()
 }
 
 /// Install the heap counter of an instrumented binary (first call wins).
@@ -776,6 +803,33 @@ impl crate::Session {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static RELEASED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Inside [`holding_freed_memory`] a release waits for the end: one release for the whole run, nested or not
+    /// (#1416); outside it each release happens.
+    #[test]
+    fn an_export_lane_releases_once_at_the_end() {
+        set_release_hook(|| RELEASED.with(|n| n.set(n.get() + 1)));
+        let count = || RELEASED.with(std::cell::Cell::get);
+        // (another test's hook may have won: then this thread's count never moves and there is nothing to check)
+        release();
+        if count() == 0 {
+            return;
+        }
+        let before = count();
+        holding_freed_memory(|| {
+            release();
+            release();
+            holding_freed_memory(release);
+            assert_eq!(count(), before, "nothing given back while the lane works");
+        });
+        assert_eq!(count(), before + 1, "once at the end");
+        release();
+        assert_eq!(count(), before + 2);
+    }
 
     /// A background load waits while the photo on screen loads (#1355), at most the cap; the interactive load itself,
     /// and background work it starts on its own thread, never wait.

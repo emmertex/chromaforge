@@ -137,6 +137,7 @@ pub mod profile_edits;
 pub mod profile_refs;
 pub mod proof;
 pub mod quality_scan;
+pub mod raw_decoder;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 pub mod rename;
@@ -184,6 +185,8 @@ pub use errors::{AiModel, ErrorKind};
 pub use fonts::{CraftFont, craft_fonts};
 use lcc_catalog::{Catalog, Filter, Op, PhotoId, Sort};
 use lcc_develop::DevelopSettings;
+/// A measurement's status line (`_status`, ABI v1.1, #1398), for the Plug-in Filters panel.
+pub use lcc_filters::analysis_status as plugin_analysis_status;
 pub use media::{RenderJob, SourceLevel};
 use serde_json::Value;
 pub use view::{Browse, FilterChip, LibrarySource, Selection, SelectionState, filter_chips};
@@ -600,6 +603,9 @@ pub struct Session {
     pub workflow: cmd::actions::Workflow,
     /// Ops applied since the last `drain_log` (for persistence).
     pending_log: Vec<Op>,
+    /// Ops handed to the catalog log so far (a running count): a command that saved its own changes while it ran
+    /// (an import commits in batches) still waits for them to reach the disk before it reports success (#1359).
+    logged_ops: u64,
     pub media: media::MediaCache,
     /// Current time provider (ISO 8601); injectable for tests and wasm.
     pub clock: Box<dyn Fn() -> String + Send>,
@@ -767,6 +773,9 @@ pub struct Session {
     /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
     /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
     pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder per camera (library label → Auto / lcc-raw / LibRaw; persisted in prefs.json, absent =
+    /// Auto). Installed into [`raw_decoder`], which every raw decode asks.
+    pub raw_decoders: std::collections::BTreeMap<String, raw_decoder::Decoder>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -985,6 +994,7 @@ impl Session {
             journal: Vec::new(),
             workflow: Default::default(),
             pending_log: Vec::new(),
+            logged_ops: 0,
             media: media::MediaCache::default(),
             clock: Box::new(|| "2026-09-30T12:00:00".to_string()),
             depth: 0,
@@ -1057,6 +1067,7 @@ impl Session {
             sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),
+            raw_decoders: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),
@@ -1120,6 +1131,7 @@ impl Session {
 
     fn run_command(&mut self, id: &str, journal: Option<&Value>, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
         let log_start = self.pending_log.len();
+        let logged_before = self.logged_ops;
         let was_active = self.active();
         let (commits_before, silent_before) = (self.commits, self.silent_changes);
         // where the view stood, and the history: a command that changes the view and leaves the history as it was is navigation
@@ -1180,7 +1192,9 @@ impl Session {
             // queued, and the next save (any later command, or the frame loop) retries it. Other
             // persistence trouble (a failed compaction, an older queued change still unwritten by
             // a command that changed nothing) doesn't fail the command; `library.info` reports it.
-            let produced = self.pending_log.len() > log_start;
+            // (ops it saved while it ran count too: an import hands its batches to the log as it goes, which left
+            // nothing queued here and skipped the wait, reporting success before the import was on disk, #1359)
+            let produced = self.pending_log.len() > log_start || self.logged_ops != logged_before;
             let mut persisted = self.persist();
             if persisted.is_ok() && produced && self.wait_for_catalog_log {
                 persisted = self.flush_catalog();
