@@ -19,15 +19,17 @@ issue. A checklist row with no issue is named in the PR title instead.
 
 ## Open a pull request
 
-- **From a fork**, branched from latest `main`. GitHub merges only up-to-date branches: when `main` moves, merge it
-  in, re-run the checks, push.
+- **From a fork**, branched from latest `staging`, targeted at `staging` (the default branch; PRs never
+  target `main` directly — batches of `staging` land there together, see [`docs/ci.md`](docs/ci.md)). GitHub merges
+  only up-to-date branches: when `staging` moves, merge it in, re-run the checks, push.
 - **Template** ([`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)); one change per PR.
 - **Title:** task/checklist id first, as commits do (`LR-IMP-FORMATS: …`), or `Issue #123: …`.
 - **Description:** `Fixes #123` (or `Part of #123`); what you changed and how you checked it (tests, app,
   screenshots for UI).
 - **Green first** ([`docs/ci.md`](docs/ci.md)): *before pushing*, run `cargo xtask ci --quick` (what your
   changes can break: clippy on the changed crates and their dependents, their tests) and `cargo xtask sil` when
-  pipeline/develop changed. The PR's CI is the merge gate; open the PR when the work is ready.
+  pipeline/develop changed. Cloud CI runs the fast gate on the PR to `staging`, with no tests — the full suite
+  gates the batch PR `staging` → `main` and the nightly; open the PR when the work is ready.
   New features ship with a test that fails without them; crash fixes with a hostile-input no-panic check.
 - **One task id per commit**, with the docs it moves (parity-checklist rows, gaps entry, ROADMAP/target-app-parity
   numbers) in the same commit.
