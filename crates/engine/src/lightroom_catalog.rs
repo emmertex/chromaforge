@@ -228,6 +228,20 @@ impl Reader {
         required: bool,
         kept: bool,
         cancel: &AtomicBool,
+        f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.each_row_with(name, required, kept, None, cancel, f)
+    }
+
+    /// [`Self::each_row`] that, given `large`, also reads records past the reader's size limit, their large values
+    /// through `large`'s filter for the column (named) they are in (issue #1311).
+    pub(crate) fn each_row_with(
+        &self,
+        name: &str,
+        required: bool,
+        kept: bool,
+        large: Option<&dyn Fn(&str, bool) -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>>>,
+        cancel: &AtomicBool,
         mut f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
     ) -> Result<(), String> {
         let Some(t) = self.db.live_table(name, cancel)? else {
@@ -253,8 +267,11 @@ impl Reader {
             }
             f(row, blobs)
         };
+        let by_index = large.map(|large| move |i: usize, text: bool| columns.get(i).and_then(|c| large(c, text)));
         let walked = if kept {
             self.db.for_each_kept_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
+        } else if let Some(by_index) = &by_index {
+            self.db.for_each_row_with_large(t.rootpage, columns.len(), cancel, by_index, &mut sink)
         } else {
             self.db.for_each_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
         };
@@ -492,15 +509,19 @@ impl Reader {
         self.xmp_table_within(cancel, MAX_XMP_PACKET)
     }
 
-    /// [`Self::xmp_table`] with each packet held to `max_packet` decoded bytes: a compressed packet may decode past
-    /// it ([`xmp_inflate_limit`]), and one past it keeps everything but its colour lookup tables
-    /// ([`within_packet_bound`]); only one past it even without them is left off its row, named in the warnings.
-    /// The bound is per image, so the size of the catalog alone never drops a packet (upstream #3674).
+    /// [`Self::xmp_table`] with each packet held to `max_packet` decoded bytes: a packet past it is left off
+    /// its row and named in the warnings; the bound is per image, so the size of the catalog alone never
+    /// drops a packet (upstream #3674).
     fn xmp_table_within(&self, cancel: &AtomicBool, max_packet: usize) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
         let mut unkeyed = 0usize;
-        let read = self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
+        // a record past the reader's limit (a packet carrying a camera profile's table data) is read in pieces, its
+        // `xmp` without those tables (issue #1311)
+        let large = |column: &str, text: bool| -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>> {
+            (column == "xmp").then(|| Box::new(XmpPacketFilter::new(!text, max_packet)) as Box<dyn crate::lightroom_sqlite::ValueFilter>)
+        };
+        let read = self.each_row_with("Adobe_AdditionalMetadata", false, false, Some(&large), cancel, |mut r, blobs| {
             let Some(image) = image_of(&r) else {
                 unkeyed += 1;
                 return Ok(());
@@ -510,30 +531,32 @@ impl Reader {
                 if column != "xmp" {
                     continue;
                 }
-                // the declared size (the decode checks it) against what this blob may expand to, before inflating
+                // the declared size (the decode checks it) against what is left, before inflating
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
-                let limit = if declared <= max_packet { max_packet } else { xmp_inflate_limit_here(bytes.len(), max_packet) };
-                let decoded = if declared > limit { Ok(None) } else { decode_compressed_within(&bytes, "XMP", limit).map(Some) };
+                let over = |n: usize| n > max_packet;
+                // a packet declared past the bound is read without its camera-profile tables, which are most of it
+                let decoded =
+                    if over(declared) { strip_packet(&bytes, true, max_packet).map(Some) } else { decode_compressed(&bytes, "XMP").map(Some) };
                 match decoded {
-                    Ok(Some(packet)) => {
-                        if let Some(packet) = within_packet_bound(image, packet, max_packet, &mut warnings) {
-                            r.insert(column.to_string(), Value::String(packet));
-                        }
+                    Ok(Some(packet)) if !over(packet.len()) => {
+                        r.insert(column.to_string(), Value::String(packet));
                     }
-                    Ok(None) => warnings.push(format!(
-                        "image {image}: the XMP packet ({} MiB) is larger than this catalog and this computer's memory admit; it is left out",
-                        declared >> 20
-                    )),
+                    Ok(_) => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
                     Err(error) => warnings.push(format!("image {image}: {error}")),
                 }
             }
-            // a text packet is held to the same bound as a decoded one
-            if !blobs_had_xmp
-                && r.get("xmp").and_then(Value::as_str).is_some_and(|text| text.len() > max_packet)
-                && let Some(Value::String(packet)) = r.remove("xmp")
-                && let Some(packet) = within_packet_bound(image, packet, max_packet, &mut warnings)
+            // a text packet is held to the same bound as a decoded one (its tables taken out first)
+            if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
+                && !blobs_had_xmp
+                && len > max_packet
             {
-                r.insert("xmp".into(), Value::String(packet));
+                let text = r.remove("xmp");
+                match text.as_ref().and_then(Value::as_str).map(|t| strip_packet(t.as_bytes(), false, max_packet)) {
+                    Some(Ok(packet)) => {
+                        r.insert("xmp".into(), Value::String(packet));
+                    }
+                    _ => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
+                }
             }
             out.insert(image, r);
             Ok(())
@@ -746,22 +769,175 @@ fn compressed_len(bytes: &[u8]) -> Option<usize> {
 /// Lightroom's compressed text (`Adobe_AdditionalMetadata.xmp`, and history-step and snapshot settings since Lightroom
 /// Classic 13): the decoded length as 4 big-endian bytes, then a zlib stream, at most 16 MiB decoded. Errors name it
 /// `what`.
-fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
-    decode_compressed_within(bytes, what, 16 << 20)
+/// The name Lightroom gives the attributes carrying a camera profile's table data in a photo's cached XMP
+/// (`crs:Table_<digest>="…"`, up to about 120 MB each): nothing the import reads, and nearly all of such a packet.
+const XMP_TABLE_ATTRIBUTE: &[u8] = b"crs:Table_";
+
+/// A photo's cached XMP packet read a piece at a time (issue #1311): zlib-compressed after a 4-byte length (`blob`) or
+/// plain text, with every `crs:Table_<digest>` attribute left out, held to `max` bytes. Constant memory beyond what
+/// it keeps.
+struct XmpPacketFilter {
+    blob: bool,
+    max: usize,
+    /// The compressed stream's 4-byte length prefix, while it is read.
+    prefix: usize,
+    inflate: Option<Box<miniz_oxide::inflate::stream::InflateState>>,
+    strip: TableStripper,
 }
 
-/// [`decode_compressed`] to at most `limit` decoded bytes.
-fn decode_compressed_within(bytes: &[u8], what: &str, limit: usize) -> Result<String, String> {
+impl XmpPacketFilter {
+    fn new(blob: bool, max: usize) -> Self {
+        let inflate = blob.then(|| miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Zlib));
+        XmpPacketFilter { blob, max, prefix: 0, inflate, strip: TableStripper::default() }
+    }
+
+    fn text(&mut self, text: &[u8]) -> Result<(), String> {
+        self.strip.feed(text);
+        if self.strip.out.len() > self.max {
+            return Err(format!("the XMP packet exceeds {} MiB even without its camera-profile tables", self.max >> 20));
+        }
+        Ok(())
+    }
+}
+
+impl crate::lightroom_sqlite::ValueFilter for XmpPacketFilter {
+    fn feed(&mut self, mut piece: &[u8]) -> Result<(), String> {
+        if !self.blob {
+            return self.text(piece);
+        }
+        if self.prefix < 4 {
+            let skip = (4 - self.prefix).min(piece.len());
+            self.prefix += skip;
+            piece = piece.get(skip..).unwrap_or_default();
+        }
+        let mut out = [0u8; 64 * 1024];
+        while !piece.is_empty() {
+            let Some(state) = self.inflate.as_mut() else { return Ok(()) };
+            let r = miniz_oxide::inflate::stream::inflate(state, piece, &mut out, miniz_oxide::MZFlush::None);
+            let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+            self.text(&written)?;
+            piece = piece.get(r.bytes_consumed..).unwrap_or_default();
+            match r.status {
+                Ok(miniz_oxide::MZStatus::StreamEnd) => {
+                    self.inflate = None;
+                }
+                Ok(_) if r.bytes_consumed == 0 && r.bytes_written == 0 => return Err("invalid compressed XMP".into()),
+                Ok(_) => {}
+                Err(_) => return Err("invalid compressed XMP".into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<crate::lightroom_sqlite::Value, String> {
+        // what the inflater still holds
+        if let Some(mut state) = self.inflate.take() {
+            let mut out = [0u8; 64 * 1024];
+            loop {
+                let r = miniz_oxide::inflate::stream::inflate(&mut state, &[], &mut out, miniz_oxide::MZFlush::Finish);
+                let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+                self.text(&written)?;
+                match r.status {
+                    Ok(miniz_oxide::MZStatus::StreamEnd) => break,
+                    Ok(_) if r.bytes_written > 0 => {}
+                    _ => return Err("truncated compressed XMP".into()),
+                }
+            }
+        }
+        let text = self.strip.finish();
+        String::from_utf8(text).map(crate::lightroom_sqlite::Value::Text).map_err(|e| format!("XMP not UTF-8: {e}"))
+    }
+}
+
+/// A packet already in memory read as [`XmpPacketFilter`] reads one in pieces.
+fn strip_packet(bytes: &[u8], blob: bool, max: usize) -> Result<String, String> {
+    use crate::lightroom_sqlite::ValueFilter;
+    let mut f = Box::new(XmpPacketFilter::new(blob, max));
+    for piece in bytes.chunks(1 << 20) {
+        f.feed(piece)?;
+    }
+    match f.finish()? {
+        crate::lightroom_sqlite::Value::Text(t) => Ok(t),
+        _ => Err("XMP is not text".into()),
+    }
+}
+
+/// Copies XML text, leaving out each `crs:Table_<digest>="…"` attribute (name, `=` and quoted value), fed in pieces
+/// that may split anywhere.
+#[derive(Default)]
+struct TableStripper {
+    out: Vec<u8>,
+    /// How much of [`XMP_TABLE_ATTRIBUTE`] the latest bytes matched (held back until it is known).
+    matched: usize,
+    state: StripState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum StripState {
+    #[default]
+    Text,
+    /// In a table attribute's name, until `=`.
+    Name,
+    /// After its `=`, before the quote.
+    Equals,
+    /// In its value, until this quote.
+    Value(u8),
+}
+
+impl TableStripper {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match self.state {
+                StripState::Text => {
+                    if XMP_TABLE_ATTRIBUTE.get(self.matched) == Some(&b) {
+                        self.matched += 1;
+                        if self.matched == XMP_TABLE_ATTRIBUTE.len() {
+                            self.matched = 0;
+                            self.state = StripState::Name;
+                        }
+                        continue;
+                    }
+                    // a partial match that failed is text after all
+                    self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+                    self.matched = 0;
+                    if XMP_TABLE_ATTRIBUTE.first() == Some(&b) {
+                        self.matched = 1;
+                    } else {
+                        self.out.push(b);
+                    }
+                }
+                StripState::Name => {
+                    if b == b'=' {
+                        self.state = StripState::Equals;
+                    }
+                }
+                StripState::Equals => {
+                    if b == b'"' || b == b'\'' {
+                        self.state = StripState::Value(b);
+                    }
+                }
+                StripState::Value(q) => {
+                    if b == q {
+                        self.state = StripState::Text;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.state == StripState::Text {
+            self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+        }
+        self.out
+    }
+}
+
+fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
     if bytes.len() < 4 {
         return Err(format!("truncated {what} header"));
     }
-    let size = bytes
-        .get(..4)
-        .and_then(|s| <[u8; 4]>::try_from(s).ok())
-        .map(u32::from_be_bytes)
-        .and_then(|size| usize::try_from(size).ok())
-        .filter(|size| *size <= limit)
-        .ok_or_else(|| format!("{what} longer than {} MiB", limit >> 20))?;
+    let size = compressed_len(bytes).ok_or_else(|| format!("{what} longer than 16 MiB"))?;
     // inflated no further than its declared length: a stream that goes on is invalid, at no more cost than a valid one
     let decoded = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(bytes.get(4..).ok_or_else(|| format!("truncated {what}"))?, size)
         .map_err(|_| format!("invalid compressed {what}"))?;
@@ -769,106 +945,6 @@ fn decode_compressed_within(bytes: &[u8], what: &str, limit: usize) -> Result<St
         return Err(format!("{what} length mismatch"));
     }
     String::from_utf8(decoded).map_err(|e| format!("{what} not UTF-8: {e}"))
-}
-
-/// How many times its compressed size an XMP packet may expand to. Lightroom's packets compress about 10:1, and the
-/// large ones, which are mostly base-85 colour tables, far less; a hostile blob can't claim more than this.
-const XMP_EXPANSION: u64 = 32;
-
-/// The longest packet a compressed XMP blob of `compressed` bytes may decode to (issue #1312): no more than
-/// [`XMP_EXPANSION`] times its size, an eighth of the machine's memory (`total_memory`) or a quarter of what is free
-/// (`free_memory`), and never less than `floor` (the per-packet bound every catalog had before).
-pub(crate) fn xmp_inflate_limit(compressed: usize, floor: usize, total_memory: Option<u64>, free_memory: Option<u64>) -> usize {
-    let from_blob = u64::try_from(compressed).unwrap_or(u64::MAX).saturating_mul(XMP_EXPANSION);
-    let from_memory = match (total_memory.map(|m| m / 8), free_memory.map(|m| m / 4)) {
-        (Some(total), Some(free)) => total.min(free),
-        (Some(one), None) | (None, Some(one)) => one,
-        (None, None) => SETTINGS_MEMORY_UNKNOWN,
-    };
-    // (the header holds the length in 32 bits)
-    usize::try_from(from_blob.min(from_memory).min(u64::from(u32::MAX))).unwrap_or(usize::MAX).max(floor)
-}
-
-/// [`xmp_inflate_limit`] on this machine (only asked for a packet past `floor`: it looks at the memory).
-fn xmp_inflate_limit_here(compressed: usize, floor: usize) -> usize {
-    let total = crate::memory::total_ram().and_then(|m| u64::try_from(m).ok());
-    xmp_inflate_limit(compressed, floor, total, lcc_sysmem::available())
-}
-
-/// A decoded packet held for its image: as it is when it fits `max_packet`; past it, without its `crs:Table_<id>`
-/// colour lookup tables ([`strip_colour_tables`]: nothing the import reads, and nearly all of a large packet), which
-/// a warning names; `None` (with a warning) when even that is past it. Every field the import takes from the packet
-/// is the same either way, so a catalog imports the same whatever the size of its packets (issue #1312).
-fn within_packet_bound(image: i64, packet: String, max_packet: usize, warnings: &mut Vec<String>) -> Option<String> {
-    if packet.len() <= max_packet {
-        return Some(packet);
-    }
-    let full = packet.len();
-    let stripped = strip_colour_tables(&packet);
-    drop(packet);
-    if stripped.len() <= max_packet {
-        warnings.push(format!(
-            "image {image}: the XMP packet is {} MiB, nearly all of it colour lookup tables (crs:Table_…); they are left out of \
-             the source archive (the import doesn't use them), everything else in the packet is imported",
-            full >> 20
-        ));
-        return Some(stripped);
-    }
-    warnings.push(format!(
-        "image {image}: the XMP packet is {} MiB even without its colour lookup tables (over {} MiB); it is left out",
-        stripped.len() >> 20,
-        max_packet >> 20
-    ));
-    None
-}
-
-/// `packet` without its `crs:Table_<id>` values, in attribute form (` crs:Table_ABC="…"`) or element form
-/// (`<crs:Table_ABC>…</crs:Table_ABC>`): the colour lookup tables of the looks and profiles a photo used, which
-/// [`crate::xmp_look`] reads from preset files but nothing reads from a catalog's cached packet. One pass; text it
-/// can't make sense of (an unclosed value) is kept as it is.
-pub(crate) fn strip_colour_tables(packet: &str) -> String {
-    const NAME: &str = "crs:Table_";
-    let mut out = String::with_capacity(packet.len().min(1 << 20));
-    let mut rest = packet;
-    while let Some(at) = rest.find(NAME) {
-        let (before, from) = rest.split_at(at);
-        let after_name = from.get(NAME.len()..).unwrap_or("");
-        let id_len = after_name.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after_name.len());
-        let id = after_name.get(..id_len).unwrap_or("");
-        let tail = after_name.get(id_len..).unwrap_or("");
-        // attribute form: whitespace, name, `="` (or `='`), value, the same quote
-        let quoted = match tail.get(..2) {
-            Some("=\"") => Some('"'),
-            Some("='") => Some('\''),
-            _ => None,
-        };
-        if before.ends_with(|c: char| c.is_ascii_whitespace())
-            && let Some(quote) = quoted
-            && let Some(value) = tail.get(2..)
-            && let Some(end) = value.find(quote)
-        {
-            out.push_str(before.trim_end_matches(|c: char| c.is_ascii_whitespace()));
-            rest = value.get(end + 1..).unwrap_or("");
-            continue;
-        }
-        // element form: `<` name `>` value `</` name `>`
-        if let Some(open) = before.strip_suffix('<')
-            && let Some(value) = tail.strip_prefix('>')
-        {
-            let close = format!("</{NAME}{id}>");
-            if let Some(end) = value.find(&close) {
-                out.push_str(open);
-                rest = value.get(end + close.len()..).unwrap_or("");
-                continue;
-            }
-        }
-        // not a table value: keep it and look on
-        let keep = at + NAME.len();
-        out.push_str(rest.get(..keep).unwrap_or(rest));
-        rest = rest.get(keep..).unwrap_or("");
-    }
-    out.push_str(rest);
-    out
 }
 
 #[cfg(test)]
@@ -5304,66 +5380,7 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows.values().filter(|r| r.contains_key("xmp")).count(), 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("left out"), "{warnings:?}");
-    }
-
-    /// Issue #1312: a packet past the bound because of its colour lookup tables keeps everything else (the fields the
-    /// import takes from it are the same as from a small packet), in text and in compressed form; one past the bound
-    /// even without them is still left out, alone.
-    #[test]
-    fn a_packet_large_with_colour_tables_keeps_its_fields() {
-        use SqlValue::{Blob as B, Integer as I, Null as N, Text as T};
-        let table = "A".repeat(300);
-        let packet = |extra: &str| {
-            format!(
-                "<x:xmpmeta><rdf:RDF><rdf:Description\n crs:RGBTable=\"AB12\"\n crs:Table_AB12=\"{table}\" \
-                 dc:rights=\"Own\"{extra}><crs:Table_CD34>{table}</crs:Table_CD34></rdf:Description></rdf:RDF></x:xmpmeta>"
-            )
-        };
-        let compressed = |text: &str| crate::lightroom_fixture::compressed(text);
-        let rows = vec![
-            vec![N, I(1), T(packet(""))],
-            vec![N, I(2), B(compressed(&packet("")))],
-            vec![N, I(3), B(compressed(&packet(&format!(" dc:title=\"{}\"", "t".repeat(300)))))],
-        ];
-        let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
-        let reader = Reader::new(Database::open_with_wal(bytes, &[]).unwrap(), 0);
-        let (rows, warnings) = reader.xmp_table_within(&AtomicBool::new(false), 256).unwrap();
-        for image in [1, 2] {
-            let kept = rows.get(&image).and_then(|r| r.get("xmp")).and_then(Value::as_str).unwrap_or_default();
-            assert!(kept.contains("dc:rights=\"Own\"") && kept.contains("crs:RGBTable=\"AB12\""), "image {image}: {kept}");
-            assert!(!kept.contains("crs:Table_") && kept.len() <= 256, "image {image}: {kept}");
-        }
-        assert!(rows.get(&3).is_some_and(|r| !r.contains_key("xmp")), "past the bound without its tables too");
-        assert_eq!(warnings.len(), 3, "{warnings:?}");
-        assert_eq!(warnings.iter().filter(|w| w.contains("colour lookup tables (crs:Table_…); they are left out")).count(), 2, "{warnings:?}");
-        assert!(warnings.iter().any(|w| w.starts_with("image 3:") && w.contains("even without")), "{warnings:?}");
-    }
-
-    #[test]
-    fn colour_tables_are_stripped_in_both_forms_and_nothing_else() {
-        let xmp = "<d a=\"1\"\n  crs:Table_X1='zz' b=\"2\"><crs:Table_Y>q</crs:Table_Y><e>crs:Table_ in text</e></d>";
-        assert_eq!(strip_colour_tables(xmp), "<d a=\"1\" b=\"2\"><e>crs:Table_ in text</e></d>");
-        // an unclosed value, a name at the very end and text with no table stay as they are
-        for kept in ["<d crs:Table_X=\"never closed", "crs:Table_", "<crs:Table_Z>open", "<d a=\"é\"/>", ""] {
-            assert_eq!(strip_colour_tables(kept), kept);
-        }
-    }
-
-    #[test]
-    fn the_xmp_inflate_bound_follows_the_blob_and_the_memory() {
-        const GIB: u64 = 1 << 30;
-        let floor = MAX_XMP_PACKET;
-        // a 95 MB blob on a 128 GiB machine: what it may expand to
-        assert_eq!(xmp_inflate_limit(95_000_000, floor, Some(128 * GIB), Some(64 * GIB)), 3_040_000_000);
-        // (the header holds 32 bits)
-        assert_eq!(xmp_inflate_limit(200_000_000, floor, Some(1024 * GIB), Some(1024 * GIB)), usize::try_from(u64::from(u32::MAX)).unwrap());
-        assert_eq!(xmp_inflate_limit(4_000_000, floor, Some(128 * GIB), Some(64 * GIB)), 128_000_000);
-        // a small blob, or a small machine, keeps the old bound
-        assert_eq!(xmp_inflate_limit(10, floor, Some(128 * GIB), Some(64 * GIB)), floor);
-        assert_eq!(xmp_inflate_limit(95_000_000, floor, Some(GIB / 8), None), floor);
-        assert_eq!(xmp_inflate_limit(95_000_000, floor, None, Some(GIB)), usize::try_from(GIB / 4).unwrap());
-        assert_eq!(xmp_inflate_limit(usize::MAX, floor, None, None), usize::try_from(SETTINGS_MEMORY_UNKNOWN).unwrap());
+        assert!(warnings[0].contains("exceed"), "{warnings:?}");
     }
 
     #[test]
@@ -6435,5 +6452,38 @@ pub(crate) mod tests {
             assert_eq!(image(bad.clone()), None, "{bad}");
         }
         assert_eq!(image_of(&row(json!({"tag": 1}))), None);
+    }
+}
+
+#[cfg(test)]
+mod xmp_table_tests {
+    use super::*;
+
+    /// Issue #1311: a packet's camera-profile tables are left out however the text is split, quotes of either kind,
+    /// and everything else is kept; a compressed packet reads the same; one still too large without them is refused.
+    #[test]
+    fn camera_profile_tables_are_left_out_of_a_packet() {
+        let table = "x".repeat(300_000);
+        let packet = format!(
+            r#"<rdf:Description crs:CameraProfile="Adobe Standard" crs:Table_ABC123="{table}" dc:creator="Jo" crs:Table_9='{table}' photoshop:Credit="crs:Tab"/>"#
+        );
+        let want = r#"<rdf:Description crs:CameraProfile="Adobe Standard"  dc:creator="Jo"  photoshop:Credit="crs:Tab"/>"#;
+        for split in [1usize, 7, 4096, packet.len()] {
+            let mut s = TableStripper::default();
+            for piece in packet.as_bytes().chunks(split) {
+                s.feed(piece);
+            }
+            assert_eq!(String::from_utf8(s.finish()).unwrap(), want, "split {split}");
+        }
+        assert_eq!(strip_packet(packet.as_bytes(), false, 1 << 20).unwrap(), want);
+        // compressed as Lightroom stores it: a 4-byte length, then zlib
+        let mut blob = (packet.len() as u32).to_be_bytes().to_vec();
+        blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(packet.as_bytes(), 6));
+        assert_eq!(strip_packet(&blob, true, 1 << 20).unwrap(), want);
+        // still past the bound without its tables
+        assert!(strip_packet(format!("{table}{table}").as_bytes(), false, 1000).is_err());
+        // damaged compressed data: an error, never a panic
+        assert!(strip_packet(&[0, 0, 0, 9, 1, 2, 3, 4, 5], true, 1000).is_err());
+        assert!(strip_packet(blob.get(..blob.len() / 2).unwrap(), true, 1 << 20).is_err());
     }
 }
