@@ -359,10 +359,10 @@ fn a_merged_file_imported_on_its_own_finds_its_frames_again() {
         DngPacking::Deflate,
     )
     .unwrap();
-    let merged_dir = dir.join("merged");
-    std::fs::create_dir_all(&merged_dir).unwrap();
-    std::fs::write(merged_dir.join("frame-01-PixelShift.dng"), &dng).unwrap();
-    let r = h.app.session.execute("library.import", &json!({"paths": [merged_dir.to_string_lossy()]})).unwrap();
+    // beside its frames (a block that names frames elsewhere finds none of them)
+    let merged_path = dir.join("frame-01-PixelShift.dng");
+    std::fs::write(&merged_path, &dng).unwrap();
+    let r = h.app.session.execute("library.import", &json!({"paths": [merged_path.to_string_lossy()]})).unwrap();
     let id = PhotoId(r["imported"][0].as_u64().expect("imported"));
     let sources = h.app.session.catalog.photo(id).unwrap().merge_sources.clone().expect("its sources are restored");
     assert_eq!((sources.shot_count, sources.reference, sources.frames.len()), (16, 1, 16));
