@@ -1398,6 +1398,8 @@ impl Renderer {
                 (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
                 (true, false) => lcc_engine::memory::in_background(|| job.run()),
                 _ if on_second_card(slot) => lcc_engine::gpu::prefer_helper(|| job.run()),
+                // the loupe's photo: background loads wait while it loads (#1355)
+                _ if slot == Slot::Main => lcc_engine::memory::in_foreground(|| job.run()),
                 _ => job.run(),
             };
             Self::run_for(slot, run, &display, headroom)

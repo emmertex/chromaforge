@@ -1661,6 +1661,8 @@ pub(crate) fn load_weight(bytes: &[u8], max_edge: usize) -> usize {
 /// waiting for the second could wait on itself.
 fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<T, String>) -> Result<T, String> {
     let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
+    // the photo on screen loads first (#1355)
+    crate::memory::yield_to_foreground(crate::memory::FOREGROUND_YIELD_MAX);
     let gate = crate::memory::work_gate();
     let acquire = |bytes: usize| if crate::memory::is_background() { gate.acquire(bytes) } else { gate.acquire_urgent(bytes) };
     let reading = acquire(len);
