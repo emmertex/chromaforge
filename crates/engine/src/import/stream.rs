@@ -146,7 +146,9 @@ type Emit<'e> = &'e mut dyn FnMut(Prepared) -> bool;
 struct Run<'a> {
     ctx: &'a Arc<IoContext>,
     look: Lookahead,
-    cancel: &'a AtomicBool,
+    /// The caller's cancel flag, linked to both streams: the pool starts no read or copy once it
+    /// is set, before this run next looks.
+    cancel: &'a Arc<AtomicBool>,
     files: Vec<String>,
     /// Batches staged so far (the next chunk of `files` to stage).
     staged_chunks: usize,
@@ -186,7 +188,7 @@ impl ImportJob {
     /// [`ImportJob::prepare_files`] call per [`super::batch_size`] files would give; the reads and
     /// copies of several volumes run at once meanwhile (I/O spec §5.6). Stops before the next file
     /// once `cancel` is set: the batches with items are still handed over (the last ones cut short).
-    pub fn prepare_stream(&mut self, files: Vec<String>, cancel: &AtomicBool, mut emit: impl FnMut(Prepared) -> bool) {
+    pub fn prepare_stream(&mut self, files: Vec<String>, cancel: &Arc<AtomicBool>, mut emit: impl FnMut(Prepared) -> bool) {
         self.prepare_streamed(IoContext::global(), files, cancel, Lookahead::new(), &mut emit);
     }
 
@@ -194,7 +196,7 @@ impl ImportJob {
     /// same planning, the same items), its reads all made first as that call makes them, its copies
     /// run as they are planned (one after another only where a name family or a content needs it)
     /// instead of in flushes. A cancel before it begins gives an empty batch.
-    pub(crate) fn prepare_whole(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &AtomicBool) -> Prepared {
+    pub(crate) fn prepare_whole(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &Arc<AtomicBool>) -> Prepared {
         let n = files.len().max(1);
         let look = Lookahead { batch: n, per_volume: n, batches: 1 };
         let mut out = None;
@@ -205,7 +207,7 @@ impl ImportJob {
         out.unwrap_or_default()
     }
 
-    pub(crate) fn prepare_streamed(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &AtomicBool, look: Lookahead, emit: Emit<'_>) {
+    pub(crate) fn prepare_streamed(&mut self, ctx: &Arc<IoContext>, files: Vec<String>, cancel: &Arc<AtomicBool>, look: Lookahead, emit: Emit<'_>) {
         if files.is_empty() {
             return;
         }
@@ -328,7 +330,7 @@ impl<'a> Run<'a> {
     fn new(
         ctx: &'a Arc<IoContext>,
         look: Lookahead,
-        cancel: &'a AtomicBool,
+        cancel: &'a Arc<AtomicBool>,
         files: Vec<String>,
         file_bytes: Option<crate::merge::ByteReader>,
     ) -> Run<'a> {
@@ -387,8 +389,8 @@ impl<'a> Run<'a> {
     }
 
     fn probe_stream(&mut self) -> &mut Stream<ProbeResult> {
-        let ctx = self.ctx;
-        self.probes.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), Result::is_ok))
+        let (ctx, cancel) = (self.ctx, self.cancel);
+        self.probes.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), Result::is_ok).with_cancel(cancel.clone()))
     }
 
     fn vol_of(&mut self, path: &str) -> usize {
@@ -562,7 +564,8 @@ impl<'a> Run<'a> {
             crate::guard::catch("import", || super::run_transfer(*t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
         };
         let job = IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> };
-        let stream = self.transfers.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), transfer_ok));
+        let cancel = self.cancel;
+        let stream = self.transfers.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), transfer_ok).with_cancel(cancel.clone()));
         match stream.submit(vec![job]) {
             Ok(r) => {
                 self.transfer_index.insert(r.start, tid);

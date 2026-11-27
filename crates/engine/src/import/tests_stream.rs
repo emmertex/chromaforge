@@ -183,7 +183,7 @@ fn run_stream(root: &Path, files: &[String], opts: &ImportOptions, look: Lookahe
     let mut s = session(root, browse);
     let mut job = ImportJob::new(&mut s, opts.clone()).unwrap();
     let now = job.now().to_string();
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut batches = Vec::new();
     job.prepare_streamed(&ctx, files.to_vec(), &cancel, look, &mut |p| {
         batches.push(p);
@@ -265,7 +265,7 @@ fn one_batch_of_every_file_matches_one_call() {
                 let mut s = session(&root, false);
                 let mut job = ImportJob::new(&mut s, opts.clone()).unwrap();
                 let now = job.now().to_string();
-                let p = job.prepare_whole(&ctx, files.clone(), &AtomicBool::new(false));
+                let p = job.prepare_whole(&ctx, files.clone(), &Arc::new(AtomicBool::new(false)));
                 let got = commit(&root, &opts, s, &now, vec![p]);
                 let _ = std::fs::remove_dir_all(&root);
                 assert_eq!(got, want, "{tag}, order {order}, run {i}");
@@ -403,7 +403,7 @@ fn start_in(
     s.media.file_probe = probe;
     let mut job = ImportJob::new(&mut s, opts).unwrap();
     std::thread::spawn(move || {
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let mut out = Vec::new();
         job.prepare_streamed(&ctx, files, &cancel, look, &mut |p| {
             out.push(p);
@@ -491,7 +491,7 @@ fn planning_stays_within_the_batch_horizon() {
         let c = ctx.clone();
         let look = Lookahead { batch, per_volume: 64, batches: horizon };
         let h = std::thread::spawn(move || {
-            let cancel = AtomicBool::new(false);
+            let cancel = Arc::new(AtomicBool::new(false));
             let mut out = Vec::new();
             job.prepare_streamed(&c, files, &cancel, look, &mut |p| {
                 out.push(p);
@@ -573,7 +573,7 @@ fn cancel_hands_over_what_was_done_in_order() {
     let ctx = context(&root);
     let mut s = Session::new().with_fs();
     let mut job = ImportJob::new(&mut s, options(&root, ImportMode::Copy)).unwrap();
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut batches: Vec<Prepared> = Vec::new();
     job.prepare_streamed(&ctx, files.clone(), &cancel, small(), &mut |p| {
         batches.push(p);
@@ -632,7 +632,7 @@ fn a_refused_batch_takes_back_the_rest() {
         release_copies_into(&f);
     });
     crate::import_move::inject(crate::import_move::Fault::NoLink);
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut taken: Vec<Prepared> = Vec::new();
     job.prepare_streamed(&ctx, files.clone(), &cancel, small(), &mut |p| {
         if taken.is_empty() {
@@ -670,5 +670,54 @@ fn the_read_ahead_is_never_below_a_batch() {
     wait_until(|| h.is_finished(), "the import to finish");
     let batches = h.join().unwrap();
     assert_eq!(batches.iter().map(|b| b.items.len()).sum::<usize>(), 12);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The caller's cancel stops the reads ahead at once, even while the run is busy elsewhere (here:
+/// handing a batch over): both streams are linked to it, so the pool starts no further read
+/// itself instead of waiting for the run to look. The reads after the first batch wait at a gate
+/// until the cancel is set, so most of the twelve batches' reads fed ahead are still queued then:
+/// none of those starts (only ones already handed to a reader, at most the stream's `workers`).
+/// Without the link, 36 of them started after the cancel.
+#[test]
+fn a_cancel_stops_reading_ahead_while_the_run_is_busy() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let root = temp_root("cancel-busy");
+    let ctx = context(&root);
+    let mut s = Session::new();
+    let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, ..ImportOptions::default() }).unwrap();
+    let (cancel, gate) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let (early, late) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (c, g, e, l) = (cancel.clone(), gate.clone(), early.clone(), late.clone());
+    job.probe = Some(Arc::new(move |path: &str| {
+        let first_batch = ["0.jpg", "1.jpg", "2.jpg", "3.jpg"].iter().any(|n| path.ends_with(&format!("/{n}")));
+        if c.load(SeqCst) { &l } else { &e }.fetch_add(1, SeqCst);
+        let start = std::time::Instant::now();
+        while !first_batch && !g.load(SeqCst) && start.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        Ok(ProbeInfo { format: "JPEG".into(), ..ProbeInfo::default() })
+    }));
+    let files: Vec<String> = (0..64).map(|i| root.join("a").join(format!("{i}.jpg")).to_string_lossy().into_owned()).collect();
+    let look = Lookahead { batch: 4, per_volume: 48, batches: 12 };
+    let mut batches = 0;
+    job.prepare_streamed(&ctx, files, &cancel, look, &mut |_| {
+        batches += 1;
+        if batches == 1 {
+            // cancelled, and this thread away until the pool has given every read an outcome
+            cancel.store(true, SeqCst);
+            gate.store(true, SeqCst);
+            let start = std::time::Instant::now();
+            while ctx.pending.load(SeqCst) > 0 {
+                assert!(start.elapsed() < Duration::from_secs(20), "the pool never settled");
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+        true
+    });
+    let (w, early, late) = (workers(usize::MAX), early.load(SeqCst), late.load(SeqCst));
+    assert!(early >= 4, "the first batch was read ({early})");
+    assert!(late <= w, "{late} reads started after cancel (at most {w} under way)");
+    assert!(early + late < 48, "reads fed ahead never started ({early} + {late})");
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -135,6 +135,8 @@ enum Ahead1 {
 struct Ahead {
     ctx: std::sync::Arc<crate::io_sched::IoContext>,
     stream: Option<crate::io_sched::pool::Stream<ProbeResult>>,
+    /// The cancel flag `stream` is linked to (the pool starts no read once it is set).
+    linked: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     reads: std::collections::HashMap<(PhotoId, String), Ahead1>,
     by_index: std::collections::HashMap<usize, (PhotoId, String)>,
 }
@@ -155,14 +157,16 @@ impl OriginalsReader {
     pub(crate) fn in_context(probe: FileProbe, ctx: std::sync::Arc<crate::io_sched::IoContext>) -> OriginalsReader {
         OriginalsReader {
             probe,
-            ahead: Ahead { ctx, stream: None, reads: std::collections::HashMap::new(), by_index: std::collections::HashMap::new() },
+            ahead: Ahead { ctx, stream: None, linked: None, reads: std::collections::HashMap::new(), by_index: std::collections::HashMap::new() },
         }
     }
 
     /// Read `batch` (as [`probe_cancellable_with_progress`] would: its results in its order,
     /// `progress` with the files done, stopping before more once `cancel` is set) and start reading
     /// `next` (the photos [`unread`] would list after it, at most [`AHEAD_BATCHES`] batches of
-    /// them) ahead. A cancel drops what was read ahead.
+    /// them) ahead. A cancel drops what was read ahead. `cancel` stays linked to the reads ahead:
+    /// once it is set no further read starts, between calls too (a call with another flag drops
+    /// what was read ahead and links its own).
     pub fn read(
         &mut self,
         batch: Vec<Unread>,
@@ -186,7 +190,7 @@ impl OriginalsReader {
         &mut self,
         batch: Vec<Unread>,
         next: &[Unread],
-        cancel: &std::sync::atomic::AtomicBool,
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         progress: &dyn Fn(usize),
     ) -> Vec<(Unread, std::result::Result<ProbeInfo, String>)> {
         use std::sync::atomic::Ordering::Relaxed;
@@ -194,6 +198,10 @@ impl OriginalsReader {
         if cancel.load(Relaxed) {
             self.drop_ahead();
             return batch.into_iter().map(|u| (u, Err("not probed".to_string()))).collect();
+        }
+        // (reads ahead linked to another flag: that flag's cancel would stop them, this one's not)
+        if self.ahead.linked.as_ref().is_some_and(|l| !std::sync::Arc::ptr_eq(l, cancel)) {
+            self.drop_ahead();
         }
         let key = |u: &Unread| (u.id, u.path.clone());
         let limit = batch.len().saturating_mul(AHEAD_BATCHES);
@@ -214,9 +222,10 @@ impl OriginalsReader {
                 })
                 .collect();
             let ctx = a.ctx.clone();
-            let stream = a
-                .stream
-                .get_or_insert_with(|| crate::io_sched::pool::Stream::open(&ctx, crate::import::workers(usize::MAX), std::result::Result::is_ok));
+            a.linked = Some(cancel.clone());
+            let stream = a.stream.get_or_insert_with(|| {
+                crate::io_sched::pool::Stream::open(&ctx, crate::import::workers(usize::MAX), std::result::Result::is_ok).with_cancel(cancel.clone())
+            });
             match stream.submit(jobs) {
                 Ok(r) => {
                     for (k, u) in fresh.iter().enumerate() {
@@ -279,6 +288,7 @@ impl OriginalsReader {
     #[cfg(not(target_arch = "wasm32"))]
     fn drop_ahead(&mut self) {
         self.ahead.stream = None;
+        self.ahead.linked = None;
         self.ahead.reads.clear();
         self.ahead.by_index.clear();
     }
@@ -652,6 +662,62 @@ mod tests {
         let r = reader.read(vec![u(5, "/a/5.NEF")], &[], &cancel, &|_| {});
         assert!(r[0].1.is_err(), "cancelled: not read");
         assert_eq!(reader.ahead_len(), 0);
+    }
+
+    /// The cancel flag stays linked to the reads ahead between calls: set while the caller is busy
+    /// applying a batch, the reads ahead not yet started never start (here: reads past the ones
+    /// under way, held at a gate until it is set). A call with another flag drops what was read
+    /// ahead (the old flag's cancel would stop those, the new one's not) and reads its batch then.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancel_stays_linked_to_the_reads_ahead_between_calls() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (gate, cancel, early, late) =
+            (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (g, c, e, l) = (gate.clone(), cancel.clone(), early.clone(), late.clone());
+        let probe: FileProbe = Arc::new(move |path: &str| {
+            if c.load(SeqCst) { &l } else { &e }.fetch_add(1, SeqCst);
+            let start = std::time::Instant::now();
+            while path.contains("/ahead/") && !g.load(SeqCst) && start.elapsed() < std::time::Duration::from_secs(20) {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            Ok(ProbeInfo { format: "NEF".into(), content_hash: Some(format!("hash-{path}")), ..Default::default() })
+        });
+        let ctx = context();
+        let mut reader = OriginalsReader::in_context(probe, ctx.clone());
+        let u = |i: u64, p: String| Unread { id: PhotoId(i), path: p };
+        let batch: Vec<Unread> = (1..=6).map(|i| u(i, format!("/a/{i}.NEF"))).collect();
+        let next: Vec<Unread> = (100..112).map(|i| u(i, format!("/a/ahead/{i}.NEF"))).collect();
+        let r = reader.read(batch, &next, &cancel, &|_| {});
+        assert!(r.iter().all(|(_, x)| x.is_ok()));
+        // the reads under way have begun (the rest queued behind them)
+        let w = crate::import::workers(usize::MAX);
+        let under_way = 6 + w.min(next.len());
+        let start = std::time::Instant::now();
+        while early.load(SeqCst) < under_way {
+            assert!(start.elapsed() < std::time::Duration::from_secs(20), "reads ahead under way");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        // between calls: cancelled, then the gate opens
+        cancel.store(true, SeqCst);
+        gate.store(true, SeqCst);
+        let start = std::time::Instant::now();
+        while ctx.pending.load(SeqCst) > 0 {
+            assert!(start.elapsed() < std::time::Duration::from_secs(20), "the pool never settled");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        assert_eq!(late.load(SeqCst), 0, "no read ahead started after the cancel");
+        assert_eq!(early.load(SeqCst), under_way);
+
+        // another flag: what was read ahead is dropped and its batch read then
+        let (first, other) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let mut reader = OriginalsReader::in_context(probe_hashing(Arc::new(AtomicUsize::new(0))), context());
+        reader.read(vec![u(1, "/a/1.NEF".into())], &[u(2, "/a/2.NEF".into())], &first, &|_| {});
+        let r = reader.read(vec![u(2, "/a/2.NEF".into())], &[], &other, &|_| {});
+        assert!(r[0].1.is_ok());
+        first.store(true, SeqCst);
+        let r = reader.read(vec![u(3, "/b/3.NEF".into())], &[], &other, &|_| {});
+        assert!(r[0].1.is_ok(), "the first flag no longer stops this reader");
     }
 
     #[test]
