@@ -3849,7 +3849,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
     const SPACES: [(C, &str); 5] =
         [(C::Srgb, "sRGB"), (C::DisplayP3, "P3"), (C::AdobeRgb, "Adobe RGB"), (C::ProPhoto, "ProPhoto"), (C::Rec2020, "Rec.2020")];
     let mut summary = label_of(&FORMATS, opts.format);
-    if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) {
+    if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy()) {
         summary = format!("{summary} ({}%)", opts.quality);
     }
     if rendered {
@@ -4021,7 +4021,21 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             let tip = "Mathematically lossless: every pixel is kept exactly (larger files)";
             crate::dialog_frame::checkbox(ui, &mut opts.jxl_lossless, crate::i18n::tr("Lossless")).on_hover_text(crate::i18n::tr(tip));
         }
-        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) {
+        if opts.format == F::Webp {
+            // lossy WebP needs libwebp, which the web and Android builds don't carry (#1482)
+            let tip = if lcc_codecs::WEBP_LOSSY {
+                "Every pixel kept exactly (larger files); off: smaller files at the Quality below"
+            } else {
+                "This version writes lossless WebP only: lossy WebP is in the desktop app"
+            };
+            let mut on = opts.webp_lossless || !lcc_codecs::WEBP_LOSSY;
+            ui.add_enabled_ui(lcc_codecs::WEBP_LOSSY, |ui| {
+                if crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr("Lossless")).on_hover_text(crate::i18n::tr(tip)).on_disabled_hover_text(crate::i18n::tr(tip)).changed() {
+                    opts.webp_lossless = on;
+                }
+            });
+        }
+        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy()) {
             let mut q = opts.quality as f64;
             if num(ui, &QUALITY, &mut q) {
                 opts.quality = q as u8;

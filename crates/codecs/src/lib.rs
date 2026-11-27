@@ -50,7 +50,7 @@ pub use avif_gainmap::encode_avif_gain_map;
 pub use encode::{
     ChromaSubsampling, EncodeImage, EncodeMeta, HDR_REFERENCE_WHITE_NITS, HLG_REFERENCE_PEAK_NITS, HdrTransfer, Samples, TiffCompression,
     encode_avif, encode_avif_hdr, encode_avif_pq, encode_jpeg, encode_png, encode_png_pq, encode_psd, encode_tiff, encode_tiff_associated,
-    encode_webp_lossless, hlg_signal,
+    WEBP_LOSSY, WEBP_MAX_SIDE, encode_webp_lossless, encode_webp_lossy, hlg_signal,
 };
 pub use exr_encode::{ACESCG, ExrOptions, encode_exr};
 pub use jxl_encode::{JxlColour, JxlEffort, JxlOptions, encode_jxl, encode_jxl_gain_map};
