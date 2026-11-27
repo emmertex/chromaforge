@@ -168,6 +168,8 @@ struct Run<'a> {
     /// Batches handed over.
     emitted: usize,
     probes: Option<Stream<ProbeResult>>,
+    /// The mount list both streams key paths with, read once, when the first one opens.
+    mounts: Option<Arc<lcc_catalog::folders::Mounts>>,
     pos: HashMap<usize, Pos>,
     vols: Vec<VolFeed>,
     probe_index: HashMap<usize, usize>,
@@ -364,6 +366,7 @@ impl<'a> Run<'a> {
             planned: VecDeque::new(),
             emitted: 0,
             probes: None,
+            mounts: None,
             pos: HashMap::new(),
             vols: Vec::new(),
             probe_index: HashMap::new(),
@@ -423,9 +426,15 @@ impl<'a> Run<'a> {
         true
     }
 
+    /// The import's mount list (§5.1: read once, waiting up to about a second, for both streams).
+    fn mounts(&mut self) -> Arc<lcc_catalog::folders::Mounts> {
+        let ctx = self.ctx;
+        self.mounts.get_or_insert_with(|| ctx.mounts.fresh(ctx.shared.clock.as_ref(), ctx.mount_wait)).clone()
+    }
+
     fn probe_stream(&mut self) -> &mut Stream<ProbeResult> {
-        let (ctx, cancel) = (self.ctx, self.cancel);
-        self.probes.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), Result::is_ok).with_cancel(cancel.clone()))
+        let (ctx, cancel, mounts) = (self.ctx, self.cancel, self.mounts());
+        self.probes.get_or_insert_with(|| Stream::with_mounts(ctx, workers(usize::MAX), Result::is_ok, mounts).with_cancel(cancel.clone()))
     }
 
     fn vol_of(&mut self, path: &str) -> usize {
@@ -599,8 +608,9 @@ impl<'a> Run<'a> {
             crate::guard::catch("import", || super::run_transfer(*t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
         };
         let job = IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> };
-        let cancel = self.cancel;
-        let stream = self.transfers.get_or_insert_with(|| Stream::open(ctx, workers(usize::MAX), transfer_ok).with_cancel(cancel.clone()));
+        let (cancel, mounts) = (self.cancel, self.mounts());
+        let stream =
+            self.transfers.get_or_insert_with(|| Stream::with_mounts(ctx, workers(usize::MAX), transfer_ok, mounts).with_cancel(cancel.clone()));
         match stream.submit(vec![job]) {
             Ok(r) => {
                 self.transfer_index.insert(r.start, tid);

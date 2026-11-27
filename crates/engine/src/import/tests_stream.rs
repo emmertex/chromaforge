@@ -859,3 +859,27 @@ fn staging_runs_a_batch_at_a_time_not_the_horizon_first() {
     assert!(n <= 3, "{n} batches staged after the cancel");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// An import reads the mount list once, for both its streams (reads, then copies opened at the
+/// first copy): planning never stalls mid-import for a second read, and both key paths alike.
+#[test]
+fn an_import_reads_the_mount_list_once() {
+    let root = temp_root("mounts-once");
+    let files = cards_of(&root, 6);
+    let points: Vec<String> =
+        ["", "a", "b", "dest"].iter().map(|p| if p.is_empty() { "/".to_string() } else { root.join(p).to_string_lossy().into_owned() }).collect();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let r = reads.clone();
+    let reader: crate::io_sched::mounts::MountReader = Arc::new(move || {
+        r.fetch_add(1, Ordering::SeqCst);
+        Some(Mounts::from_points(points.clone(), false))
+    });
+    let clock = Arc::new(FakeClock::default());
+    clock.advance(1000 * SEC);
+    let ctx = Arc::new(IoContext::new(clock, reader, Duration::from_millis(1)));
+    let batches = start_in(&ctx, files.clone(), options(&root, ImportMode::Copy), small(), Session::new().with_fs().media.file_probe).join().unwrap();
+    let ready = batches.iter().flat_map(|b| &b.items).filter(|it| matches!(it, PreparedItem::Ready(_))).count();
+    assert_eq!(ready, files.len());
+    assert_eq!(reads.load(Ordering::SeqCst), 1, "one mount list for the import");
+    let _ = std::fs::remove_dir_all(&root);
+}

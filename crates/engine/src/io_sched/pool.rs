@@ -283,7 +283,9 @@ impl<T: Send + 'static> Stream<T> {
         Stream::with_mounts(ctx, workers, succeeded, mounts)
     }
 
-    fn with_mounts(ctx: &Arc<IoContext>, workers: usize, succeeded: fn(&T) -> bool, mounts: Arc<Mounts>) -> Stream<T> {
+    /// [`Stream::open`] with a mount list the caller read (one list for all of a caller's streams:
+    /// they key paths alike, and it is read once).
+    pub(crate) fn with_mounts(ctx: &Arc<IoContext>, workers: usize, succeeded: fn(&T) -> bool, mounts: Arc<Mounts>) -> Stream<T> {
         let driver = match ctx.pool() {
             Some(h) => Driver::Pool(h),
             None => Driver::Own(Box::new(Sched::new(ctx).driven_by_caller())),
