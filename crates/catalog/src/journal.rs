@@ -68,6 +68,7 @@
 //! | 19 | Pixel Shift merges remember their frames | `Op::SetMergeSources`, `Photo.merge_sources` |
 //! | 20 | Image Quality Scanner scores (issue #1313) | `Analysis.quality` (`QualityScan`: sharpness, noise, exposure, compression, score, verdict, the flag a scan wrote) |
 //! | 21 | the Image Quality Scanner assigns star ratings (issue #1362) | `QualityScan.rating_written` |
+//! | 22 | Pixel Shift merges remember how they were made (registered or plain, the hold-out verdict, why plain) | `MergeSources.registration` (`MergeRegistration`) |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -100,7 +101,7 @@ pub(crate) const FORMAT: &str = "lcc-catalog";
 pub(crate) const V4_FORMAT: &str = "lcc-catalog-db";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 21;
+pub const VERSION: u32 = 22;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]

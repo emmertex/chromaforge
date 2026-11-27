@@ -43,6 +43,10 @@
     { "name": "Plug-in Marketplace", "file": "src/panels/marketplace.rs", "function": "show", "kind": "modal", "id": ["plugin-marketplace"] },
     { "name": "A different signer", "file": "src/panels/marketplace.rs", "function": "signer_ask_ui", "kind": "modal", "id": ["plugin-marketplace", "signer"], "survey": "the Marketplace's signer question" },
     {
+      "name": "Masks (the detached mask list)", "file": "src/panels/masking.rs", "function": "mask_list_window", "kind": "exception", "id": ["maskListWindow"],
+      "reason": "a tool palette beside the photo while masking, as Lightroom Classic floats its mask list: the photo and the panel stay in use with it up"
+    },
+    {
       "name": "Roles", "file": "src/panels/masking.rs", "function": "roles_window", "kind": "exception", "id": ["rolesWindow"],
       "reason": "a reference list that follows the photo: moving to the next photo shows that photo's roles first"
     },
