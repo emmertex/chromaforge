@@ -18,7 +18,8 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
 - Files on several drives, cards or shares are read side by side (per drive, never more readers than before on any one
   drive). A drive that stops answering for about 30 s (longer after it was idle or the computer woke) has its files
   reported as "volume not responding" while the others are read; Cancel returns even while a drive hangs; a file that
-  crashes the reader fails alone.
+  crashes the reader fails alone. Work reading the same drive at the same time (the review beside Reading originals,
+  say) shares that drive's readers and takes turns, instead of each adding its own.
 - During Copy or Move, a card or destination drive that stops answering stops only its own copies: those not yet
   started fail "volume not responding", one under way is reported "outcome unknown" (it may still finish, leaving a
   file in the destination folder that the library doesn't list; the original is always kept). The message at the end
