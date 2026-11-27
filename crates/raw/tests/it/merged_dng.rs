@@ -103,3 +103,82 @@ fn a_merged_dng_without_a_preview_still_reads_as_the_cameras_raw() {
     assert!(embedded_preview(&bytes).is_none());
     assert_eq!(embedded_preview_color_space(&bytes), None);
 }
+
+/// A merged DNG whose provenance block is `block` (any block, valid or not), with `pad` spaces after the XMP.
+fn written_with(block: &Provenance, pad: usize) -> Vec<u8> {
+    let raw = linear_raw();
+    let mut xmp = block.add_to_packet(&lcc_meta::write_xmp(&raw.metadata, None));
+    xmp.push_str(&" ".repeat(pad));
+    write_dng(&raw, &DngWriteOptions { xmp: Some(xmp), ..Default::default() }).unwrap()
+}
+
+fn frame(i: u16) -> lcc_raw::merge_provenance::SourceFrame {
+    lcc_raw::merge_provenance::SourceFrame { index: i, file_name: format!("f{i}.nef"), captured: String::new(), counter: 100 + u32::from(i) }
+}
+
+/// A provenance block that no merge wrote does not make a merge: the file reads as the normal DNG it is, with its own
+/// colour tags, and the reader allocates nothing for the block.
+#[test]
+fn a_dng_with_a_hostile_provenance_reads_as_a_normal_dng() {
+    use lcc_raw::merge_provenance::{MAX_PACKET_BYTES, Window};
+    let good = Provenance { frames: (1..=16).map(frame).collect(), ..provenance() };
+    let hostile: Vec<(&str, Provenance, usize)> = vec![
+        ("shot count outside the set", Provenance { shot_count: 3, ..good.clone() }, 0),
+        ("shot count at the end of its range", Provenance { shot_count: u16::MAX, ..good.clone() }, 0),
+        ("scale of nothing", Provenance { scale: 0, ..good.clone() }, 0),
+        ("more frames than shots", Provenance { shot_count: 4, frames: (1..=5).map(frame).collect(), ..good.clone() }, 0),
+        ("a frame twice", Provenance { frames: vec![frame(1), frame(1)], ..good.clone() }, 0),
+        ("a frame number past the shots", Provenance { frames: vec![frame(17)], ..good.clone() }, 0),
+        (
+            "a window outside its sensor",
+            Provenance { window: Some(Window { sensor: [100, 100], origin: [90, 0], size: [20, 20] }), ..good.clone() },
+            0,
+        ),
+        (
+            "a window at the end of numbers",
+            Provenance { window: Some(Window { sensor: [100, 100], origin: [usize::MAX, 0], size: [1, 1] }), ..good.clone() },
+            0,
+        ),
+        ("a packet past the limit", good.clone(), MAX_PACKET_BYTES),
+    ];
+    for (what, block, pad) in hostile {
+        let bytes = written_with(&block, pad);
+        let raw = decode(&bytes).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(raw.format, RawFormat::Dng, "{what}");
+        assert!(lcc_raw::color::has_matrix(&raw.color), "{what}: its own colour tags");
+        assert!(raw.wb_multipliers.is_none() && raw.metadata.software != Some(lcc_raw::merge_provenance::software()), "{what}");
+        assert_eq!(lcc_raw::merge_provenance::from_dng(&bytes), None, "{what}");
+    }
+    // the same file with a good block is a merge
+    let raw = decode(&written_with(&good, 0)).unwrap();
+    assert_eq!(raw.format, RawFormat::Nef);
+}
+
+/// Mutated merged DNGs (their provenance, preview, tags and strips damaged): read, previewed and checked without a panic.
+#[test]
+fn mutated_merged_dngs_never_panic() {
+    let jpeg = jpeg(48, 32);
+    let preview = DngPreview { jpeg, color_space: Some(PreviewColorSpace::AdobeRgb) };
+    let seeds =
+        [written(true, Some(preview)), written_with(&Provenance { frames: (1..=16).map(frame).collect(), ..provenance() }, 0), written(false, None)];
+    let refs: Vec<&[u8]> = seeds.iter().map(Vec::as_slice).collect();
+    lcc_fuzzkit::run("merged_dng", &refs, 1500, |b| {
+        let _ = decode(b);
+        let _ = embedded_preview(b);
+        let _ = embedded_preview_color_space(b);
+        let _ = lcc_raw::merge_provenance::from_dng(b);
+    });
+}
+
+/// The provenance text itself, mutated: a block or nothing, never a panic.
+#[test]
+fn mutated_provenance_packets_never_panic() {
+    let packet = Provenance { frames: (1..=16).map(frame).collect(), ..provenance() }.add_to_packet(&lcc_meta::write_xmp(&Default::default(), None));
+    lcc_fuzzkit::run_str("merge_provenance.packet", &[packet.as_str()], 5000, |s| {
+        if let Some(p) = Provenance::from_packet(s) {
+            // (whatever reads is within the limits)
+            assert!(p.frames.len() <= lcc_raw::merge_provenance::MAX_FRAMES && lcc_raw::merge_provenance::SHOT_COUNTS.contains(&p.shot_count));
+        }
+        let _ = lcc_raw::merge_provenance::is_valid(s.as_bytes());
+    });
+}
