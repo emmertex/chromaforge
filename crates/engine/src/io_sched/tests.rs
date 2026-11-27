@@ -1084,6 +1084,61 @@ fn a_stuck_recovery_job_lets_another_through_after_10_minutes() {
     hung.release();
 }
 
+/// A job whose call is gone before it runs: its call's thread can't take it.
+struct Orphan;
+
+impl super::sched::PoolTask for Orphan {
+    fn run(self: Box<Self>, state: &Arc<super::JobState>) -> super::sched::Ran {
+        super::sched::Ran { ok: false, metrics: super::run::JobMetrics::none(state), deliver: None }
+    }
+    fn fail(self: Box<Self>, _: super::sched::SchedOutcome) {}
+    fn discard(self: Box<Self>) {}
+    fn run_here(self: Box<Self>, _: super::sched::InlineInfo) -> bool {
+        false
+    }
+}
+
+struct NoSink;
+
+impl super::sched::CallSink for NoSink {
+    fn outcome(&self, _: usize, _: super::sched::SchedOutcome, _: Option<super::run::JobMetrics>) {}
+}
+
+/// A recovery job counted as started that never ran (no worker thread could start, and its call
+/// was gone before its own thread could take it) frees the registry's recovery slot at once: a
+/// minute later the next call's job runs as the recovery job, instead of failing "not
+/// responding" until the 10-minute stuck rule (just below the minute it still waits).
+#[test]
+fn a_recovery_job_that_never_ran_frees_the_recovery_slot() {
+    use super::sched::{Msg, Sched, Submitted};
+    for (after, runs) in [(RECOVERY_EVERY - 1, false), (RECOVERY_EVERY, true)] {
+        let h = H::new();
+        let hung = stall_volume(&h, "/a");
+        h.ctx.spawn_budget.store(0, Ordering::SeqCst);
+        let mut sched = Sched::new(&h.ctx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        sched.handle(Msg::Open { call: 1, workers: 2, cancel, linked: None, sink: Box::new(NoSink) }, h.now());
+        let orphan = Submitted { index: 0, source: key("/a/x"), dest: None, skippable: false, id: h.ctx.shared.next_id(), task: Box::new(Orphan) };
+        sched.handle(Msg::Submit { call: 1, jobs: vec![orphan] }, h.now());
+        sched.step(Duration::ZERO);
+        assert!(h.ctx.shared.blocked(&key("/a/x"), h.now()), "nothing showed the volume works");
+        h.ctx.spawn_budget.store(usize::MAX, Ordering::SeqCst);
+        h.advance(after);
+        let (r, _) = h.run(
+            vec![
+                job("/a/y", || {
+                    bytes(1);
+                    Ok(1)
+                }),
+                job("/a/z", || Ok(2)),
+            ],
+            2,
+        );
+        assert_eq!(ok_count(&r), if runs { 2 } else { 0 }, "{after}: {:?}", r.outcomes);
+        hung.release();
+    }
+}
+
 fn key(path: &str) -> lcc_catalog::folders::VolumeKey {
     lcc_catalog::folders::volume_key(path, &Mounts::from_points(["/", "/a", "/b", "/c", "/srv/nas"], false))
 }

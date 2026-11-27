@@ -205,8 +205,6 @@ struct Slot {
     seen: [u64; 2],
     /// When it started (monotonic ns).
     started: u64,
-    /// The volume it runs as the recovery job of.
-    recovery: Option<usize>,
 }
 
 /// A volume, every call together.
@@ -290,6 +288,19 @@ fn call_vol(vols: &mut Vec<CallVol>, v: usize) -> &mut CallVol {
     // (just grown to hold `v`)
     #[allow(clippy::indexing_slicing)]
     &mut vols[v]
+}
+
+/// How a running job leaves its volumes ([`Sched::leave`]).
+#[derive(Clone, Copy)]
+enum Leave {
+    /// It returned with its result: the registry's end-of-job rule (a recovery job's end with it).
+    Finished { took: u64, moved: bool, ok: bool },
+    /// The scheduler left it behind: it no longer runs there; a recovery job stays the registry's
+    /// until its thread returns ([`Shared::job_returned`]).
+    Abandoned,
+    /// It was counted as started but never ran (its call is gone): it no longer runs there, and a
+    /// recovery job frees the registry's slot at once (no other job waits ten minutes for it).
+    NeverRan,
 }
 
 /// Why a job could not be started.
@@ -476,7 +487,6 @@ impl Sched {
                 on_worker: false,
                 seen: [0; 2],
                 started: 0,
-                recovery: None,
             };
             c.slots.insert(pos, slot);
         }
@@ -658,9 +668,6 @@ impl Sched {
         if let Some(pv) = self.vols.get_mut(v) {
             pv.recovery = Some((c, i));
         }
-        if let Some(s) = self.calls.get_mut(&c).and_then(|call| call.slots.get_mut(&i)) {
-            s.recovery = Some(v);
-        }
         log::info!("io: volume {key} was not responding: trying one file first");
         if matches!(self.dispatch(c, i, now), Dispatch::Started) {
             return;
@@ -670,8 +677,7 @@ impl Sched {
         }
         // (back to its place in its own queue: input order)
         let Some(call) = self.calls.get_mut(&c) else { return };
-        let Some(s) = call.slots.get_mut(&i) else { return };
-        s.recovery = None;
+        let Some(s) = call.slots.get(&i) else { return };
         self.shared.end_recovery(&key, s.id);
         let home = s.vol;
         let q = &mut call_vol(&mut call.vols, home).queue;
@@ -761,22 +767,50 @@ impl Sched {
     fn unstart(&mut self, c: CallId, i: usize, now: u64) {
         let Some(call) = self.calls.get_mut(&c) else { return };
         call.inline = call.inline.filter(|&x| x != i);
+        self.leave(c, i, Leave::NeverRan, now);
+        self.end_slot(c, i);
+    }
+
+    /// Running job `i` of call `c` leaves its volumes (a copy both): the one release every path
+    /// takes (§5.2). It stops holding a slot and running there and stops being a volume's
+    /// recovery job here, and the registry hears how it left ([`Leave`]); a finished job also
+    /// restarts its volumes' clocks and its call's cancel clock there, and may hand recovery on.
+    fn leave(&mut self, c: CallId, i: usize, how: Leave, now: u64) {
+        let Some(call) = self.calls.get_mut(&c) else { return };
         let Some(slot) = call.slots.get(&i) else { return };
-        let (home, dest) = (slot.vol, slot.dest);
+        let (home, dest, id) = (slot.vol, slot.dest, slot.id);
         self.busy = self.busy.saturating_sub(1);
         call.busy = call.busy.saturating_sub(1);
         for v in std::iter::once(home).chain(dest) {
+            let mut ended = Ended::Job;
             if let Some(pv) = self.vols.get_mut(v) {
-                self.shared.abandoned(&pv.key, now);
                 pv.running.retain(|&r| r != (c, i));
-                if pv.recovery == Some((c, i)) {
+                let recovery = pv.recovery == Some((c, i));
+                if recovery {
                     pv.recovery = None;
+                }
+                match how {
+                    Leave::Finished { took, moved, ok } => {
+                        pv.silent = 0;
+                        ended = self.shared.job_finished(&pv.key, now, took, moved, ok, recovery.then_some(id));
+                    }
+                    Leave::Abandoned => self.shared.abandoned(&pv.key, now),
+                    Leave::NeverRan => {
+                        self.shared.abandoned(&pv.key, now);
+                        if recovery {
+                            self.shared.end_recovery(&pv.key, id);
+                        }
+                    }
                 }
             }
             let cv = call_vol(&mut call.vols, v);
             cv.running = cv.running.saturating_sub(1);
+            if matches!(how, Leave::Finished { .. }) {
+                cv.cancel_silent = 0;
+                // (answered without data: the call's next job on it goes as the next recovery job)
+                cv.answered |= ended == Ended::Answered;
+            }
         }
-        self.end_slot(c, i);
     }
 
     /// Job `i` of call `c` has its outcome: it no longer counts anywhere.
@@ -807,33 +841,13 @@ impl Sched {
             deliver.deliver();
             return;
         };
-        let (home, dest, id, recovery, on_worker) = (slot.vol, slot.dest, slot.id, slot.recovery, slot.on_worker);
-        slot.on_worker = false;
-        self.busy = self.busy.saturating_sub(1);
-        call.busy = call.busy.saturating_sub(1);
-        if on_worker {
+        if std::mem::take(&mut slot.on_worker) {
             self.on_workers = self.on_workers.saturating_sub(1);
         }
-        let moved = ran.metrics.bytes > 0;
-        let took = super::run::took(&ran.metrics);
         // (a copy's completion is progress on both of its volumes; a recovery job's end follows
         // the registry's one rule, as the single-job path's does)
-        for v in std::iter::once(home).chain(dest) {
-            let mut ended = Ended::Job;
-            if let Some(pv) = self.vols.get_mut(v) {
-                pv.running.retain(|&r| r != (c, i));
-                pv.silent = 0;
-                ended = self.shared.job_finished(&pv.key, now, took, moved, ran.ok, (recovery == Some(v)).then_some(id));
-                if recovery == Some(v) {
-                    pv.recovery = None;
-                }
-            }
-            let cv = call_vol(&mut call.vols, v);
-            cv.running = cv.running.saturating_sub(1);
-            cv.cancel_silent = 0;
-            // (answered without data: the call's next job on it goes as the next recovery job)
-            cv.answered |= ended == Ended::Answered;
-        }
+        let how = Leave::Finished { took: super::run::took(&ran.metrics), moved: ran.metrics.bytes > 0, ok: ran.ok };
+        self.leave(c, i, how, now);
         self.end_slot(c, i);
         deliver.deliver();
     }
@@ -876,38 +890,23 @@ impl Sched {
     /// its way).
     fn abandon(&mut self, c: CallId, i: usize, v: usize, kind: AbandonKind, now: u64) -> bool {
         let Some(key) = self.vols.get(v).map(|pv| pv.key.clone()) else { return false };
-        let Some(call) = self.calls.get_mut(&c) else { return false };
-        let Some(slot) = call.slots.get(&i) else { return false };
+        let Some(slot) = self.calls.get(&c).and_then(|call| call.slots.get(&i)) else { return false };
         let Some(state) = slot.state.clone() else { return false };
-        let (home, dest, started, on_worker, index) = (slot.vol, slot.dest, slot.started, slot.on_worker, slot.index);
+        let (dest, started, on_worker, index) = (slot.dest, slot.started, slot.on_worker, slot.index);
         self.shared.add_entry(&state, &key, kind, now);
         if !state.try_abandon() {
             self.shared.drop_entry(state.id);
             return false;
         }
-        self.busy = self.busy.saturating_sub(1);
-        call.busy = call.busy.saturating_sub(1);
         if on_worker {
             // (its worker exits when the job returns)
             self.on_workers = self.on_workers.saturating_sub(1);
             self.live = self.live.saturating_sub(1);
         }
-        let mut dest_key = None;
-        for w in std::iter::once(home).chain(dest) {
-            if let Some(pv) = self.vols.get_mut(w) {
-                self.shared.abandoned(&pv.key, now);
-                pv.running.retain(|&r| r != (c, i));
-                // (an abandoned recovery job stays the registry's until it returns)
-                if pv.recovery == Some((c, i)) {
-                    pv.recovery = None;
-                }
-                if pv.key != state.volume {
-                    dest_key = Some(pv.key.clone());
-                }
-            }
-            let cv = call_vol(&mut call.vols, w);
-            cv.running = cv.running.saturating_sub(1);
-        }
+        // (an abandoned recovery job stays the registry's until it returns)
+        self.leave(c, i, Leave::Abandoned, now);
+        let dest_key = dest.and_then(|d| self.vols.get(d)).map(|pv| pv.key.clone());
+        let Some(call) = self.calls.get(&c) else { return true };
         let moved = state.moved();
         let metrics = JobMetrics {
             volume: state.volume.clone(),
