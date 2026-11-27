@@ -103,6 +103,33 @@ pub fn demosaic_ahd(w: usize, h: usize, data: &[f32], pattern: [u8; 4]) -> Optio
     }
 }
 
+/// Metering of the time the GPU has work ([`busy`]) held on while this lives; nothing in the browser.
+pub struct BusyHold {
+    #[cfg(not(target_arch = "wasm32"))]
+    _hold: busy::Hold,
+}
+
+/// Meter the GPU's busy time from now while the result lives (an export batch sizing its lanes, #1377).
+pub fn hold_busy_meter() -> BusyHold {
+    BusyHold {
+        #[cfg(not(target_arch = "wasm32"))]
+        _hold: busy::hold(),
+    }
+}
+
+/// Time the GPU has had work in flight while metered ([`busy::busy_time`]; compare two readings). Zero in the
+/// browser.
+pub fn busy_time() -> std::time::Duration {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        busy::busy_time()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::time::Duration::ZERO
+    }
+}
+
 /// Run `f` with this thread's GPU renders counted as batch work (an export's photos): they take
 /// turns at the GPU, behind the window's own renders (see `gate.rs`).
 pub fn as_batch<R>(f: impl FnOnce() -> R) -> R {
