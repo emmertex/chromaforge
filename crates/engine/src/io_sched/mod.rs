@@ -1,4 +1,4 @@
-//! The I/O scheduler (`adaptive-io-spec` PRs 1–3): bulk file reads and copies queued per volume,
+//! The I/O scheduler : bulk file reads and copies queued per volume,
 //! so a call over several drives or cards reads them at once, and a volume that stops answering
 //! is contained (its files fail "volume not responding"; the others go on; cancel returns).
 //!
