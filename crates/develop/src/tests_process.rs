@@ -276,3 +276,19 @@ fn glow_writes_nothing_while_default_and_keeps_hashes_stable() {
         "the merge clamps Glow through its control specs"
     );
 }
+
+// #1394: copy / paste, sync and presets carry a plug-in filter without its measurement, except a roll's
+#[test]
+fn copied_plugin_filters_leave_their_measurement_behind() {
+    let mut s = DevelopSettings::default();
+    s.plugin_filters.push(PluginFilter { uid: 1, plugin: "x.cc".into(), analysis: Some(json!({"gain": [1.2, 1.0, 0.8]})), ..Default::default() });
+    s.plugin_filters.push(PluginFilter { uid: 2, plugin: "x.neg".into(), analysis: Some(json!({"base": 0.4, "_roll": 12})), ..Default::default() });
+    let copied = extract_groups(&s, &[SettingsGroup::PluginFilters]);
+    let target = DevelopSettings::default().merged(&copied).unwrap();
+    assert_eq!(target.plugin_filters.len(), 2);
+    assert_eq!(target.plugin_filters[0].analysis, None, "a photo's own measurement stays with it");
+    assert_eq!(target.plugin_filters[0].plugin, "x.cc");
+    assert_eq!(target.plugin_filters[1].analysis, Some(json!({"base": 0.4, "_roll": 12})), "a roll's is shared");
+    // the source keeps its own
+    assert!(s.plugin_filters[0].analysis.is_some());
+}

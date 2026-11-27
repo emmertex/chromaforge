@@ -41,6 +41,18 @@ CRAFT_FONTS_DIR=../craft-fonts cargo run --release -p lcc-app
 Without it the app builds and runs the same, but Chinese and Japanese text have no glyphs. Fonts are never committed to this
 repo — the standard for what goes there lives with it: see the [craft-fonts README](https://github.com/storytold/craft-fonts#readme).
 
+**LibRaw** (an optional raw decoder a camera can be set to in Settings ▸ Import ▸ Raw decoder) needs a LibRaw source
+checkout and a C++ compiler; official desktop releases include it:
+
+```sh
+git clone https://github.com/LibRaw/LibRaw ../LibRaw
+LIBRAW_DIR=../LibRaw cargo run --release -p lcc-app
+```
+
+`LIBRAW_SYSTEM=1` links the system's LibRaw (`libraw_r`; `LIBRAW_INCLUDE_DIR` / `LIBRAW_LIB_DIR` say where it is)
+instead of building it. Without either the app builds and runs the same, with LibRaw greyed out in Settings; the web
+and Android builds never have it. `LIBRAW_REQUIRED=1` makes a build without it fail (releases set it).
+
 **Building for one language:** add `CRAFT_FONTS_LANGUAGE=<code>` (a code from `crates/ui-egui/locales/`, e.g. `ja`,
 `zh-hans`, `de`) to embed only the fonts that language's interface needs. Latin, Cyrillic and Greek languages need
 none beyond the built-in Inter; `ja`, `zh-hans` and `ka` take their own script's faces, and `zh-hant` takes the
@@ -131,7 +143,7 @@ Humans and agents follow the same rules, so read [AGENTS.md](../../AGENTS.md) fi
   image, icon and font in the repo is original, public domain, Creative Commons, OFL or permissively licensed, and has
   an entry in [assets/ATTRIBUTION.md](../../assets/ATTRIBUTION.md) added in the same commit. New fonts go to
   [storytold/craft-fonts](https://github.com/storytold/craft-fonts), not here.
-- **Pure Rust**, enforced crate layering, everything is a command, and `cargo xtask ci` green before every commit
+- **Pure Rust** (the one exception: the optional LibRaw decoder, `crates/libraw`), enforced crate layering, everything is a command, and `cargo xtask ci` green before every commit
   (one task id per commit).
 - **Never crash.** Non-test code returns errors instead of panicking: no `unwrap()`, `expect()`, `panic!` or
   `unsafe`, checked indexing on anything derived from input, and a regression test with every crash fix. Details in

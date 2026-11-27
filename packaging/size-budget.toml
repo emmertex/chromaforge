@@ -1,20 +1,21 @@
 # Release download sizes in bytes (`cargo xtask package-size`, docs/release-process.md).
 # The release check fails when a download grows more than 10 % over its entry.
 # Raise an entry with `cargo xtask package-size --update FILE…` and say why in the commit.
-# Seeded from the v26.48.0 release assets.
+# Seeded from the v26.48.0 release assets. 2026-11-27: desktop packages grew by ONNX Runtime and its WebGPU plug-in
+# (compressed: about 21 MB on Windows and Linux, 15 MB on macOS; docs/onnxruntime.md), estimated, not measured.
 "android-arm64-v8a-x86_64.aab" = 177116702
 "android-arm64-v8a.apk" = 197223112
 "android-x86_64.apk" = 216113861
-"linux-x86_64.AppImage" = 91179512
-"linux-x86_64.deb" = 99580990
-"linux-x86_64.flatpak" = 68682160
-"linux-x86_64.rpm" = 99115468
-"linux-x86_64.tar.gz" = 98859932
-"macos-arm64.dmg" = 91832039
-"macos-universal.dmg" = 156863578
+"linux-x86_64.AppImage" = 112179512
+"linux-x86_64.deb" = 120580990
+"linux-x86_64.flatpak" = 89682160
+"linux-x86_64.rpm" = 120115468
+"linux-x86_64.tar.gz" = 119859932
+"macos-arm64.dmg" = 107332039
+"macos-universal.dmg" = 172363578
 "macos-x64.dmg" = 97719205
 "web.zip" = 112072220
-"windows-arm64-portable.zip" = 95060800
-"windows-arm64.msi" = 74727424
-"windows-x64-portable.zip" = 99688669
-"windows-x64.msi" = 78614528
+"windows-arm64-portable.zip" = 116560800
+"windows-arm64.msi" = 96227424
+"windows-x64-portable.zip" = 121188669
+"windows-x64.msi" = 100114528
