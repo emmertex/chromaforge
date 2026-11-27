@@ -42,8 +42,16 @@ avif-serialize = { workspace = true, optional = true }
 # spawns threads of its own (std::thread), which wasm32 has not got
 jixel = { workspace = true, optional = true }
 
+# Lossy WebP export through libwebp (C, BSD-3-Clause) behind its maintained safe wrapper `webp`: the one C library
+# AGENTS.md → "Rust first" approves for this (#1482). Desktop only: the web build and Android keep lossless WebP
+# (`image-webp`, pure Rust), and the export dialog says so.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+webp = { workspace = true, optional = true }
+
 [features]
-default = ["parallel", "jxl", "avif"]
+default = ["parallel", "jxl", "avif", "webp-lossy"]
+## Lossy WebP encoding (libwebp via `webp`); desktop targets only, lossless elsewhere.
+webp-lossy = ["dep:webp"]
 parallel = ["dep:rayon", "lcc-raster/parallel", "jpeg-decoder/rayon"]
 ## JPEG XL decode (jxl-oxide) and, on native targets, encode (jixel); both pure Rust.
 jxl = ["dep:jxl-oxide", "dep:jixel"]

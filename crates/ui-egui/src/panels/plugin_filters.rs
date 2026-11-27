@@ -367,13 +367,17 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
         });
         // the measurement's state, and what went wrong
         if st.can_measure && plugin.is_some_and(|p| p.analyze) {
-            let status = match f.analysis.as_ref() {
+            let mut status = match f.analysis.as_ref() {
                 None => tr("Not measured yet").to_string(),
                 Some(a) => match a.get(lcc_engine::ROLL_KEY).and_then(Value::as_u64) {
                     Some(k) => crate::i18n::tr_format!("Measured as part of a roll of {n}", n = k).to_string(),
                     None => tr("Measured").to_string(),
                 },
             };
+            // what the filter found, in its own words (`_status`, ABI v1.1, #1398)
+            if let Some(line) = f.analysis.as_ref().and_then(lcc_engine::plugin_analysis_status) {
+                status = format!("{status} · {line}");
+            }
             let r = ui.label(RichText::new(status).size(11.0).color(t.text_dim));
             register(ui.ctx(), format!("pluginFilterStatus:{uid}"), r.rect);
         }

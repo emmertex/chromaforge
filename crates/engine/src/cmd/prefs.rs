@@ -16,6 +16,8 @@ fn current(s: &Session) -> Value {
         "xmp": s.xmp,
         "import": s.import_defaults,
         "cameraDefaults": s.camera_profile_defaults,
+        "rawDecoders": s.raw_decoders,
+        "libraw": crate::raw_decoder::libraw_name(),
         "cacheMb": if s.cache_mb == 0 { s.cache_bytes() >> 20 } else { u64::from(s.cache_mb) },
         "forgetLocalDays": s.forget_local_days,
         "persistent": s.library.is_some(),
@@ -74,6 +76,33 @@ fn camera_default(s: &mut Session, v: &Value) -> Result<()> {
     if remove {
         s.camera_profile_defaults.remove(&camera);
         install_camera_defaults(s);
+    }
+    Ok(())
+}
+
+/// The raw decoder for a camera: `{camera: "Make Model", decoder: "auto" | "lcc" | "libraw"}`; `auto` (or null)
+/// removes the entry. LibRaw may be chosen where it isn't built in (the choice travels with the library); such a
+/// camera is read by lcc-raw there ([`crate::raw_decoder`]).
+fn raw_decoder_choice(s: &mut Session, v: &Value) -> Result<()> {
+    let camera = v.get("camera").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+    if camera.is_empty() || camera == "*" {
+        return Err(bad(ID, "`rawDecoder.camera` is required: the camera as Info shows it (\"Make Model\")"));
+    }
+    let decoder = match v.get("decoder") {
+        None | Some(Value::Null) => crate::raw_decoder::Decoder::Auto,
+        Some(Value::String(x)) => {
+            crate::raw_decoder::Decoder::parse(x).ok_or_else(|| bad(ID, format!("decoder must be `auto`, `lcc` or `libraw`, not `{x}`")))?
+        }
+        Some(other) => return Err(bad(ID, format!("decoder must be `auto`, `lcc` or `libraw`, not {other}"))),
+    };
+    let key = crate::raw_decoder::camera_key(&camera);
+    s.raw_decoders.retain(|k, _| crate::raw_decoder::camera_key(k) != key);
+    if decoder != crate::raw_decoder::Decoder::Auto {
+        s.raw_decoders.insert(camera, decoder);
+    }
+    crate::raw_decoder::install_choices(&s.raw_decoders);
+    if let Err(e) = s.save_prefs() {
+        log::warn!("prefs: {e}");
     }
     Ok(())
 }
@@ -183,6 +212,10 @@ fn prefs(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(c) = p.get("cameraDefault") {
         camera_default(s, c)?;
     }
+    // the raw decoder per camera: like the camera profiles, read by the next decode straight away
+    if let Some(c) = p.get("rawDecoder") {
+        raw_decoder_choice(s, c)?;
+    }
     if let Some(days) = forget_local_days {
         s.forget_local_days = days;
         changed = true;
@@ -272,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Catalog Preferences",
             [],
             None,
-            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), constrainCrop?: bool (new photos start with Constrain Crop on; default true), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cameraDefault?: {camera: \"Make Model\"|\"*\" (the default camera profile photos of that camera start from when they choose none, ahead of the camera's active imported profile and its calibration's default look; \"*\" = every camera), profile?: \"lc\" (the app's own colour) | dcpId (camera.listDcp) | calId | null (remove the entry)}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)}: develop defaults applied on import (raws / other images / per camera), the default camera profile per camera model and the thumbnail cache size, saved with the library → {xmp, import, cameraDefaults, cacheMb, forgetLocalDays, persistent}",
+            "{import?: {rawPreset?: presetId|\"default\", otherPreset?: presetId|\"default\", perCamera?: bool, cameras?: [{camera: \"Make Model\", preset: presetId|null}], copyright?: text, creator?: text (given to imported photos without one), showOnCard?: bool (open the import review when a camera or card is connected), constrainCrop?: bool (new photos start with Constrain Crop on; default true), denoiseAboveIso?: ISO | 0 | null (AI Denoise on for new raw photos shot at this ISO or above, their pictures made in the background; 0 / null = off), importDuplicates?: bool (Synchronize Folder brings in files whose content a photo already has, as photos of their own: \"Don't import files already in the library\" unticked, as the dialog last left it; off by default; `folder.synchronize` takes it unless given `importDuplicates`)}, camera?: {camera, preset?, remove?: bool}, cameraDefault?: {camera: \"Make Model\"|\"*\" (the default camera profile photos of that camera start from when they choose none, ahead of the camera's active imported profile and its calibration's default look; \"*\" = every camera), profile?: \"lc\" (the app's own colour) | dcpId (camera.listDcp) | calId | null (remove the entry)}, rawDecoder?: {camera: \"Make Model\", decoder: \"auto\" (lcc-raw, LibRaw for the variants it can't read) | \"lcc\" (lcc-raw only) | \"libraw\" (LibRaw, lcc-raw when it fails or isn't built in) | null (= auto)}, cacheMb?: n (0 = default), forgetLocalDays?: n (forget untouched Local photos of folders not browsed for n days; 0 = never)}: develop defaults applied on import (raws / other images / per camera), the default camera profile per camera model and the thumbnail cache size, saved with the library → {xmp, import, cameraDefaults, rawDecoders, libraw (the LibRaw build in this app, null when it has none), cacheMb, forgetLocalDays, persistent}",
             always,
             prefs
         ),

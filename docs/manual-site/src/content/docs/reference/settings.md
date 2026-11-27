@@ -59,6 +59,16 @@ sidebar:
 - The camera profile new photos start from, for all cameras or per camera: **Built-in colour**, a camera's imported
   profile, or another installed profile. The Profiles page sets one per camera body.
 
+### Raw decoder
+- Which decoder reads each camera's raw files, per camera seen in the catalog: **Auto** (the default), **Built-in
+  (lcc-raw)** or **LibRaw**. Whichever reads the file, the app demosaics and develops the picture itself.
+- **Auto** reads with the built-in decoder, and hands LibRaw only the files the built-in decoder can't read (which
+  otherwise open as their embedded preview). **Built-in** never uses LibRaw. **LibRaw** reads with LibRaw and falls
+  back to the built-in decoder when LibRaw can't read a file.
+- LibRaw comes with the desktop app for macOS, Windows and Linux. The web and Android versions don't have it: there
+  the LibRaw choice is greyed out, and a camera set to LibRaw on another computer is read by the built-in decoder.
+- Changing a camera's decoder redraws its photos straight away. The choice is saved with the library.
+
 ### Metadata
 - Metadata added to imported photos that don't already have it, and a **metadata preset** applied on import.
 

@@ -173,3 +173,32 @@ fn picks_narrow_cascade_take_unknown_and_single_values_and_refuse_bad_ones() {
     let v = s.visible().to_vec();
     assert!(!v.is_empty() && v.iter().all(|id| s.catalog.photo(*id).unwrap().format.eq_ignore_ascii_case(&format)));
 }
+
+/// The Face Count column (issue #1112): every photo has a count, sorted by value, and picking one narrows the view to
+/// the photos with that many faces; there is no "no value" row to pick.
+#[test]
+fn the_face_count_column_counts_and_picks_by_number_of_faces() {
+    use lcc_geom::Rect;
+    use lcc_meta::{Region, RegionKind};
+    let (mut s, ids) = library();
+    let face = |x: f64| Region { rect: Rect { x0: x, y0: 0.2, x1: x + 0.2, y1: 0.6 }, kind: RegionKind::Face, name: None, description: None };
+    for (id, faces) in [(ids[0], vec![face(0.1)]), (ids[1], vec![face(0.1), face(0.5)]), (ids[2], vec![face(0.1), face(0.5)])] {
+        let mut m = s.catalog.photo(id).unwrap().meta.clone();
+        m.regions = faces;
+        s.catalog.apply(Op::SetMeta { id, meta: Box::new(m) }).unwrap();
+    }
+    let shown = s.visible().len() as u64;
+    let r = s.execute("library.facets", &json!({"fields": ["faces"]})).unwrap();
+    let counts = values(&r, "faces");
+    assert_eq!(r["faces"]["none"], 0, "every photo has a face count");
+    assert_eq!(counts.iter().map(|c| c.1).sum::<u64>(), shown);
+    let numbers: Vec<u32> = counts.iter().map(|c| c.0.parse().unwrap()).collect();
+    assert!(numbers.windows(2).all(|w| w[0] < w[1]), "by value: {numbers:?}");
+    assert!(counts.contains(&("2".to_string(), 2)) && counts.contains(&("1".to_string(), 1)), "{counts:?}");
+    let picked = s.execute("library.facetPick", &json!({"field": "faces", "value": "2"})).unwrap();
+    assert_eq!(picked["count"], 2);
+    let mut visible = s.visible().to_vec();
+    visible.sort();
+    assert_eq!(visible, vec![ids[1], ids[2]]);
+    assert!(s.execute("library.facetPick", &json!({"field": "faces", "none": true})).is_err(), "no photo is without a count");
+}
