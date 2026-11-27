@@ -116,28 +116,6 @@ fn merge_target(first: &str, output_dir: Option<&str>) -> String {
     }
 }
 
-/// The merge sources a merged pixel-shift file's own provenance names, with each frame's photo looked up in the catalog by
-/// file name and capture time (the exposure counter is the file's own record of the frame). A frame that is not in the
-/// library (or is in Recently Deleted) has no photo: it stays in the list as not found.
-pub(crate) fn restored_merge_sources(catalog: &lcc_catalog::Catalog, prov: &lcc_raw::merge_provenance::Provenance) -> lcc_catalog::MergeSources {
-    let frames = prov
-        .frames
-        .iter()
-        .map(|f| lcc_catalog::MergeSource {
-            photo: catalog
-                .photos()
-                .find(|p| !p.deleted && p.file_name == f.file_name && p.captured.as_deref() == Some(f.captured.as_str()))
-                .map(|p| p.id),
-            index: f.index,
-            file_name: f.file_name.clone(),
-            captured: f.captured.clone(),
-            counter: f.counter,
-        })
-        .collect();
-    let registration = prov.registration.as_ref().map(crate::merge_pixel_shift::catalog_registration_of_file);
-    lcc_catalog::MergeSources { engine: prov.engine, shot_count: prov.shot_count, reference: prov.reference, scale: prov.scale, frames, registration }
-}
-
 /// What planning a pixel-shift merge found out about its series: the frames in series order (frame 01 first).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PixelShiftPlan {
@@ -1127,17 +1105,86 @@ impl Session {
 
     /// The frames Delete Merge Sources would delete for the merged photo `id`: those other than the reference frame that
     /// are still in the library (not deleted), and how many of those frames are gone. `None` when `id` is not a
-    /// merged pixel-shift photo.
+    /// merged pixel-shift photo. Only what the merge or the import's check recorded counts, and the photo must still be
+    /// the one recorded: the frame's own file name, a photo of its own (not the merged photo, not a merge itself, each
+    /// at most once); anything else is counted as gone and never deleted.
     pub fn merge_sources_to_delete(&self, id: PhotoId) -> Option<(Vec<PhotoId>, usize)> {
         let sources = self.catalog.photo(id)?.merge_sources.clone()?;
-        let (mut present, mut missing) = (Vec::new(), 0);
+        let (mut present, mut missing) = (Vec::<PhotoId>::new(), 0);
         for f in sources.frames.iter().filter(|f| f.index != sources.reference) {
-            match f.photo.filter(|p| self.catalog.photo(*p).is_some_and(|p| !p.deleted)) {
-                Some(p) => present.push(p),
+            let photo = f.photo.filter(|p| *p != id && !present.contains(p)).and_then(|p| self.catalog.photo(p));
+            match photo.filter(|p| !p.deleted && p.merge_sources.is_none() && p.file_name == f.file_name) {
+                Some(p) => present.push(p.id),
                 None => missing += 1,
             }
         }
         Some((present, missing))
+    }
+
+    /// The merge sources a merged pixel-shift file's own provenance names, found again in the library when the file is
+    /// imported on its own. The file is untrusted, so a frame only counts as found when everything agrees: the photo is
+    /// in the same folder as the merged file, has the frame's file name and capture time, is not a merge itself, its
+    /// own maker note says it is that frame (the number and exposure counter the block lists, the block's shot count), and
+    /// all the photos found together are frames of one series (same camera, exposure and geometry, counters and
+    /// capture times that follow the frame numbers). If any of that fails for any frame, none is found: they stay in the
+    /// list as not found, and nothing is ever deleted on the strength of a block that names other photos.
+    pub(crate) fn restored_merge_sources(&self, merged_path: &str, prov: &lcc_raw::merge_provenance::Provenance) -> lcc_catalog::MergeSources {
+        let mut sources = lcc_catalog::MergeSources {
+            engine: prov.engine,
+            shot_count: prov.shot_count,
+            reference: prov.reference,
+            scale: prov.scale,
+            frames: prov
+                .frames
+                .iter()
+                .map(|f| lcc_catalog::MergeSource {
+                    photo: None,
+                    index: f.index,
+                    file_name: f.file_name.clone(),
+                    captured: f.captured.clone(),
+                    counter: f.counter,
+                })
+                .collect(),
+            registration: prov.registration.as_ref().map(crate::merge_pixel_shift::catalog_registration_of_file),
+        };
+        let probe = lcc_catalog::Photo::new(PhotoId(0), Source::File { path: merged_path.to_string() }, "", "DNG", 0, 0, "");
+        let Some(folder) = lcc_catalog::folder_of(&probe) else { return sources };
+        // the candidates: by file name and capture time, in the merged file's folder
+        let mut found: Vec<(usize, PhotoId, String)> = Vec::new();
+        for p in self.catalog.photos() {
+            let Source::File { path } = &p.source else { continue };
+            if p.deleted || p.merge_sources.is_some() {
+                continue;
+            }
+            let Some(k) = prov.frames.iter().position(|f| f.file_name == p.file_name && p.captured.as_deref() == Some(f.captured.as_str())) else {
+                continue;
+            };
+            if lcc_catalog::folder_of(p).as_deref() == Some(folder.as_str()) {
+                found.push((k, p.id, path.clone()));
+            }
+        }
+        // a frame named by two photos is ambiguous
+        let mut once = std::collections::HashSet::new();
+        if !found.iter().all(|(k, _, _)| once.insert(*k)) {
+            return sources;
+        }
+        let mut headers = Vec::with_capacity(found.len());
+        for (k, id, path) in &found {
+            let (Some(f), Ok(h)) = (prov.frames.get(*k), self.frame_header(*id, path)) else { return sources };
+            if h.index != Some(f.index) || h.counter != Some(f.counter) || h.shot_count != Some(prov.shot_count) {
+                return sources;
+            }
+            headers.push(h);
+        }
+        if lcc_raw::pixel_shift::check_subset(&headers, prov.shot_count).is_err() {
+            return sources;
+        }
+        for (k, id, _) in found {
+            if let Some(frame) = sources.frames.get_mut(k) {
+                frame.photo = Some(id);
+            }
+        }
+        sources
     }
 
     /// Check that `sources` are one complete pixel-shift series and put them in series order (frame 01 first). The
@@ -1146,29 +1193,36 @@ impl Session {
         self.plan_pixel_shift_checked(sources).map_err(|e| EngineError::Other(e.to_string()))
     }
 
+    /// The pixel-shift header of the photo `id` whose file is `path`: its first 512 KB are read, the whole file when the
+    /// start does not hold the tags.
+    fn frame_header(&self, id: PhotoId, path: &str) -> std::result::Result<lcc_raw::pixel_shift::FrameHeader, PixelShiftRefusal> {
+        use lcc_raw::pixel_shift::{HEADER_PREFIX_BYTES, read_header, read_header_with};
+        use std::io::Read;
+        let name = self.catalog.photo(id).map(|p| p.file_name.clone()).unwrap_or_else(|| path.to_string());
+        let unreadable = |reason: String| PixelShiftRefusal::Unreadable { name: name.clone(), reason };
+        let header = match &self.media.file_bytes {
+            Some(read) => read(path).map_err(unreadable).map(|bytes| read_header(&bytes)),
+            None => (|| -> std::io::Result<_> {
+                let mut file = std::fs::File::open(path)?;
+                let len = file.metadata()?.len();
+                let mut prefix = vec![0u8; usize::try_from(len).unwrap_or(usize::MAX).min(HEADER_PREFIX_BYTES)];
+                file.read_exact(&mut prefix)?;
+                Ok(read_header_with(&prefix, len, || std::fs::read(path).ok()))
+            })()
+            .map_err(|e| unreadable(e.to_string())),
+        }?;
+        header.map_err(|why| PixelShiftRefusal::NotFrame { name: name.clone(), why })
+    }
+
     /// [`Session::plan_pixel_shift`] with the refusal as a value, for a front end that words it in the person's language.
     pub fn plan_pixel_shift_checked(
         &self,
         sources: &[(PhotoId, String)],
     ) -> std::result::Result<(Vec<(PhotoId, String)>, PixelShiftPlan), PixelShiftRefusal> {
-        use lcc_raw::pixel_shift::{HEADER_PREFIX_BYTES, detect, read_header, read_header_with, series_shot_count};
-        use std::io::Read;
+        use lcc_raw::pixel_shift::{detect, series_shot_count};
         let mut headers = Vec::with_capacity(sources.len());
         for (id, path) in sources {
-            let name = self.catalog.photo(*id).map(|p| p.file_name.clone()).unwrap_or_else(|| path.clone());
-            let unreadable = |reason: String| PixelShiftRefusal::Unreadable { name: name.clone(), reason };
-            let header = match &self.media.file_bytes {
-                Some(read) => read(path).map_err(unreadable).map(|bytes| read_header(&bytes)),
-                None => (|| -> std::io::Result<_> {
-                    let mut file = std::fs::File::open(path)?;
-                    let len = file.metadata()?.len();
-                    let mut prefix = vec![0u8; usize::try_from(len).unwrap_or(usize::MAX).min(HEADER_PREFIX_BYTES)];
-                    file.read_exact(&mut prefix)?;
-                    Ok(read_header_with(&prefix, len, || std::fs::read(path).ok()))
-                })()
-                .map_err(|e| unreadable(e.to_string())),
-            }?;
-            headers.push(header.map_err(|why| PixelShiftRefusal::NotFrame { name: name.clone(), why })?);
+            headers.push(self.frame_header(*id, path)?);
         }
         // the series' mode first: a 4-, 8- or 32-shot series (whichever of its frames are chosen) is refused by name and
         // never judged as a 16-shot series that happens to be incomplete or complete

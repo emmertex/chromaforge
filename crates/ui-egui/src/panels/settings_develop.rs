@@ -89,6 +89,27 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         custom_group(app, ui, t, &profile);
         groups(app, ui, t, &profile);
     });
+    tool_row(app, ui, t);
+}
+
+/// The buttons of the tool row under the histogram, each shown or hidden (the row's own context menu does the
+/// same, and moves them), and where the mask list goes (#1251). For every tool profile.
+fn tool_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    heading(ui, t, "Tool Row");
+    hint(ui, t, "The buttons under the histogram. Right-click the row to move them.");
+    for p in crate::panels::strip::strip_declared(crate::module::ModuleId::Develop).iter().filter(|p| **p != crate::module::PanelId::Edit) {
+        let mut on = !app.ui.hidden_panels.contains(p);
+        let label = if *p == crate::module::PanelId::Reset { "Reset (Compact layout)" } else { crate::panels::classic::title(*p) };
+        if check(ui, &format!("toolRow:{}", p.key()), &mut on, label) {
+            let _ = app.run("panel.show", json!({"panel": p.key(), "visible": on}));
+        }
+    }
+    heading(ui, t, "Masking");
+    let mut detached = app.ui.settings.masks_detached;
+    if check(ui, "settings.masksDetached", &mut detached, "Detach the mask list") {
+        let _ = app.run("view.masksDetached", json!({"on": detached}));
+    }
+    hint(ui, t, "The masks show in a window of their own over the photo; Feather, Refine Edges and the mask's sliders stay in the panel.");
 }
 
 /// The Custom group: its sliders in order, each with Move Up / Move Down / Remove, and a menu to add one.
