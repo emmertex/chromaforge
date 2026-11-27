@@ -73,6 +73,10 @@ pub struct Tokens {
     pub thumb: Color32,
     pub thumb_hover: Color32,
     pub accent: Color32,
+    /// A search match in text (Settings search): a translucent fill over the text, and the line round it.
+    /// Warm in every theme, so it stands apart from the cool accent that selection uses.
+    pub find: Color32,
+    pub find_edge: Color32,
     pub star: Color32,
     pub pick: Color32,
     pub reject: Color32,
@@ -173,6 +177,8 @@ impl Default for Tokens {
             thumb: Color32::from_rgb(0xa0, 0xa0, 0xa0),
             thumb_hover: Color32::from_rgb(0xe0, 0xe0, 0xe0),
             accent: Color32::from_rgb(0x01, 0x65, 0xdd),
+            find: Color32::from_rgba_unmultiplied(0xff, 0xb4, 0x00, 90),
+            find_edge: Color32::from_rgb(0xff, 0xb4, 0x00),
             star: Color32::from_rgb(0xd8, 0xd8, 0xd8),
             pick: Color32::from_rgb(0xf0, 0xf0, 0xf0),
             reject: Color32::from_rgb(0xe0, 0x4a, 0x4a),
@@ -245,6 +251,8 @@ impl Tokens {
                 thumb: rgb(0x5e5e5e),
                 thumb_hover: rgb(0x262626),
                 accent: rgb(0x0a62d0),
+                find: Color32::from_rgba_unmultiplied(0xff, 0xd0, 0x00, 150),
+                find_edge: rgb(0xa86600),
                 star: rgb(0x3a3a3a),
                 pick: rgb(0x2a2a2a),
                 reject: rgb(0xc83434),
@@ -280,6 +288,8 @@ impl Tokens {
                 thumb: rgb(0x606060),
                 thumb_hover: rgb(0x202020),
                 accent: rgb(0x0a62d0),
+                find: Color32::from_rgba_unmultiplied(0xff, 0xd0, 0x00, 150),
+                find_edge: rgb(0xa86600),
                 star: rgb(0x3a3a3a),
                 pick: rgb(0x2a2a2a),
                 reject: rgb(0xc83434),
@@ -909,6 +919,28 @@ mod tests {
             }
             // the thin inner line of the active ring is the ring's opposite: it parts the ring from the photo's edge
             assert!(contrast(t.ring_inner, t.ring_active) >= 3.0, "{kind:?}: inner line against the active ring");
+        }
+    }
+
+    /// A search match in text (Settings search) shows in every theme: its outline reads against the
+    /// field and the panel (3:1), and its fill tints the panel enough to see by itself.
+    #[test]
+    fn a_search_match_is_easy_to_see_in_every_theme() {
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            for (what, surface) in [("panel", t.chrome), ("field", t.field), ("inset", t.inset)] {
+                assert!(contrast(t.find_edge, surface) >= 3.0, "{kind:?}: outline on the {what}: {:.2}", contrast(t.find_edge, surface));
+                // the fill is a colour, not a shade: judged by how far it moves the surface, not by luminance
+                let moved =
+                    |a: Color32, b: Color32| u32::from(a.r().abs_diff(b.r())) + u32::from(a.g().abs_diff(b.g())) + u32::from(a.b().abs_diff(b.b()));
+                assert!(moved(surface.blend(t.find), surface) >= 60, "{kind:?}: fill on the {what}: {}", moved(surface.blend(t.find), surface));
+                // and the text stays readable through the fill
+                assert!(
+                    contrast(t.text, surface.blend(t.find)) >= 4.5,
+                    "{kind:?}: text through the fill on the {what}: {:.2}",
+                    contrast(t.text, surface.blend(t.find))
+                );
+            }
         }
     }
 
