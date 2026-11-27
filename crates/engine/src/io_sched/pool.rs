@@ -353,20 +353,21 @@ impl<T: Send + 'static> Stream<T> {
         Ok(first..self.next)
     }
 
-    /// No more jobs come.
+    /// No more jobs come for what was submitted so far: the pool forgets this call once they all
+    /// have outcomes. A later submit opens a new call (indexes go on).
     pub(crate) fn close(&mut self) {
         if self.opened {
             self.send(Msg::Close { call: self.call });
+            self.opened = false;
+            self.call = self.ctx.next_call.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// Cancel: jobs not started never start; running ones finish, or are left behind after 5 s
-    /// without progress (§5.2).
+    /// Cancel (every job this stream submitted, closed or not): jobs not started never start;
+    /// running ones finish, or are left behind after 5 s without progress (§5.2).
     pub(crate) fn cancel(&mut self) {
         self.cancel.store(true, Ordering::Release);
-        if self.opened {
-            self.send(Msg::Wake);
-        }
+        self.send(Msg::Wake);
     }
 
     /// Whether the pool this stream uses has stopped (its running jobs then have no bookkeeping).
@@ -410,7 +411,7 @@ impl<T: Send + 'static> Stream<T> {
 
 impl<T: Send + 'static> Drop for Stream<T> {
     fn drop(&mut self) {
-        if self.opened {
+        if self.next > 0 {
             self.cancel();
             self.close();
         }

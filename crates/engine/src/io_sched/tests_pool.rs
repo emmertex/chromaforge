@@ -551,4 +551,47 @@ fn dropping_a_stream_cancels_its_unstarted_jobs() {
     // the pool goes on for others
     let (r, _) = h.run(quick("/a", 3), 2);
     assert_eq!(ok_count(&r), 3);
+
+    // a stream submits again after closing: a new call, indexes going on; dropping it cancels
+    // the closed call's unstarted jobs too
+    let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut s: Stream<R> = Stream::open(&h.ctx, 1, Result::is_ok);
+    assert_eq!(s.submit(quick("/b", 2)).unwrap(), 0..2);
+    s.close();
+    let mut got = Vec::new();
+    while got.len() < 2 {
+        if let Some((i, o, _)) = s.recv_timeout(Duration::from_millis(50)) {
+            assert!(matches!(o, JobOutcome::Done(Ok(_))));
+            got.push(i);
+        }
+    }
+    pending(&h, 0);
+    assert_eq!(s.submit(hanging("/b", 1, &latch, &started, true)).unwrap(), 2..3);
+    s.close();
+    assert_eq!(s.submit(quick("/b", 2)).unwrap(), 3..5);
+    wait_until(|| started.load(Ordering::SeqCst) == 1, "the hung job to run");
+    pending(&h, 3);
+    drop(s);
+    pending(&h, 1);
+    latch.release();
+    pending(&h, 0);
+}
+
+/// A wake from sleep while the pool holds no call is still seen (the idle supervisor looks every
+/// second): the registry's entries get the 120 s grace, so a volume blocked before the sleep
+/// isn't blocked for the first call after it.
+#[test]
+fn a_wake_while_idle_gives_the_registry_its_grace() {
+    let h = H::new();
+    let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let call = h.start(hanging("/a", 2, &latch, &started, true), 4);
+    wait_until(|| started.load(Ordering::SeqCst) == 2, "start");
+    call.settle(&h, 3);
+    h.advance(STALL_WITH_BYTES);
+    assert_eq!(vnr_count(&call.join()), 2);
+    let a = lcc_catalog::folders::volume_key("/a/x", &lcc_catalog::folders::Mounts::from_points(["/", "/a"], false));
+    assert!(h.ctx.shared.blocked(&a, h.now()));
+    h.clock.sleep(super::shared::WAKE_JUMP + 1);
+    wait_until(|| !h.ctx.shared.blocked(&a, h.now()), "the idle pool to notice the wake");
+    latch.release();
 }

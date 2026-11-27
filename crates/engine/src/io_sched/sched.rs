@@ -378,12 +378,13 @@ impl Sched {
         // (a step far later than its wait, where the monotonic clock counts sleep: the computer
         // slept in between)
         let late = self.late_tick_is_wake && dm > u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX).saturating_add(WAKE_JUMP);
+        // (also while idle: the registry's entries get the grace too)
+        if dw > dm.saturating_add(WAKE_JUMP) || late {
+            log::info!("io: the computer woke from sleep: every volume gets a grace period");
+            self.shared.note_wake(now);
+        }
         if !self.calls.is_empty() {
-            if dw > dm.saturating_add(WAKE_JUMP) || late {
-                log::info!("io: the computer woke from sleep: every volume gets a grace period");
-                self.shared.note_wake(now);
-            }
-            // (a late wait's time was the sleep, not the volumes' silence)
+            // (a late step's time was the sleep, not the volumes' silence)
             self.tick(now, if late { 0 } else { dm });
             self.ticks.fetch_add(1, Ordering::Relaxed);
         }
