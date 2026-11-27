@@ -1253,7 +1253,9 @@ the others, and a photo without one first gets a copy of the active entry (param
 on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
 {uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
 false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
-the selection, and *Apply to N Selected* the copy.
+the selection, and *Apply to N Selected* the copy. Copy / Paste, Sync and presets of the Plug-in
+Filters group carry each entry without its measurement (the targets read "Not measured yet"; use
+Measure N Selected), except a roll's (`_roll`), which is shared by design.
 
 **Measuring on its own, and a status line (ABI v1.1 proposal).** A manifest with `pc_analyze` may say
 `"analyze": "auto"` (default `"manual"`): each enabled entry of it on the open photo that has no measurement is
