@@ -1256,7 +1256,7 @@ impl Sched {
         for e in self.ctl.take_events() {
             match &e {
                 Event::Window { vol, .. } => self.windows.entry(vol.clone()).or_default().0 += 1,
-                Event::Discarded { vol, .. } => self.windows.entry(vol.clone()).or_default().1 += 1,
+                Event::Discarded { vol, .. } | Event::NoBytes { vol, .. } => self.windows.entry(vol.clone()).or_default().1 += 1,
                 _ => {}
             }
             let line = describe(&e);
@@ -1326,6 +1326,7 @@ pub(crate) fn describe(e: &Event<VolumeKey>) -> String {
         Event::Discarded { vol, limit, gate } => {
             format!("io-limit {vol}: window at limit {limit} discarded: {:.0} % of its jobs' time at the work gate", gate * 100.0)
         }
+        Event::NoBytes { vol, limit, jobs } => format!("io-limit {vol}: window at limit {limit} discarded: {jobs} jobs moved no bytes"),
         Event::Probe { vol, from, to } => format!("io-limit {vol}: probe {from} -> {to}"),
         Event::Decided { vol, up, from, to, kept, base, probe, base_total, probe_total } => format!(
             "io-limit {vol}: {} {from} -> {to} {}: {:.1} MB/s against baselines {:.1} MB/s; process {:.1} against {:.1} MB/s; limit now {}",
@@ -1342,6 +1343,7 @@ pub(crate) fn describe(e: &Event<VolumeKey>) -> String {
                 AbortReason::Demand => "ran out of work",
                 AbortReason::Deadline => "window could not complete",
                 AbortReason::Discarded => "window discarded",
+                AbortReason::NoBytes => "window moved no bytes",
             };
             format!("io-limit {vol}: probe ended ({why}): limit {limit}")
         }

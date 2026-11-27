@@ -416,3 +416,38 @@ fn one_volume_probes_at_a_time() {
     ctl.tick(5.0, &W, Demand::AtLimit, done, 400.0);
     assert_eq!(ctl.token(), Some(&W));
 }
+
+/// A window in which the volume moved no byte is no measurement (`0 ≥ 0` passed every up and
+/// down rule, so the limit climbed to the cap on nothing): it is discarded and a probe ends; one
+/// byte is enough to count (at 0, just above).
+#[test]
+fn windows_that_move_no_bytes_are_discarded() {
+    for (bytes, counts) in [(0.0, false), (1.0, true)] {
+        let mut r = Rig::new(4);
+        r.tick(Demand::AtLimit);
+        r.c.bytes += bytes;
+        r.run(4.0, 0.0, 0.0, 64);
+        let events = r.ctl.take_events();
+        assert_eq!(events.iter().any(|e| matches!(e, Event::NoBytes { .. })), !counts, "{bytes} bytes");
+        if counts {
+            assert_eq!((r.phase(), r.limit()), (Some(Phase::Probe), 5), "{bytes} bytes");
+        } else {
+            assert!(events.iter().any(|e| matches!(e, Event::Aborted { reason: AbortReason::NoBytes, .. })));
+            assert_eq!((r.phase(), r.limit(), r.ctl.token()), (Some(Phase::Hold), 4, None));
+        }
+    }
+    // a probe window that moved nothing ends the probe: the stored limit comes back
+    let mut r = Rig::new(4);
+    r.window(100.0, 100.0);
+    assert_eq!(r.limit(), 5);
+    r.window(0.0, 0.0);
+    assert_eq!((r.phase(), r.limit(), r.ctl.token()), (Some(Phase::Hold), 4, None));
+    // windows that never move a byte never move the limit, however many
+    let mut r = Rig::new(4);
+    for _ in 0..200 {
+        r.window(0.0, 0.0);
+    }
+    let events = r.ctl.take_events();
+    assert!(!events.iter().any(|e| matches!(e, Event::Probe { .. } | Event::Decided { .. })), "{events:?}");
+    assert_eq!(r.limit(), 4);
+}

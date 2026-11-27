@@ -137,7 +137,8 @@ pub(crate) struct Learned {
     pub(crate) raised: usize,
     /// It holds the probing token.
     pub(crate) probing: bool,
-    /// Windows completed on it, and windows discarded (gate waits), in this process.
+    /// Windows completed on it, and windows discarded (gate waits, or no byte moved), in this
+    /// process.
     pub(crate) windows: u64,
     pub(crate) discarded: u64,
 }

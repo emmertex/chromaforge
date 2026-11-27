@@ -71,6 +71,20 @@ fn jobs(vol: &str, dest: Option<&str>, n: usize, dev: &Arc<Device>, gate: bool) 
         .collect()
 }
 
+/// `n` jobs on `vol` that wait for the device, then return without moving a byte (files that
+/// fail at once, hard links).
+fn empty_jobs(vol: &str, n: usize, dev: &Arc<Device>) -> Vec<IoJob<R>> {
+    (0..n)
+        .map(|i| {
+            let dev = dev.clone();
+            job(&format!("{vol}/f{i}"), move || {
+                dev.enter();
+                Ok(i as u32)
+            })
+        })
+        .collect()
+}
+
 fn key(path: &str) -> VolumeKey {
     let points: Vec<String> = ["/", "/a", "/b", "/c", "/srv/nas"].iter().map(|s| s.to_string()).collect();
     volume_key(path, &Mounts::from_points(points, false))
@@ -186,6 +200,24 @@ fn gate_waits_discard_the_windows() {
     assert_eq!(l.limit, 2);
     dev.finish(usize::MAX / 2);
     assert_eq!(super::tests::ok_count(&call.join()), 400);
+}
+
+/// Jobs that finish without moving a byte measure nothing: the volume keeps its start however
+/// many windows' worth of them finish at its limit (on `0 ≥ 0` it climbed to the cap).
+#[test]
+fn jobs_that_move_no_bytes_leave_the_limit() {
+    let h = H::new();
+    let dev = Arc::new(Device::default());
+    let call = start(&h, empty_jobs("/a", 2000, &dev), 2);
+    for _ in 0..60 {
+        step(&h, &call, &dev, |w| w);
+    }
+    let l = learned(&h, "/a");
+    assert_eq!((l.limit, l.raised, l.windows), (2, 0, 0), "{l:?}");
+    assert!(l.discarded >= 1, "{l:?}");
+    assert!(dev.most.load(Ordering::SeqCst) <= 2, "never above the start");
+    dev.finish(usize::MAX / 2);
+    assert_eq!(super::tests::ok_count(&call.join()), 2000);
 }
 
 /// A call too short to complete a window leaves its volume as it was, and the pool's limit for

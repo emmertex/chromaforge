@@ -10,7 +10,10 @@
 //! - a **window** runs only while the volume is at its limit ([`Demand::AtLimit`]); it ends after
 //!   at least [`WINDOW_MIN`] and either `max(8, 2 × limit)` finished jobs or [`WINDOW_LONG`] with
 //!   bytes moving; its rates are the volume's bytes and the process's total bytes per second; a
-//!   window whose jobs spent more than [`GATE_SHARE`] of their time at the work gate is discarded;
+//!   window whose jobs spent more than [`GATE_SHARE`] of their time at the work gate is discarded,
+//!   and so is one in which the volume moved no byte (no measurement: jobs that fail at once, or
+//!   hard links, finish without moving anything; every rate would be 0, and `0 ≥ 0` passes every
+//!   up and down rule);
 //! - **one token**: one volume probes at a time; it is taken before the first baseline;
 //! - a **probe** is a baseline at the current limit, a window at the probe limit, a second
 //!   baseline at the stored limit; up (`L + ceil(L/4)`, at most the cap) is kept when the probe
@@ -112,6 +115,8 @@ pub(crate) enum AbortReason {
     Deadline,
     /// A window was discarded (gate waits).
     Discarded,
+    /// A window moved no byte (nothing to judge).
+    NoBytes,
 }
 
 /// What the controller did, for the profile output and the tests.
@@ -121,6 +126,8 @@ pub(crate) enum Event<K> {
     Window { vol: K, phase: Phase, limit: usize, rate: f64, total: f64, span: f64, jobs: u64 },
     /// A window was discarded: `gate` of its jobs' time was spent at the work gate.
     Discarded { vol: K, limit: usize, gate: f64 },
+    /// A window was discarded: the volume moved no byte in it (`jobs` finished).
+    NoBytes { vol: K, limit: usize, jobs: u64 },
     /// A probe of `to` began from `from`.
     Probe { vol: K, from: usize, to: usize },
     /// A probe was judged: `kept` moves the limit `from` → `to`.
@@ -345,6 +352,14 @@ impl<K: Clone + Eq + Hash> Controller<K> {
             self.events.push(Event::Discarded { vol: k.clone(), limit: s.limit, gate: if busy > 0.0 { gate / busy } else { 1.0 } });
             if self.probing(k, s) {
                 self.abort(k, s, AbortReason::Discarded);
+            }
+            return;
+        }
+        if c.bytes <= w.at.bytes {
+            // (no byte moved: every rate would be 0, and 0 ≥ 0 passes every up and down rule)
+            self.events.push(Event::NoBytes { vol: k.clone(), limit: s.limit, jobs });
+            if self.probing(k, s) {
+                self.abort(k, s, AbortReason::NoBytes);
             }
             return;
         }
