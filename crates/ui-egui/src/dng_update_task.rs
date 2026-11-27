@@ -96,9 +96,13 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                     let failed = r.field("failed").as_array().is_some_and(|f| !f.is_empty());
                     let msg = note(&r, total);
                     app.last_dng_update = Some(r);
-                    app.toast_for(ctx, msg, if failed { 15.0 } else { crate::TOAST_SECONDS });
+                    if failed {
+                        app.toast_error(ctx, msg);
+                    } else {
+                        app.toast(ctx, msg);
+                    }
                 }
-                Err(e) => app.toast_for(ctx, e.to_string(), 15.0),
+                Err(e) => app.toast_error(ctx, e.to_string()),
             }
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {

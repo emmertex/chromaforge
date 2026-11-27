@@ -50,6 +50,8 @@ fn check_every_menu(size: [f32; 2]) {
         // (a swipe along the bar brings a title in; picking it scrolls it fully into view)
         h.app.ui.modern.menu = Some(title.clone());
         h.settle(Duration::from_secs(5));
+        // (a busy machine draws few frames in that time: wait for the title itself)
+        let _ = h.step_until(Duration::from_secs(60), |h| rect(h, &format!("modern:menu:{title}")).is_some_and(|t| across(t, size[0])));
         let t = rect(&h, &format!("modern:menu:{title}")).unwrap_or_else(|| panic!("{title}: no title"));
         assert!(across(t, size[0]), "{title}: title off screen {t:?}");
         assert!(h.click_as_user(&format!("modern:menu:{title}")), "{title}: tappable");

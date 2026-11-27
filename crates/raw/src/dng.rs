@@ -272,7 +272,10 @@ pub(crate) fn decode_reduced(bytes: &[u8], min_long: usize) -> Result<Option<Raw
 fn decode_ifd(bytes: &[u8], tiff: &Tiff, pixels: &Ifd, main: &Ifd, mode: Mode, format: RawFormat) -> Result<RawImage> {
     let ifd0 = &tiff.ifds[0];
     let raw = main;
-    let info = pixels.image()?;
+    let mut info = pixels.image()?;
+    if std::ptr::eq(pixels, raw) {
+        extend_understated_strip(bytes, &mut info, raw);
+    }
     let (w, h, cpp) = (info.width as usize, info.height as usize, info.samples_per_pixel as usize);
     // one sample (CFA or monochrome), RGB or four colours; two are neither and can't be developed (issue #1511)
     if !matches!(cpp, 1 | 3 | 4) {
@@ -468,6 +471,36 @@ fn decode_ifd(bytes: &[u8], tiff: &Tiff, pixels: &Ifd, main: &Ifd, mode: Mode, f
     Ok(img)
 }
 
+/// Trust the file over `StripByteCounts` for an uncompressed single-strip integer image whose byte count is exactly
+/// `ActiveArea` columns by `ImageLength` rows while the file holds the whole `ImageWidth` by `ImageLength` raster from
+/// the strip's offset on. DJI Mavic 3 DNGs count the active columns (5280) for a strip of full 5376-wide rows that ends
+/// at the end of the file; reading only the counted bytes left the bottom rows black. The strip is lengthened only then
+/// (never past the end of the file), and the active area has to start at column 0 and stay inside the image.
+/// Adapted from craft-libs #2042 (issue craft-libs #2040).
+fn extend_understated_strip(bytes: &[u8], info: &mut lcc_tiff::image::ImageInfo, raw: &Ifd) {
+    let bits = u64::from(info.bits());
+    if !matches!(info.layout, lcc_tiff::image::Layout::Strips { .. })
+        || info.compression != t::compression::NONE
+        || info.samples_per_pixel != 1
+        || info.planar == 2
+        || !matches!(info.sample_format, 1 | 2)
+        || !matches!(bits, 8 | 16)
+    {
+        return;
+    }
+    let ([offset], [count]) = (&info.offsets[..], &info.byte_counts[..]) else { return };
+    let Some([top, left, bottom, right]) = raw.u64s(t::ACTIVE_AREA).and_then(|a| <[u64; 4]>::try_from(a).ok()) else { return };
+    if left != 0 || bottom <= top || bottom > u64::from(info.height) || right == 0 || right >= u64::from(info.width) {
+        return;
+    }
+    let raster_bytes = |width: u64| width.checked_mul(u64::from(info.height))?.checked_mul(bits / 8);
+    let (Some(counted), Some(needed)) = (raster_bytes(right), raster_bytes(u64::from(info.width))) else { return };
+    let fits = offset.checked_add(needed).is_some_and(|end| end <= bytes.len() as u64);
+    if *count == counted && fits {
+        info.byte_counts = vec![needed];
+    }
+}
+
 /// Pixel height over width from `DefaultScale` (horizontal, vertical): only a clear 1.5 to 4 ratio counts (the rows stretch; a wider-than-tall pixel is left alone).
 fn default_scale_aspect(scale: Option<&[f64]>) -> f32 {
     match scale {
@@ -488,6 +521,78 @@ mod tests {
     }
 
     use super::*;
+
+    /// A 16-bit CFA DNG of `width` x `height` whose strip holds every row in full but whose `StripByteCounts` says
+    /// `counted` bytes, with `extra` tags on the raw IFD.
+    fn understated_strip_dng(width: u32, height: u32, counted: u32, active_area: Option<[u32; 4]>, extra: &[(u16, lcc_tiff::Value)]) -> Vec<u8> {
+        use lcc_tiff::{IfdBuilder, ImageData, TiffWriter, Value};
+        let mut raw = IfdBuilder::new();
+        for (tag, value) in extra {
+            raw.set(*tag, value.clone());
+        }
+        for (tag, value) in [
+            (t::IMAGE_WIDTH, Value::Long(vec![width])),
+            (t::IMAGE_LENGTH, Value::Long(vec![height])),
+            (t::BITS_PER_SAMPLE, Value::Short(vec![16])),
+            (t::SAMPLES_PER_PIXEL, Value::Short(vec![1])),
+            (t::PHOTOMETRIC, Value::Short(vec![photometric::CFA])),
+            (t::COMPRESSION, Value::Short(vec![1])),
+            (t::CFA_REPEAT_PATTERN_DIM, Value::Short(vec![2, 2])),
+            (t::CFA_PATTERN_EP, Value::Byte(vec![0, 1, 1, 2])),
+        ] {
+            raw.set(tag, value);
+        }
+        if let Some(area) = active_area {
+            raw.set(t::ACTIVE_AREA, Value::Long(area.to_vec()));
+        }
+        let samples = (width * height) as u16;
+        raw.set_image(ImageData::Strips { rows_per_strip: height, strips: vec![(1..=samples).flat_map(u16::to_le_bytes).collect()] });
+        let mut bytes = TiffWriter::new(ByteOrder::Little, false).write(&[raw]).unwrap();
+        // the writer counts the real bytes: understate that one count, a LONG in the IFD
+        let count = (width * height * 2).to_le_bytes();
+        let at = bytes.windows(4).position(|w| w == count).unwrap();
+        bytes[at..at + 4].copy_from_slice(&counted.to_le_bytes());
+        bytes
+    }
+
+    /// craft-libs #2042 / #2040: the DJI Mavic 3 counts 5280 x 3956 x 2 bytes for a strip that holds 5376-wide rows to
+    /// the end of the file. The whole strip is read, not the counted part with zeros after it.
+    #[test]
+    fn a_strip_counted_only_active_area_wide_is_read_in_full() {
+        let bytes = understated_strip_dng(8, 4, 6 * 4 * 2, Some([0, 0, 4, 6]), &[]);
+        for mode in [Mode::Full, Mode::Header] {
+            let img = decode_as(&bytes, mode, RawFormat::Dng).unwrap();
+            assert_eq!((img.width, img.height), (8, 4));
+        }
+        let img = decode_as(&bytes, Mode::Full, RawFormat::Dng).unwrap();
+        let RawData::U16(v) = &img.data else { panic!("integer samples") };
+        assert_eq!(v, &(1..=32).collect::<Vec<u16>>());
+    }
+
+    /// Every other short strip keeps its counted bytes (zeros after them) or is refused: never lengthened.
+    #[test]
+    fn other_short_strips_are_not_lengthened() {
+        let full: Vec<u16> = (1..=32).collect();
+        let lengthened =
+            |bytes: Vec<u8>| matches!(decode_as(&bytes, Mode::Full, RawFormat::Dng), Ok(RawImage { data: RawData::U16(ref v), .. }) if *v == full);
+        let short = |counted, area, extra: &[(u16, lcc_tiff::Value)]| understated_strip_dng(8, 4, counted, area, extra);
+        // no ActiveArea to explain the count
+        assert!(!lengthened(short(6 * 4 * 2, None, &[])));
+        // the count is not exactly the area's bytes
+        assert!(!lengthened(short(5 * 4 * 2, Some([0, 0, 4, 6]), &[])));
+        // samples that are not integers (SampleFormat 4 is undefined)
+        assert!(!lengthened(short(6 * 4 * 2, Some([0, 0, 4, 6]), &[(t::SAMPLE_FORMAT, lcc_tiff::Value::Short(vec![4]))])));
+        // the area reaches below the image
+        assert!(!lengthened(short(6 * 4 * 2, Some([4, 0, 5, 6]), &[])));
+        // the area does not start at column 0
+        assert!(!lengthened(short(6 * 4 * 2, Some([0, 2, 4, 8]), &[])));
+        // a hostile area far larger than the image
+        assert!(!lengthened(short(6 * 4 * 2, Some([0, 0, u32::MAX, u32::MAX]), &[])));
+        // the file does not hold the whole raster
+        let mut cut = short(6 * 4 * 2, Some([0, 0, 4, 6]), &[]);
+        cut.truncate(cut.len() - 8);
+        assert!(!lengthened(cut));
+    }
 
     /// Store `image` the way DNG 1.7 interleaves it: row `r` of the image is written to stored row
     /// `(r % rows) * (h / rows) + r / rows`, and columns likewise. This is the inverse of

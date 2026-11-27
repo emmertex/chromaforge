@@ -43,6 +43,8 @@ pub struct MergeDialog {
     pub layers: bool,
     /// With `layers`: the merged result as the bottom layer.
     pub include_merged: bool,
+    /// Pixel Shift: `registered` (the frames' positions measured, the default) or `plain` (the camera's own pattern).
+    pub method: String,
 }
 
 impl Default for MergeDialog {
@@ -61,6 +63,7 @@ impl Default for MergeDialog {
             bracket: 0,
             layers: false,
             include_merged: true,
+            method: "registered".into(),
         }
     }
 }
@@ -225,7 +228,7 @@ pub fn reported(app: &mut LccApp, r: Result<Value, String>) -> Result<Value, Str
 /// A message on the window (the time of the frame it is said in is not known inside a command).
 fn say(app: &mut LccApp, text: String) {
     let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
-    app.ui.show_toast((text, now + 6.0, None));
+    app.ui.show_toast(crate::Toast::new(crate::ToastKind::Error, text, now));
 }
 
 /// Photo ▸ Photo Merge ▸ Delete Merge Sources: the other frames of the merged pixel-shift photo go to Recently Deleted,
@@ -269,7 +272,6 @@ fn refusal_text(r: &lcc_engine::merge::PixelShiftRefusal) -> String {
         R::Unreadable { name, reason } => crate::i18n::tr_format!("{name} could not be read: {reason}", name = name, reason = reason),
         R::NotFrame { name, .. } => crate::i18n::tr_format!("{name} is not a pixel-shift frame", name = name),
         R::Unsupported(n) => crate::i18n::tr_format!("{n}-shot pixel-shift series are not supported yet", n = n),
-        R::Exists { name } => return crate::i18n::tr_format!("A pixel-shift merge of this series already exists ({name})", name = name),
         R::Series(e) => match e {
             S::Empty => crate::i18n::tr("Select the frames of a pixel-shift series").to_string(),
             S::NoIndex(n) => crate::i18n::tr_format!("Photo {n} has no valid pixel-shift frame number", n = n),
@@ -328,7 +330,7 @@ pub fn start_final(app: &mut LccApp, opts: &MergeDialog) -> Result<Value, String
     let ids = app.merge.ids.clone();
     // a pixel-shift merge is refused with its reason before anything is decoded
     if opts.command == "merge.pixelShift" {
-        app.session.pixel_shift_check(&ids, None).map_err(|r| refusal_text(&r))?;
+        app.session.pixel_shift_check(&ids).map_err(|r| refusal_text(&r))?;
     }
     let mut task = spawn(app, opts, &ids, false)?;
     let guard = app.session.activity.start("merge", "Merging", Cancel::Flag(task.cancel.clone()));
@@ -336,11 +338,33 @@ pub fn start_final(app: &mut LccApp, opts: &MergeDialog) -> Result<Value, String
     guard.progress(0, 1000);
     task.guard = Some(guard);
     app.merge.final_task = Some(task);
-    app.session.last_merge.insert(opts.command.clone(), opts.params());
+    // the plain merge is a choice of the moment: what is remembered is the registered merge's
+    app.session.last_merge.insert(opts.command.clone(), MergeDialog { method: "registered".into(), ..opts.clone() }.params());
+    if opts.command == "merge.pixelShift" && opts.method != "plain" {
+        iso_hint(app, &ids);
+    }
     if let Err(e) = app.session.save_prefs() {
         log::warn!("merge: {e}");
     }
     Ok(json!({"started": true, "photos": ids.len()}))
+}
+
+/// From this ISO on a pixel-shift series gets a hint with its registered merge: the plain merge is the safer choice
+/// at high ISO, where the measured positions rest on noisier data (no series between ISO 64 and 3200 was measured).
+pub const HIGH_ISO: u32 = 1600;
+
+/// The hint a registered pixel-shift merge of high-ISO frames starts with; it blocks nothing.
+fn iso_hint(app: &mut LccApp, ids: &[PhotoId]) {
+    let iso = ids.iter().filter_map(|id| app.session.catalog.photo(*id)).filter_map(|p| p.meta.iso).max();
+    if let Some(iso) = iso.filter(|iso| *iso >= HIGH_ISO) {
+        // a hint, not a failure: the message kind, not the error one the refusals use
+        let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
+        let text = crate::i18n::tr_format!(
+            "ISO {iso}: a registered merge can look noisier than the plain one. Pixel Shift, Plain Merge gives the camera's own pattern.",
+            iso = iso
+        );
+        app.ui.show_toast(crate::Toast::new(crate::ToastKind::Message, text, now));
+    }
 }
 
 /// Merge the selection without the dialog, with the options last used for `command` (the
@@ -355,7 +379,25 @@ pub fn start_last(app: &mut LccApp, command: &str) -> Result<Value, String> {
         });
     }
     app.merge.ids = ids;
-    let opts = last_options(app, command);
+    let mut opts = last_options(app, command);
+    // a pixel-shift merge is registered unless the plain one is asked for (Photo Merge ▸ Pixel Shift, Plain Merge): the
+    // choice of an earlier merge is not remembered
+    if command == "merge.pixelShift" {
+        opts.method = "registered".into();
+    }
+    start_final(app, &opts)
+}
+
+/// Photo ▸ Photo Merge ▸ Pixel Shift, Plain Merge: the series placed on the camera's own pattern (no measurement, no
+/// reconstruction), as the merge was made before registration.
+pub fn start_pixel_shift_plain(app: &mut LccApp) -> Result<Value, String> {
+    let ids = app.session.selected();
+    if ids.len() < 2 {
+        return Err(crate::i18n::tr_format!("Pixel Shift: {reason}", reason = crate::i18n::tr("Select the frames of a pixel-shift series")));
+    }
+    app.merge.ids = ids;
+    let mut opts = last_options(app, "merge.pixelShift");
+    opts.method = "plain".into();
     start_final(app, &opts)
 }
 
@@ -459,7 +501,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                 });
                 match r.map_err(lcc_engine::EngineError::Other).and_then(|out| app.session.finish_merge(&t.job, out)) {
                     Ok(v) => {
-                        let message = added_message(what, &v);
+                        let message = finished_message(what, &v);
                         app.merge.last_result = Some(v);
                         app.toast(ctx, message);
                     }
@@ -470,14 +512,14 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     Err(e) => {
                         app.ui.status = e.to_string();
-                        app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
+                        app.toast_error(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what));
                     }
                 }
                 // a failed set doesn't stop the others
                 while !app.merge.batch.is_empty() {
                     match next_in_batch(app) {
                         Ok(()) => break,
-                        Err(e) => app.toast(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what)),
+                        Err(e) => app.toast_error(ctx, crate::i18n::tr_format!("{what} merge failed: {e}", e = e, what = what)),
                     }
                 }
             }
@@ -486,11 +528,44 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                 if let Some(guard) = &t.guard {
                     let f = if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 };
                     guard.progress((f * 1000.0) as u64, 1000);
-                    guard.detail(crate::i18n::tr(&stage));
+                    guard.detail(&stage_text(&stage));
                 }
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
+    }
+}
+
+/// What the window says when a merge has finished: that it was added; and for a pixel-shift merge that was asked to be
+/// registered and was not, also why, in plain words (a long message stays longer: `toast::stay_seconds`). A registered merge
+/// that went as asked gets no word about how it was made.
+pub(crate) fn finished_message(what: &str, info: &Value) -> String {
+    match info.get("fallback").and_then(|f| f.get("message")).and_then(Value::as_str) {
+        Some(reason) => crate::i18n::tr_format!("{what} merge added, but not registered: {reason}", what = what, reason = reason_text(reason)),
+        None => added_message(what, info),
+    }
+}
+
+/// The reason a pixel-shift merge was not registered, in the person's language (the engine says it in English).
+fn reason_text(message: &str) -> String {
+    match message {
+        "not enough texture to measure the frame positions" => crate::i18n::tr("not enough texture to measure the frame positions").to_string(),
+        "the measured positions were less reliable than the camera's own pattern" => {
+            crate::i18n::tr("the measured positions were less reliable than the camera's own pattern").to_string()
+        }
+        "there was not enough memory for the registered merge" => crate::i18n::tr("there was not enough memory for the registered merge").to_string(),
+        _ => crate::i18n::tr("the frames could not be matched to each other").to_string(),
+    }
+}
+
+/// The stage a merge reports (the engine says it in English), in the person's language.
+fn stage_text(stage: &str) -> String {
+    match stage {
+        "Reading frames" => crate::i18n::tr("Reading frames").to_string(),
+        "Measuring positions" => crate::i18n::tr("Measuring positions").to_string(),
+        "Reconstructing" => crate::i18n::tr("Reconstructing").to_string(),
+        "Writing DNG" => crate::i18n::tr("Writing DNG").to_string(),
+        other => crate::i18n::tr(other).to_string(),
     }
 }
 

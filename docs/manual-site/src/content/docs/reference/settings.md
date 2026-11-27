@@ -9,6 +9,10 @@ sidebar:
 - The **?** beside a group or a setting opens this manual at the part about it.
 - **App settings** (layout, theme, GPU, shortcuts…) are this computer's. **Catalog settings** (import defaults, XMP
   sidecars, thumbnail cache, slideshow playback) travel with the catalog.
+- **Search settings** (the field above the list of pages) finds a page by any text on it, in the app's language: a
+  heading, a setting's name or choices, or a note under it. Several words must all be on the page, in any order, whatever
+  their case. It also takes the whole id of a setting (`settings.gpu`); part of an id with no dot in it finds nothing. The list keeps only the pages that match; the
+  open page stays open, with the matches marked. Clear the field to list every page again.
 - Where the settings are kept, and what goes online: [Settings and privacy](../../platforms/settings-and-privacy/).
 
 ## General
@@ -41,6 +45,7 @@ sidebar:
 - **Edit In**: ask which file to edit, or always edit a copy with adjustments, a copy, or the original.
 - **PhotoCraft** and **Other editor**: where each is, and the copy's file type (PSD or TIFF), bit depth and colour space.
   See [Edit In and actions](../../automate/actions/).
+- **More editors**: Photo ▸ Edit In ▸ Edit In Presets… saves them, each with its own items in the Edit In menu. See [Stacks](../../library/stacks/).
 
 ## Import
 
@@ -147,15 +152,35 @@ sidebar:
 ### Quick settings bar
 - Point at the empty stretch of the module bar between the identity plate and the module names: a row of switches
   fades in, and out again when the pointer leaves. It holds the **info overlay** (Off, Info 1, Info 2), the
-  [on-screen overlay](#on-screen-overlay), the **eye focus strip**, **clipping**, the **focus point**, **face boxes**
+  [on-screen overlay](#image-and-library-edits), the **eye focus strip**, **clipping**, the **focus point**, **face boxes**
   and the **filmstrip**. A message in the status line there goes away as soon as the pointer arrives.
 - Each switch runs the same command as its menu item. Plug-ins can add their own buttons
   ([Plug-ins](../../automate/plugins/)).
 
-### On-screen overlay
-- **Show changes**: Off, Control surface only, or Always. A short note in the window for every change: a slider's value,
-  a rating, a profile applied, and how many photos it changed. **Size**, **Opacity**, **Shown for**, **Position** and
-  **Background**. Also on the Controls page.
+## Notifications
+How the app tells you what just happened. Two parts: a short message for each change you make (the overlay), and the
+messages at the bottom of the window. Each kind has a **Test** button that shows it as it is set.
+
+### Image and library edits
+- **Show changes**: Off, Control surface only, or Always. Flashes a message for each change: what changed, and how many
+  photos were affected. *Control surface only* is for a hardware controller (such as the Logitech MX Creative Console);
+  set one up under **Settings ▸ Controls**. The **Test** buttons show a sample in this mode too. With it Off, everything below it is greyed out.
+- **In Develop** and **Elsewhere** choose which changes get a message: a change to a develop setting, or one to image
+  metadata or the library. Turn either off, but never both: the last one on stays on. They apply to a control
+  surface's own readout too.
+- **Size**, **Opacity**, **Shown for**, **Position** and **Background** set how it looks.
+
+### Messages
+- **Information** (updates, such as a finished background process), **Confirmation** (a message with a button, such as
+  a background action you can Undo), **Warnings** (warnings and errors) and **Persistent**. None of them can be
+  switched off.
+- The same **Size**, **Opacity**, **Shown for**, **Position** and **Background** for the messages at the bottom of the
+  window. **Shown for** is how long an *Information* message stays; the others follow it: a message with a button stays
+  7 times as long, a warning 4 times (at least 6 s), and none longer than 30 s. A long text stays a little longer so it
+  can be read. A warning keeps its red whatever the background.
+- **Persistent** messages are about something that is still true: changes that could not be written to disk, XMP
+  sidecars waiting for an offline folder, and a control surface asking to pair. They stay until you close them with
+  their ✕ or the problem is gone. Once you close one, it stays away until the problem has ended and come back.
 
 ## Slideshow
 - Templates, **Playback** (slide and fade durations, the fade, random order, repeat, preparing slides in advance;

@@ -165,7 +165,9 @@ impl Default for SurfaceHost {
 }
 
 /// Unpredictable bytes for pairing codes and tokens (std's per-process random hash keys, the
-/// time and the process id; no extra dependency).
+/// time and, natively, the process id; no extra dependency). `std::process::id` panics on
+/// wasm32 ("no pids on this platform"), and this runs when the app is built, so the browser app
+/// leaves it out (issue #1459: the web build stopped at start-up).
 fn seed() -> Vec<u8> {
     use std::hash::{BuildHasher, Hasher};
     let mut out = Vec::new();
@@ -175,6 +177,7 @@ fn seed() -> Vec<u8> {
         h.write_u128(web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
         out.extend_from_slice(&h.finish().to_le_bytes());
     }
+    #[cfg(not(target_arch = "wasm32"))]
     out.extend_from_slice(&std::process::id().to_le_bytes());
     out
 }
@@ -568,7 +571,7 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         load(app);
     }
     if let Some(text) = app.surface.info.take() {
-        app.toast_for(ctx, text, 8.0);
+        app.toast(ctx, text);
     }
     // Touch to find ends with the page that started it: the console acts on photos again
     let controls_open = matches!(&app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "controls");
@@ -596,7 +599,10 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
     push(app, now_ms);
     listener(app, now);
     #[cfg(not(target_arch = "wasm32"))]
-    app.surface.pairing.expire(now_ms.max(0.0) as u64);
+    {
+        app.surface.pairing.expire(now_ms.max(0.0) as u64);
+        clear_answered_pairings(app);
+    }
     if let Some(since) = app.surface.dirty_since
         && now - since >= 0.5
     {
@@ -855,6 +861,25 @@ fn hello(app: &mut LccApp, req: &ControlRequest) -> Outcome {
     }))
 }
 
+/// The key of the message that says `client` asks to pair.
+fn pairing_key(client: &str) -> String {
+    format!("pairing:{client}")
+}
+
+/// Take down the message of each pairing request that is no longer waiting (answered or expired).
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_answered_pairings(app: &mut LccApp) {
+    let waiting: Vec<String> = app.surface.pairing.waiting().map(|q| pairing_key(&q.client)).collect();
+    // a message the person dismissed has none showing, but its key must be freed too, or the client's next request
+    // would stay hidden
+    let showing = app.ui.toasts.iter().filter_map(|t| t.key.clone());
+    let answered: Vec<String> =
+        showing.chain(app.ui.toasts_dismissed.iter().cloned()).filter(|k| k.starts_with("pairing:") && !waiting.contains(k)).collect();
+    for key in answered {
+        app.ui.clear_toast(&key);
+    }
+}
+
 fn pair(app: &mut LccApp, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let now = (app.surface.now * 1000.0).max(0.0) as u64;
@@ -874,8 +899,9 @@ fn pair(app: &mut LccApp, req: &ControlRequest) -> Outcome {
     let name = p.get("name").and_then(Value::as_str).unwrap_or(client);
     match app.surface.pairing.ask(client, name, now) {
         Ok(r) => {
+            // stays until the request is answered or runs out (`clear_answered_pairings`)
             let text = crate::i18n::tr_format!("{name} asks to control {app}: see Settings, Controls", name = r.name.clone());
-            app.toast_for(&app.tasks.repaint.clone().unwrap_or_default(), text, 8.0);
+            app.ui.show_toast(crate::Toast::sticky(pairing_key(client), text));
             ok(json!({"status": "pending", "request": r.request, "code": r.code}))
         }
         Err(e) => err(e),

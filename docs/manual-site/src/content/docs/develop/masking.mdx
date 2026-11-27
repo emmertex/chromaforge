@@ -39,9 +39,16 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 - **Draw**: Brush, Linear, Radial.
   - Resize the brush with `[` / `]`, the mouse wheel, or two-finger trackpad scrolling (scrolling up enlarges the brush, matching Lightroom Classic). To turn the scroll gesture the other way, enable **Invert brush resize direction** under **Settings ▸ Interface**.
   - By keyboard: Tab to the brush handle on the photo, **Return** puts the brush down and the arrow keys paint ([Accessibility](../../platforms/accessibility/)).
+- **Style Brush** (from Capture One): under the Create New Mask tiles, once you have saved an effect preset. Pick an effect and a new Brush mask starts with its sliders (and its brush settings) already set; paint, and the effect goes where you paint. One undo removes the empty mask again. Command: `mask.styleBrush`.
+
+  <NeedsImage what="The Style Brush menu under Create New Mask, listing effect presets by group" />
+
 - **Range**: Luminance, Color, Depth (needs the Depth Anything model; see [AI masks](../../ai/masks-ai/#depth)).
+- **Clipping previews**: hold `Alt` (`Option` on macOS) while dragging a mask's **Exposure**, **Highlights**, **Whites**, **Shadows** or **Blacks** slider and the photo shows what that drag clips, as in the Edit panel: red where highlights clip, blue where shadows clip. While the preview shows, the mask's tint, outlines and pins step aside, and the `J` clipping overlay yields to it; releasing `Alt` or the slider brings everything back.
 - **Before any mask exists**: the panel shows the settings the next mask will start from ("Settings for the next mask"), dimmed and inert. Create a mask first; once one exists those sliders work, and with masks present but none selected they again set up the next mask.
 - **Colour tools**: under Colour's sliders are **Color** (paint-bucket icon), **Color Mixer** (palette icon) and **Point Color** (eyedropper icon). **Color Grading** is its own section right under Colour, with the colour-wheels icon. The Targeted Adjustment buttons (Tone Curve, Color Mixer, the mask's Color Mixer) show a reticle.
+- **Lens Blur** (a block under the mask's slider sections): blurs what the mask selects, or what it leaves out, with bokeh. See [Lens blur](../../ai/lens-blur/#lens-blur-in-a-mask).
+- **Recolor** (beyond Lightroom, under the mask's slider sections): the masked area's main colour takes a colour you choose and keeps its own shading, folds and light, so red boots become purple boots with the same contrast. Pick the colour with the swatches, a `#rrggbb` value or the eyedropper on the photo; **Amount** (0 is off) sets how strongly, **Range** widens or narrows which hues count as the main colour. **Color to Replace** picks which of two colours changes (Automatic uses the strongest one); a white lining, black rubber or a logo inside the mask stays as it is. Commands: `mask.recolor`, `mask.recolorPick`.
 - **Solo Mode**: right-click any mask section title and tick **Solo Mode** (or **Window ▸ Edit Sections ▸ Solo Mode in Masks**). Opening one section then folds the others. Alt-click a section title to open just that one with the mode off.
 
   <NeedsImage what="A mask's sections in Solo Mode: only Colour open, with the Color, Color Mixer and Point Color rows and their icons" />

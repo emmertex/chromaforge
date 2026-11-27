@@ -29,6 +29,7 @@
 //! No code from other raw processors was used; the method is the usual "isolated outlier among same-colour
 //! neighbours" idea, with the guard and thresholds above.
 
+use crate::cfa_offsets::{FlatOffsets, MAX_NEIGHBOURS, MIN_NEIGHBOURS};
 use crate::{Cfa, RawData, RawImage, Rect};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -385,7 +386,7 @@ impl<'a> View<'a> {
                 for ns in 0..self.cpp {
                     // the candidate itself, and (three-sample data) the same channel of the adjacent pixels: those are
                     // its neighbours already
-                    if (dx, dy) == (0, 0) && ns == s || self.cpp >= 3 && ns == s {
+                    if ns == s && ((dx, dy) == (0, 0) || self.cpp >= 3) {
                         continue;
                     }
                     check(nx, ny, ns);
@@ -423,11 +424,78 @@ pub fn same_colour_offsets(cfa: &Cfa, px: usize, py: usize) -> Vec<(isize, isize
         }
     }
     v.sort_by_key(|&(dx, dy)| (dx * dx + dy * dy, dy, dx));
-    v.truncate(8);
+    v.truncate(MAX_NEIGHBOURS);
     v
 }
 
+/// The quick test of [`detect`] on one sample, from the stored values: `v` brighter than `mx`, the brightest of its (up to) 4
+/// nearest same-colour neighbours, by the floor `fr` (in counts), or darker than half of `mn`, the darkest of them, above
+/// `black` (the full check follows only then).
+#[inline]
+fn quick_test(v: f32, mx: f32, mn: f32, fr: f32, black: f32) -> bool {
+    let bright = v > mx + fr;
+    let dark = v - black < 0.5 * (mn - black) && mn - black > 0.0;
+    bright || dark
+}
+
+/// How far the black level strays across the positions of `area` (stored counts): the ranges of its repeat pattern and of
+/// its row and column deltas, added. A delta range runs over the entries [`crate::BlackLevel::at`] can read there (the
+/// first `area.width` of `delta_h`, the first `area.height` of `delta_v`), and a missing entry counts as the 0.0 `at`
+/// adds for it. Infinite when any entry of the three tables isn't a finite number (`f32::min`/`max` would swallow a
+/// NaN), which is a bound that lets everything through.
+fn black_spread(b: &crate::BlackLevel, area: Rect) -> f32 {
+    if !b.values.iter().chain(&b.delta_h).chain(&b.delta_v).all(|v| v.is_finite()) {
+        return f32::INFINITY;
+    }
+    // the range of the first `len` entries of `v`, the ones past its end reading as 0.0
+    let range = |v: &[f32], len: usize| {
+        let (mut lo, mut hi) = v.iter().take(len).fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &x| (l.min(x), h.max(x)));
+        if v.len() < len {
+            (lo, hi) = (lo.min(0.0), hi.max(0.0));
+        }
+        if lo <= hi { hi - lo } else { 0.0 }
+    };
+    let r = range(&b.values, b.values.len()) + range(&b.delta_h, area.width) + range(&b.delta_v, area.height);
+    if r.is_finite() { r } else { f32::INFINITY }
+}
+
+/// The second, tighter test of the fast loop in `detect`: a necessary condition of [`View::judge`] in stored counts, so
+/// that a sample that can't be a defect never reaches `judge`. It may let a non-defect through; it must never drop one
+/// `judge` takes (`detect_plain` in the tests is the oracle, and the boundary tests pin each term).
+///
+/// What `judge` needs, in black-subtracted, white-normalised values (`scale` = 1 / (white − black)), `hi` and `lo` the
+/// brightest and darkest of ALL the neighbours:
+/// - hot or stuck: `v − hi > need` with `need = max(k·σ, [ratio·median,] floor) >= floor`, so `v − hi > floor`;
+/// - dead: `median > dead_min` and `lo − v > max(k·σ, 0.5·median)`, so `lo − v > 0.5·median > 0.5·dead_min`.
+///
+/// In stored counts that is `v − hi > floor / scale` and `lo − v > 0.5·dead_min / scale`, give or take the black levels
+/// of the two positions, which differ by at most `spread` ([`black_spread`]): hence the `− spread` slack in each bound.
+/// 0.999 keeps rounding in `scale` and the f32 sums from ever dropping a sample exactly on a bound. The constants of
+/// `judge` this mirrors are `floor`, `dead_min` and the `0.5` of its dead test; if `judge` changes, change this.
+struct Prefilter {
+    bright_over: f32,
+    dark_under: f32,
+}
+
+impl Prefilter {
+    fn new(floor_raw: f32, dead_min: f32, scale: f32, spread: f32) -> Prefilter {
+        Prefilter { bright_over: floor_raw * 0.999 - spread, dark_under: 0.5 * dead_min / scale * 0.999 - spread }
+    }
+
+    /// Might `judge` take the sample of stored value `v` among neighbours of stored values `lo..=hi`?
+    #[inline(always)]
+    fn passes(&self, v: f32, hi: u16, lo: u16) -> bool {
+        v > f32::from(hi) + self.bright_over || v < f32::from(lo) - self.dark_under
+    }
+}
+
 /// Find the defective samples of one photo with thresholds `t`.
+///
+/// Every sample of the active area goes through the quick test, so that loop is the cost of the pass; the checks
+/// that follow it (`judge`) run on a few hundred samples. For the common layout (one `u16` sample per photosite on a
+/// CFA) the quick test is written for speed: photosites are visited phase by phase along a row, so the 4 neighbour
+/// offsets are the same for all of them, and are read as flat offsets into the data. Same defects in the same order
+/// as the general per-sample loop (`detect_plain` in the tests).
 pub fn detect(raw: &RawImage, t: &Thresholds) -> Detection {
     let Some(view) = View::new(raw) else { return Detection::default() };
     let noise = view.noise();
@@ -435,15 +503,35 @@ pub fn detect(raw: &RawImage, t: &Thresholds) -> Detection {
     let (y0, y1) = (a.y + MARGIN, a.y + a.height - MARGIN);
     let (x0, x1) = (a.x + MARGIN, a.x + a.width - MARGIN);
     let black = raw.black.mean();
-    // a quick test on the stored values that every defect passes: brighter than the 4 nearest same-colour samples
-    // by the floor, or darker than half the darkest of them (the full check follows only then)
     let floor_raw: Vec<f32> = view.scale.iter().map(|s| t.floor / s).collect();
+    let fast = match (&raw.data, view.cpp, view.cfa) {
+        (RawData::U16(d), 1, Some(c)) if c.width > 0 && c.height > 0 => Some((d.as_slice(), c.width, c.height)),
+        _ => None,
+    };
+    // per CFA position: the flat data offsets of its (up to 8) same-colour neighbours, nearest first and how many there
+    // are (all within MARGIN, so inside the area for every sample the loops visit), when there are at least MIN_NEIGHBOURS
+    let flat: Vec<Option<FlatOffsets>> = view
+        .table
+        .iter()
+        .map(|offs| {
+            let f = FlatOffsets::new(offs, view.w);
+            (f.n >= MIN_NEIGHBOURS).then_some(f)
+        })
+        .collect();
+    // the second, tighter test of the fast loop (see [`Prefilter`])
+    let pre = Prefilter::new(
+        floor_raw.first().copied().unwrap_or(0.0),
+        t.dead_min,
+        view.scale.first().copied().unwrap_or(1.0),
+        black_spread(&raw.black, a),
+    );
     let found: Vec<Defect> = (y0..y1)
         .into_par_iter()
         .flat_map_iter(|y| {
             let mut buf = Vec::with_capacity(8);
             let mut out = Vec::new();
-            for x in x0..x1 {
+            // the general loop: any layout, any sample count, every neighbour step checked
+            let general = |x: usize, buf: &mut Vec<f32>, out: &mut Vec<Defect>| {
                 let near = view.offsets(x, y);
                 for s in 0..view.cpp {
                     let v = view.raw_at(x, y, s);
@@ -455,12 +543,59 @@ pub fn detect(raw: &RawImage, t: &Thresholds) -> Detection {
                         mn = mn.min(n);
                     }
                     let fr = floor_raw.get(s).copied().unwrap_or(0.0);
-                    let bright = v > mx + fr;
-                    let dark = v - black < 0.5 * (mn - black) && mn - black > 0.0;
-                    if (bright || dark)
-                        && let Some(d) = view.judge(x, y, s, t, &noise, &mut buf)
+                    if quick_test(v, mx, mn, fr, black)
+                        && let Some(d) = view.judge(x, y, s, t, &noise, buf)
                     {
                         out.push(d);
+                    }
+                }
+            };
+            match fast {
+                Some((d, cw, ch)) => {
+                    let row = y * view.w;
+                    let fr = floor_raw.first().copied().unwrap_or(0.0);
+                    for c in 0..cw {
+                        let start = x0 + c;
+                        let class = (y % ch) * cw + start % cw;
+                        match flat.get(class).copied().flatten() {
+                            Some(f) if start < x1 && f.row_inside(row, start, x1, d.len()) => {
+                                let o = f.off;
+                                for x in (start..x1).step_by(cw) {
+                                    let idx = (row + x) as isize;
+                                    let v = f32::from(d[idx as usize]);
+                                    let nb: [u16; 4] = std::array::from_fn(|k| d[(idx + o[k]) as usize]);
+                                    let mx = f32::from(nb.iter().copied().max().unwrap_or(0));
+                                    let mn = f32::from(nb.iter().copied().min().unwrap_or(0));
+                                    if !quick_test(v, mx, mn, fr, black) {
+                                        continue;
+                                    }
+                                    // the tighter test, against all the neighbours
+                                    let (mut hi, mut lo) = (0u16, u16::MAX);
+                                    for &off in f.offsets() {
+                                        let nv = d[(idx + off) as usize];
+                                        hi = hi.max(nv);
+                                        lo = lo.min(nv);
+                                    }
+                                    if !pre.passes(v, hi, lo) {
+                                        continue;
+                                    }
+                                    if let Some(df) = view.judge(x, y, 0, t, &noise, &mut buf) {
+                                        out.push(df);
+                                    }
+                                }
+                            }
+                            _ => {
+                                for x in (start..x1).step_by(cw) {
+                                    general(x, &mut buf, &mut out);
+                                }
+                            }
+                        }
+                    }
+                    out.sort_by_key(|d| d.x);
+                }
+                None => {
+                    for x in x0..x1 {
+                        general(x, &mut buf, &mut out);
                     }
                 }
             }

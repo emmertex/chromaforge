@@ -95,7 +95,7 @@ fn select(h: &mut Headless, ids: &[PhotoId]) {
 
 /// The text of the message the window shows (the latest).
 fn said(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 #[test]
@@ -132,15 +132,23 @@ fn a_selection_that_is_not_one_series_says_why_and_merges_nothing() {
 }
 
 #[test]
-fn a_merge_whose_result_exists_is_refused_before_anything_is_decoded() {
+fn a_merge_whose_result_exists_is_not_refused_and_never_touches_it() {
     let (dir, mut h, ids) = series("exists");
     std::fs::write(dir.join("frame-01-PixelShift.dng"), b"an earlier result").unwrap();
+    std::fs::write(dir.join("frame-01-PixelShift-Plain.dng"), b"an earlier plain result").unwrap();
     select(&mut h, &ids);
-    assert!(h.app.run("merge.pixelShiftNow", json!({})).is_err());
-    assert_eq!(said(&h), "A pixel-shift merge of this series already exists (frame-01-PixelShift.dng)");
-    assert!(h.app.merge.final_task.is_none() && h.app.session.activity.list().is_empty(), "nothing started");
+    for command in ["merge.pixelShiftNow", crate::menus::PIXEL_SHIFT_PLAIN_ID] {
+        h.app.run(command, json!({})).unwrap();
+        assert!(h.app.merge.final_task.is_some(), "{command}: started, not refused");
+        // (the frames have no pixels: it fails when it decodes)
+        assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    }
     assert_eq!(std::fs::read(dir.join("frame-01-PixelShift.dng")).unwrap(), b"an earlier result", "not replaced");
-    assert!(!dir.join("frame-01-PixelShift-2.dng").exists(), "no other name");
+    assert_eq!(std::fs::read(dir.join("frame-01-PixelShift-Plain.dng")).unwrap(), b"an earlier plain result", "not replaced");
+    assert!(
+        !dir.join("frame-01-PixelShift-2.dng").exists() && !dir.join("frame-01-PixelShift-Plain-2.dng").exists(),
+        "a merge that failed wrote nothing"
+    );
     assert_eq!(h.app.session.catalog.len(), 16, "no photo added");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -212,6 +220,7 @@ fn merged(h: &mut Headless, dir: &std::path::Path, frames: &[PhotoId]) -> PhotoI
                 counter: 5000 + k as u32 + 1,
             })
             .collect(),
+        registration: None,
     };
     let stack = h.app.session.catalog.stack_with_ops(id, frames).unwrap();
     h.app.session.catalog.apply(stack).unwrap();
@@ -342,6 +351,7 @@ fn a_merged_file_imported_on_its_own_finds_its_frames_again() {
                 counter: 5000 + u32::from(i),
             })
             .collect(),
+        registration: None,
     };
     let dng = write_dng(
         merger.finish().unwrap(),
@@ -380,4 +390,127 @@ fn a_series_of_another_mode_is_refused_by_name_and_never_merged_as_16_shots() {
         assert_eq!(h.app.session.catalog.len(), usize::from(shots), "no photo added");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// What the job of the merge running now will do.
+fn running_kind(h: &Headless) -> lcc_engine::merge::MergeKind {
+    h.app.merge.final_task.as_ref().expect("a merge is running").job.kind.clone()
+}
+
+/// Photo Merge ▸ Pixel Shift registers the series; Pixel Shift, Plain Merge is one entry away, in the same menu, the grid's
+/// context menu and the command palette, and its choice is not remembered by the next Pixel Shift.
+#[test]
+fn a_pixel_shift_merge_is_registered_by_default_and_the_plain_merge_is_one_entry_away() {
+    use lcc_engine::merge::MergeKind;
+    let (dir, mut h, ids) = series("default");
+    select(&mut h, &ids);
+    h.app.run("merge.pixelShiftNow", json!({})).unwrap();
+    assert_eq!(running_kind(&h), MergeKind::PixelShift { registered: true }, "registered by default");
+    assert_eq!(h.app.merge.final_task.as_ref().unwrap().options.method, "registered");
+    // (the frames have no pixels: it fails when it decodes)
+    assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    // the plain merge, from its own entry
+    h.app.run(crate::menus::PIXEL_SHIFT_PLAIN_ID, json!({})).unwrap();
+    assert_eq!(running_kind(&h), MergeKind::PixelShift { registered: false }, "the plain merge");
+    assert_eq!(h.app.merge.final_task.as_ref().unwrap().options.method, "plain");
+    assert_eq!(h.app.session.last_merge["merge.pixelShift"]["method"], "registered", "the plain merge is not what is remembered");
+    assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    // and the next Pixel Shift is registered again
+    h.app.run("merge.pixelShiftNow", json!({})).unwrap();
+    assert_eq!(running_kind(&h), MergeKind::PixelShift { registered: true });
+    assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    // both entries are in the Photo Merge menu (and so the palette), the plain one after the registered one
+    let place = |id: &str| crate::menus::UI_COMMANDS.iter().position(|c| c.0 == id).unwrap_or_else(|| panic!("{id} is a menu command"));
+    assert_eq!(place(crate::menus::PIXEL_SHIFT_PLAIN_ID), place(crate::menus::PIXEL_SHIFT_ID) + 1);
+    let entry = crate::menus::UI_COMMANDS[place(crate::menus::PIXEL_SHIFT_PLAIN_ID)];
+    assert_eq!((entry.1, entry.3), ("Pixel Shift, Plain Merge…", "Photo>Photo Merge"));
+    // a selection that is not a series is refused by the plain entry as by the other, with the same words
+    h.app.ui.toasts.clear();
+    select(&mut h, &ids[..15]);
+    assert!(h.app.run(crate::menus::PIXEL_SHIFT_PLAIN_ID, json!({})).is_err());
+    assert_eq!(said(&h), "Pixel Shift: Frame 16 of the series is missing");
+    assert!(h.app.merge.final_task.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Stopping a pixel-shift merge leaves no file and no photo behind, whether it is stopped at once or fails on its own.
+#[test]
+fn a_cancelled_pixel_shift_merge_leaves_no_file_and_no_photo() {
+    let (dir, mut h, ids) = series("cancel");
+    select(&mut h, &ids);
+    let files = |dir: &std::path::Path| std::fs::read_dir(dir).unwrap().count();
+    let before = files(&dir);
+    h.app.run("merge.pixelShiftNow", json!({})).unwrap();
+    h.app.merge.final_task.as_ref().unwrap().cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    // stopped at once the merge says it was cancelled; the frames have no pixels, so one that got as far as decoding
+    // says it failed: either way nothing was written or added
+    assert!(said(&h).starts_with("Pixel shift merge cancelled") || said(&h).starts_with("Pixel shift merge failed: "), "{}", said(&h));
+    assert_eq!((files(&dir), h.app.session.catalog.len()), (before, 16));
+    assert!(h.app.session.activity.list().is_empty(), "its row in the activity stack is gone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A high-ISO series gets a hint with its registered merge and not with the plain one; it blocks nothing.
+#[test]
+fn the_iso_hint_comes_with_a_registered_merge_of_high_iso_frames_only() {
+    let (dir, mut h, ids) = series("iso");
+    let set_iso = |h: &mut Headless, iso: u32| {
+        for id in &ids {
+            let mut meta = h.app.session.catalog.photo(*id).unwrap().meta.clone();
+            meta.iso = Some(iso);
+            h.app.session.catalog.apply(Op::SetMeta { id: *id, meta: Box::new(meta) }).unwrap();
+        }
+    };
+    select(&mut h, &ids);
+    for (iso, command, hint) in [
+        (3200, "merge.pixelShiftNow", true),
+        (3200, crate::menus::PIXEL_SHIFT_PLAIN_ID, false),
+        (1600, "merge.pixelShiftNow", true),
+        (800, "merge.pixelShiftNow", false),
+        (64, "merge.pixelShiftNow", false),
+    ] {
+        set_iso(&mut h, iso);
+        h.app.ui.toasts.clear();
+        h.app.run(command, json!({})).unwrap();
+        assert!(h.app.merge.final_task.is_some(), "the hint blocks nothing (ISO {iso})");
+        assert_eq!(said(&h).starts_with(&format!("ISO {iso}: ")), hint, "ISO {iso}, {command}: {}", said(&h));
+        assert!(h.step_until(T, |h| h.app.merge.final_task.is_none()));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the window says when a merge finished: nothing more than "added" for a merge that was registered as asked, and the
+/// reason in plain words, in the person's language, for one that was not.
+#[test]
+fn the_message_after_a_pixel_shift_merge_says_why_it_was_not_registered() {
+    let added = json!({"kind": "pixelShift", "method": "registered", "registration": {"registered": true, "verdict": "better"}});
+    assert_eq!(crate::merge::finished_message("Pixel shift", &added), "Pixel shift merge added");
+    let plain_asked = json!({"kind": "pixelShift", "method": "plain", "registration": {"registered": false}});
+    assert_eq!(
+        crate::merge::finished_message("Pixel shift", &plain_asked),
+        "Pixel shift merge added",
+        "no word about a merge that was asked to be plain"
+    );
+    for (code, words) in [
+        ("noTexture", "not enough texture to measure the frame positions"),
+        ("tooFewTiles", "not enough texture to measure the frame positions"),
+        ("noMatch", "the frames could not be matched to each other"),
+        ("measuredWorse", "the measured positions were less reliable than the camera's own pattern"),
+        ("memory", "there was not enough memory for the registered merge"),
+    ] {
+        let info =
+            json!({"kind": "pixelShift", "method": "plain", "fallback": {"reason": code, "message": lcc_engine::merge::fallback_message(code)}});
+        let text = crate::merge::finished_message("Pixel shift", &info);
+        assert_eq!(text, format!("Pixel shift merge added, but not registered: {words}"), "{code}");
+        let info = crate::toast::MessageSettings::default().info_seconds();
+        let short = crate::toast::stay_seconds(crate::ToastKind::Message, "Pixel shift merge added", info);
+        assert!(crate::toast::stay_seconds(crate::ToastKind::Message, &text, info) > short, "long enough to read");
+    }
+    // in another language the same message is translated, reason and all
+    crate::i18n::set_language(crate::i18n::Locale::De);
+    let info = json!({"fallback": {"reason": "measuredWorse", "message": lcc_engine::merge::fallback_message("measuredWorse")}});
+    let text = crate::merge::finished_message("Pixel shift", &info);
+    crate::i18n::set_language(crate::i18n::Locale::En);
+    assert!(text.contains("nicht registriert") && text.contains("zuverlässig"), "{text}");
 }

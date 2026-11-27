@@ -77,6 +77,9 @@ pub fn language_from_command(id: &str) -> Option<crate::i18n::Locale> {
 /// they always match.
 pub const PIXEL_SHIFT_ID: &str = "merge.pixelShiftNow";
 pub const PIXEL_SHIFT_LABEL: &str = "Pixel Shift…";
+/// The same series merged on the camera's own pattern, without registration (no measurement, no reconstruction).
+pub const PIXEL_SHIFT_PLAIN_ID: &str = "merge.pixelShiftPlainNow";
+pub const PIXEL_SHIFT_PLAIN_LABEL: &str = "Pixel Shift, Plain Merge…";
 
 /// Photo Merge ▸ Delete Merge Sources: the same one definition for the menu bar, the command palette and the grid's
 /// context menu.
@@ -145,6 +148,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.visualizeHdr", "Visualize HDR", None, "View>Loupe Info"),
     // {on?}: HDR edits shown in HDR on an HDR display (off: their SDR rendition everywhere)
     ("view.hdrPreview", "HDR Preview", None, "View>Loupe Info"),
+    // {hdr?: bool}: the Export screen's preview shows an HDR export's HDR rendition on an HDR display
+    // (SDR otherwise; no menu item: the screen's own SDR | HDR choice)
+    ("export.previewMode", "Export preview: HDR mode", None, ""),
     ("view.colorReadout", "Color Readout", None, ""),
     ("view.colorReadoutRgb", "Show RGB Color Values", None, "View>Loupe Info"),
     ("view.colorReadoutHsl", "Show HSL Color Values", None, "View>Loupe Info"),
@@ -369,6 +375,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("photo.editInPhotoCraft", "Edit in PhotoCraft", Some("Cmd+Shift+E"), "Photo>Edit In"),
     ("photo.editInExternal", "Edit in Other Editor", Some("Cmd+Alt+E"), "Photo>Edit In"),
     ("dialog.editInPresets", "Edit In Presets…", None, "Photo>Edit In"),
+    // {preset, mode?, action?}: one item of a saved Edit In preset's menu (Photo ▸ Edit In ▸ the
+    // preset): the selected photos handed to its editor, all with one start
+    ("photo.editInPreset", "Edit In Preset", None, ""),
     ("panel.actions", "Actions", None, ""),
     // {ids?, app?}: the original files themselves (a raw stays a raw: no render, no copy), opened
     // in the other editor, e.g. a raw developer
@@ -385,6 +394,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // the frames of one Nikon pixel-shift series (no dialog: a selection that is not a complete series is refused
     // with the reason)
     (PIXEL_SHIFT_ID, PIXEL_SHIFT_LABEL, None, "Photo>Photo Merge"),
+    (PIXEL_SHIFT_PLAIN_ID, PIXEL_SHIFT_PLAIN_LABEL, None, "Photo>Photo Merge"),
     // a merged pixel-shift photo's other frames go to Recently Deleted (frame 01 and the merged photo stay)
     (DELETE_SOURCES_ID, DELETE_SOURCES_LABEL, None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
@@ -473,6 +483,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.whatsNew", "What's New", None, "Help"),
     ("dialog.cull", "Assisted Culling…", None, "Library"),
     ("dialog.qualityScan", "Image Quality Scanner…", None, "Library"),
+    ("dialog.faceMaintenance", "Face Maintenance…", None, "Library>Faces"),
     ("app.help", "{app} Help", Some("F1"), "Help"),
     ("app.feedback", "Send Feedback…", None, "Help"),
     ("app.website", "{app} Website", None, "Help"),
@@ -521,6 +532,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("osd.settings", "Overlay Settings", None, ""),
     ("osd.mode", "Overlay: What It Shows", None, ""),
     ("osd.state", "Overlay State", None, ""),
+    // how messages look and how long they stay (`notifications`)
+    ("messages.settings", "Message Settings", None, ""),
+    ("notifications.testFire", "Test a Notification", None, ""),
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
@@ -853,8 +867,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     if id.starts_with("osd.") {
         return Some(crate::panels::surface_osd::command(app, id, p));
     }
+    if id == "messages.settings" {
+        return Some(crate::notifications::messages_command(app, p));
+    }
+    if id == "notifications.testFire" {
+        return Some(crate::notifications::test_fire(app, p));
+    }
     if let Some(language) = language_from_command(id) {
-        app.ui.language = language;
+        // a language this build left out is English, as `set_language` shows it
+        app.ui.language = language.or_english();
         // Immediately, not on the next frame: the reply and anything else run this frame
         // (menus rebuilt from it, toasts) are already in the new language.
         crate::i18n::set_language(app.ui.language);
@@ -1081,6 +1102,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // {on?}; no params toggles. Off, an HDR display shows HDR edits as an SDR one does.
             app.ui.hdr_preview = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.hdr_preview);
             Ok(json!({"on": app.ui.hdr_preview, "hdrDisplay": app.hdr_headroom.is_some()}))
+        }
+        "export.previewMode" => {
+            // {hdr?: bool}; no params toggles. The Export screen's preview shows an HDR export's HDR rendition
+            // on an HDR display (else its SDR rendition, with a line saying why).
+            app.ui.export_preview_hdr = p.get("hdr").and_then(Value::as_bool).unwrap_or(!app.ui.export_preview_hdr);
+            Ok(json!({"hdr": app.ui.export_preview_hdr, "hdrDisplay": app.hdr_headroom.is_some()}))
         }
         "view.faceBoxes" => {
             app.ui.face_boxes = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.face_boxes);
@@ -2288,7 +2315,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.autoStack" => {
-            app.ui.dialog = Some(Dialog::AutoStack { gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32 });
+            app.ui.dialog = Some(Dialog::AutoStack {
+                gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32,
+                top: match p.get("top").and_then(Value::as_str) {
+                    None => lcc_catalog::StackTop::First,
+                    Some("raw") => lcc_catalog::StackTop::Raw,
+                    Some("jpeg") => lcc_catalog::StackTop::Jpeg,
+                    Some(other) => return Some(Err(format!("dialog.autoStack: top: unknown choice {other:?}"))),
+                },
+            });
             Ok(Value::Null)
         }
         "dialog.allMetadata" => {
@@ -2565,6 +2600,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let r = crate::merge::start_last(app, "merge.pixelShift");
             crate::merge::reported(app, r)
         }
+        "merge.pixelShiftPlainNow" => {
+            let r = crate::merge::start_pixel_shift_plain(app);
+            crate::merge::reported(app, r)
+        }
         "merge.deleteSourcesNow" => {
             let r = crate::merge::ask_delete_sources(app);
             crate::merge::reported(app, r)
@@ -2671,6 +2710,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             edit_in(app, &ctx, p, photocraft)
         }
         "photo.openOriginalInExternal" => open_original_in(app, &ctx, p),
+        "photo.editInPreset" => crate::edit_in::run_preset(app, &ctx, p),
         "dialog.qualityScan" => {
             let s = crate::panels::dialogs::QualityScanSettings::remembered(app);
             app.ui.dialog = Some(Dialog::QualityScanner {
@@ -2684,6 +2724,61 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 overwrite_metadata: s.overwrite_metadata,
                 star_breaks: s.star_breaks,
             });
+            Ok(Value::Null)
+        }
+        "dialog.faceMaintenance" => {
+            let mut dialog = Dialog::face_maintenance(&app.session);
+            if let Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, .. } =
+                &mut dialog
+            {
+                if let Some(value) = p.get("mode").and_then(Value::as_str) {
+                    *mode = match value.trim().to_ascii_lowercase().as_str() {
+                        "recognize" | "recognition" => "recognize",
+                        "new" | "newitems" | "new-only" => "new",
+                        "rebuild" | "all" => "rebuild",
+                        "rebuildnamed" | "named" | "confirmed" => "rebuildNamed",
+                        "rescan" | "redetect" | "re-detect" => "rescan",
+                        "reset" => "reset",
+                        _ => "detect",
+                    }
+                    .to_string();
+                }
+                if let Some(value) = p.get("scope").and_then(Value::as_str)
+                    && matches!(value, "all" | "visible" | "selected" | "folder" | "album")
+                {
+                    *scope = value.to_string();
+                }
+                if let Some(value) = p.get("folder").and_then(Value::as_str) {
+                    *folders = value.to_string();
+                    *scope = "folder".to_string();
+                }
+                if let Some(values) = p.get("folders").and_then(Value::as_array) {
+                    *folders = values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                    *scope = "folder".to_string();
+                }
+                if let Some(value) = p.get("album").and_then(Value::as_u64) {
+                    *album_ids = vec![value];
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(values) = p.get("albums").and_then(Value::as_array) {
+                    *album_ids = values.iter().filter_map(Value::as_u64).collect();
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(value) = p.get("includeSubfolders").and_then(Value::as_bool) {
+                    *include_subfolders = value;
+                }
+                if let Some(value) = p.get("minScore").and_then(Value::as_f64).filter(|score| score.is_finite()) {
+                    *min_score = (value as f32).clamp(0.6, 1.0);
+                }
+                if let Some(value) = p.get("behavior").and_then(Value::as_str)
+                    && matches!(value, "merge" | "replace")
+                {
+                    *behavior = value.to_string();
+                }
+            }
+            app.ui.dialog = Some(dialog);
             Ok(Value::Null)
         }
         "dialog.cull" => {
@@ -2703,6 +2798,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "app.whatsNew" => {
+            app.ui.whats_new_opens = app.ui.whats_new_opens.wrapping_add(1);
             app.ui.dialog = Some(Dialog::WhatsNew);
             Ok(json!({"text": crate::i18n::brand_fill(crate::panels::dialogs::WHATS_NEW)}))
         }
@@ -2945,7 +3041,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         app.ui.last_find_missing_result = Some(Ok(v));
                     }
                     Err(e) => {
-                        app.toast(ctx, e.clone());
+                        app.toast_error(ctx, e.clone());
                         app.ui.last_find_missing_result = Some(Err(e));
                     }
                 }
@@ -3369,7 +3465,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     app.toast(&ctx, msg);
                 }
-                Err(e) => app.toast(&ctx, e.clone()),
+                Err(e) => app.toast_error(&ctx, e.clone()),
             }
             return Some(r);
         }
@@ -3391,7 +3487,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             };
             let r = app.session.execute("keyword.export", &json!({"path": path})).map_err(|e| e.to_string());
             if let Err(e) = &r {
-                app.toast(&ctx, e.clone());
+                app.toast_error(&ctx, e.clone());
             }
             if let Ok(v) = &r {
                 let n = v["keywords"].as_u64().unwrap_or(0);
@@ -3721,7 +3817,9 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "app.installUpdate" => false,
         #[cfg(not(target_arch = "wasm32"))]
         "app.installUpdate" => app.session.updater.staged().is_some(),
-        "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
+        "photo.editInPhotoCraft" | "photo.editInExternal" | "photo.editInPreset" => {
+            app.session.active().is_some() && app.services.open_with.is_some()
+        }
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
         "dialog.updatePreset" => app.session.active().is_some(),
@@ -3800,10 +3898,15 @@ pub struct MenuEntry {
     pub enabled: bool,
 }
 
+/// Whether a single-language build (`CRAFT_FONTS_LANGUAGE`) leaves out the language this command picks.
+pub(crate) fn language_left_out(id: &str) -> bool {
+    language_from_command(id).is_some_and(|language| !language.in_build())
+}
+
 /// The flattened menu model (UI commands + engine commands with menu paths).
 pub fn menu_entries(app: &LccApp) -> Vec<MenuEntry> {
     let mut v: Vec<MenuEntry> = ui_commands()
-        .filter(|c| !c.3.is_empty())
+        .filter(|c| !c.3.is_empty() && !language_left_out(c.0))
         .map(|(id, label, _, m)| MenuEntry {
             id: id.to_string(),
             label: label.to_string(),
@@ -3847,7 +3950,7 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
             let what = crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n);
             app.toast(ctx, crate::i18n::tr_format!("Removed {what} from {name}", what = what, name = name));
         }
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
     true
 }
@@ -3977,7 +4080,7 @@ fn show_in_folders(app: &mut LccApp, id: Option<lcc_catalog::PhotoId>) -> Result
 /// is reported in the result's `failed` (and a toast), not as an error.
 pub(crate) fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
     // every way in (menu, shortcut, context menu, the control channel) says why nothing opened
-    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
+    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
 }
 
 fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
@@ -4028,7 +4131,7 @@ fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: b
     if let Some(e) = failed {
         // the copies are in the library already (one undo step): an error would invite a retry
         // that makes another set, so the result says what failed and the toast says why
-        app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+        app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
         return Ok(r);
     }
     match copies.as_slice() {
@@ -4052,12 +4155,12 @@ const MAX_ORIGINALS: usize = 50;
 fn open_original_in(app: &mut LccApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     let r = open_originals(app, p);
     if let Err(e) = &r {
-        app.toast(ctx, e.clone());
+        app.toast_error(ctx, e.clone());
     }
     let r = r?;
     let opened = r.field("opened").as_array().map_or(0, Vec::len);
     match (r.field("failed").as_str(), r.field("opened")[0].field("path").as_str()) {
-        (Some(e), _) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
+        (Some(e), _) => app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         (None, Some(path)) if opened == 1 => {
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             app.toast(ctx, crate::i18n::tr_format!("{name} opened in the other editor", name = name));

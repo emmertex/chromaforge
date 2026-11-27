@@ -7,8 +7,13 @@
 The easiest way: the **Download** page on the manual site (linked at the top of the [README](../../README.md)) picks
 the right file for your computer from the latest release.
 
-Release builds are an AppImage, `.deb`, `.rpm` and `.tar.gz` for Linux, a `.dmg` for macOS (one for Apple silicon, one for Intel), an `.msi` for Windows,
+Release builds are an AppImage, `.deb`, `.rpm` and `.tar.gz` for Linux, a `.dmg` for macOS (Apple silicon, Intel, and a universal one for both), an `.msi` for Windows,
 a FreeBSD package and a static web build. [packaging.md](../packaging.md) lists what each contains and its status.
+
+**Linux AppImage:** make the file executable and run it. On first start the app registers a launcher entry and its
+icon for itself in `~/.local/share` (`applications/<app_id>.desktop` and `icons/hicolor/*/apps/<app_id>.*`), so the
+Wayland and X11 taskbars show its icon instead of a generic one; delete those files to undo it. Entries installed by a
+package or a launcher tool are left alone. The `.deb`, `.rpm` and Flatpak bring their own.
 
 **macOS builds are not signed with an Apple developer certificate or notarized**, so macOS warns the first time you
 open the app ("unknown app" / "may be malware"). Open System Settings ▸ Privacy & Security and choose **Open Anyway**;

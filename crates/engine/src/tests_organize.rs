@@ -138,6 +138,7 @@ fn virtual_copies_are_independent_and_persist() {
     assert_eq!(found["total"], 3);
     // undo removes a copy completely
     s.execute("edit.undo", &json!({})).unwrap(); // exposure
+    s.execute("edit.undo", &json!({})).unwrap(); // selecting the copy
     s.execute("edit.undo", &json!({})).unwrap(); // third copy
     assert!(s.catalog.photo(c3.id).is_none());
     let expect = s.catalog.to_snapshot();
@@ -323,6 +324,38 @@ fn stacks_group_collapse_and_replay() {
     s.execute("stack.auto", &json!({"gap": 1e9})).unwrap();
     assert_eq!(s.catalog.stacks().count(), 2);
     assert_eq!(s.visible_cloned().len(), 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.stacks().count(), 1);
+    // the preferred file type goes on top of each new stack; the rest keep their order
+    let mut loose: Vec<_> = s.visible_cloned().into_iter().filter(|id| s.catalog.stack_of(*id).is_none()).collect();
+    assert!(loose.len() >= 3, "photos left to stack");
+    let (raw1, raw2) = (loose[1], loose[3.min(loose.len() - 1)]);
+    for id in [raw1, raw2] {
+        s.catalog.apply(lcc_catalog::Op::SetKind { id, kind: lcc_catalog::MediaKind::Raw, format: "ARW".into() }).unwrap();
+    }
+    loose.retain(|id| s.catalog.stack_of(*id).is_none());
+    let jpg: Vec<_> = loose.iter().copied().filter(|id| !(*id == raw1 || *id == raw2)).collect();
+    assert!(jpg.len() >= 2, "JPEGs left to stack");
+    let r = s.execute("stack.auto", &json!({"gap": 1e9, "top": "raw"})).unwrap();
+    assert_eq!(r["stacks"], 1);
+    let st = s.catalog.stack_of(jpg[0]).unwrap();
+    assert_eq!(st.photos.len(), loose.len());
+    assert_eq!(st.top(), raw1, "the first raw in time is on top");
+    let rest: Vec<_> = st.photos.iter().copied().filter(|id| *id != raw1).collect();
+    assert_eq!(rest, loose.iter().copied().filter(|id| *id != raw1).collect::<Vec<_>>(), "the others keep their order");
+    assert!(s.execute("stack.auto", &json!({"gap": 1e9, "top": "tif"})).is_err(), "an unknown choice is an error");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.catalog.stacks().count() < 2, "undo removes the automatic stack");
+    let r = s.execute("stack.auto", &json!({"gap": 1e9, "top": "jpeg"})).unwrap();
+    assert_eq!(r["stacks"], 1);
+    let st = s.catalog.stack_of(raw1).unwrap();
+    assert_eq!(st.top(), jpg[0], "the first JPEG in time is on top");
+    let p = s.execute("stack.auto", &json!({"gap": 1e9, "top": "first", "preview": true})).unwrap();
+    assert_eq!((p["stacks"].as_u64(), p["photos"].as_u64()), (Some(0), Some(0)), "a preview changes nothing");
+    // the kinds were set outside the journal: back to what a replay of it produces
+    for id in [raw1, raw2] {
+        s.catalog.apply(lcc_catalog::Op::SetKind { id, kind: lcc_catalog::MediaKind::Image, format: "JPEG".into() }).unwrap();
+    }
     s.execute("stack.expandAll", &json!({})).unwrap();
     assert_eq!(s.visible_cloned().len(), n);
     let expect = s.catalog.to_snapshot();

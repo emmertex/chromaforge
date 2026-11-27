@@ -126,6 +126,9 @@ USAGE:
         --projection auto|spherical|cylindrical|perspective   --boundary-warp 0..100
         --auto-crop   --fill-edges   --no-auto-settings   --output-dir DIR (write the result there)
         --preview OUT.png   only render a ≤ 1024 px preview (nothing written next to the files)
+        --plain   pixel-shift only: the camera's own pattern, without measuring the frame positions
+      pixel-shift is registered unless --plain is given; when a series cannot be registered it is merged plainly, the
+      result says why (fallback) and a note is printed.
       focus takes only --no-align, --no-auto-settings and --preview.
   {cli} synth-merge hdr|panorama|focus -o DIR
       Write synthetic merge inputs (procedural scene; bracketed DNGs, overlapping PNG views or a
@@ -682,6 +685,12 @@ fn merge(args: &[String]) -> Result<(), String> {
             "--no-auto-settings" => {
                 p.insert("autoSettings".into(), json!(false));
             }
+            "--plain" => {
+                if cmd != "merge.pixelShift" {
+                    return Err("--plain is for pixel-shift merges".into());
+                }
+                p.insert("method".into(), json!("plain"));
+            }
             "--preview" => {
                 p.insert("preview".into(), json!(true));
                 p.insert("previewPath".into(), json!(take_value(args, &mut i, "--preview")?));
@@ -709,6 +718,10 @@ fn merge(args: &[String]) -> Result<(), String> {
     let mut out = s.execute(cmd, &Value::Object(p)).map_err(|e| e.to_string())?;
     crate::set_key(&mut out, "seconds", json!(t0.elapsed().as_secs_f64()));
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    // a pixel-shift merge that was not registered when it was asked to be says why
+    if let Some(why) = out.get("fallback").and_then(|f| f.get("message")).and_then(Value::as_str) {
+        eprintln!("{CLI} merge: pixel shift merged without registration: {why}");
+    }
     Ok(())
 }
 
@@ -1505,6 +1518,21 @@ mod tests {
 
     // `--library @app` finds the library the app opens: its saved Settings → Open Library…
     // choice, unless the environment names one, else the default; anything else is passed through
+    #[test]
+    fn face_maintenance_is_listed_and_runnable_through_the_cli_engine_dispatch() {
+        let mut backend = Headless::demo();
+        let commands = backend.call("engine.commands", json!({})).unwrap();
+        for id in ["faces.maintain", "faces.scanStatus", "faces.reset"] {
+            assert!(commands.as_array().unwrap().iter().any(|command| command["id"] == id), "CLI command list includes {id}");
+        }
+        let status = backend.call("engine.execute", json!({"command": "faces.scanStatus", "params": {}})).unwrap();
+        assert_eq!(status["state"], "idle");
+        assert!(
+            backend.call("engine.execute", json!({"command": "faces.reset", "params": {}})).is_err(),
+            "the CLI dispatch enforces reset confirmation"
+        );
+    }
+
     #[test]
     fn library_at_app_reads_the_apps_saved_library() {
         let d = std::env::temp_dir().join(format!("cli-app-library-{}", std::process::id()));

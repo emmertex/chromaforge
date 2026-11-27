@@ -44,7 +44,7 @@ fn the_active_raw_exports_its_camera_profile_and_look() {
     let (dcp, cube) = (dir.join("IMG_1.dcp"), dir.join("IMG_1.cube"));
     h.app.run("file.exportCameraProfile", json!({"path": dcp.to_string_lossy()})).unwrap();
     assert!(lcc_raw::dcp::parse(&std::fs::read(&dcp).unwrap()).is_ok());
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("camera profile")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("camera profile")), "{:?}", h.app.ui.toasts);
     h.app.run("file.exportLookLut", json!({"path": cube.to_string_lossy()})).unwrap();
     assert!(lcc_pipeline::lut::Lut3d::parse_cube(&std::fs::read_to_string(&cube).unwrap()).is_ok());
     // a failed export says why and leaves the original alone

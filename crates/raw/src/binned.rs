@@ -19,6 +19,21 @@
 use crate::{Normalized, RawData, RawImage, Result, Rgb32f};
 use rayon::prelude::*;
 
+/// One channel of a binned block: it is clipped when its block `max` is at or above `clip` (the clip level itself counts),
+/// and its value is then the maximum when `keep_max`, else the mean (`sum × inv`, `inv` the colour's 1 / count); the
+/// clip is also or-ed into the mask byte as bit `ch`. The one rule of the same-phase rows and of the general loop, so
+/// that they cannot drift apart. A macro, not a function: as an `#[inline(always)]` function (returning a pair, or a
+/// value and a bit) it made the same-phase rows 10 to 15 % slower on a 45 MP Z9 raw at `k = 4` (28 to 32 ms, same output
+/// bits) through changed code generation of the row closure; the macro expands to exactly the code it replaced.
+macro_rules! finish_channel {
+    ($sum:expr, $max:expr, $inv:expr, $clip:expr, $keep_max:expr, $px:expr, $mask:expr, $ch:expr) => {{
+        let (sum, max) = ($sum, $max);
+        let clipped = max >= $clip;
+        $px = if clipped && $keep_max { max } else { sum * $inv };
+        $mask |= u8::from(clipped) << $ch;
+    }};
+}
+
 impl RawImage {
     /// Can `k × k` blocks be binned (single-plane CFA data, every `k × k` window containing R, G
     /// and B; Bayer: `k` even, so that every block has the same layout)?
@@ -52,6 +67,12 @@ impl RawImage {
     /// The binned image and its clip mask; `keep_max`: a channel with a clipped sample takes the
     /// block's maximum sample of the colour instead of the mean.
     fn bin(&self, k: usize, clip: f32, keep_max: bool) -> Result<Option<(Rgb32f, Vec<u8>)>> {
+        self.bin_with(k, clip, keep_max, true)
+    }
+
+    /// [`Self::bin`]; `fast: false` takes the general per-block loop for every row (the reference the tests compare the
+    /// per-colour row accumulation against).
+    fn bin_with(&self, k: usize, clip: f32, keep_max: bool, fast: bool) -> Result<Option<(Rgb32f, Vec<u8>)>> {
         self.validate()?;
         if !self.can_bin(k) {
             return Ok(None);
@@ -91,11 +112,15 @@ impl RawImage {
             })
             .collect();
         let wlen = bw * k;
+        // With `k` a multiple of the pattern's width (every even `k` on a Bayer sensor, a multiple of 6 on X-Trans) the
+        // blocks of a row all start at the same pattern phase: one layout serves the whole row, and the sums run as per-colour
+        // rows over the block columns instead of a loop over the `k × k` samples of each block.
+        let same_phase = fast && k.is_multiple_of(pw);
         let mut out = Rgb32f::new(bw, bh);
         let mut mask = vec![0u8; bw * bh];
-        out.data.par_chunks_mut(bw).zip(mask.par_chunks_mut(bw)).enumerate().for_each(|(by, (row, mrow))| {
+        let work = |scratch: &mut BinScratch, (by, (row, mrow)): (usize, (&mut [[f32; 3]], &mut [u8]))| {
+            let BinScratch { rows, sum, max } = scratch;
             // the block row's k sample rows, normalised
-            let mut rows = vec![0f32; k * wlen];
             for dy in 0..k {
                 let y = c.y + by * k + dy;
                 let dst = &mut rows[dy * wlen..(dy + 1) * wlen];
@@ -116,6 +141,32 @@ impl RawImage {
                 }
             }
             let py = (c.y + by * k) % ph;
+            if same_phase {
+                let (layout, inv) = &layouts[py * pw + c.x % pw];
+                for (s, m) in sum.iter_mut().zip(max.iter_mut()) {
+                    s.fill(0.0);
+                    m.fill(f32::MIN);
+                }
+                // each accumulator sees its block's samples of the colour in the order of the loop over the block
+                // (rows, then columns), as in the general loop below: the same sums, bit for bit
+                for dy in 0..k {
+                    let src = &rows[dy * wlen..(dy + 1) * wlen];
+                    for dx in 0..k {
+                        let col = layout.get(dy * k + dx).map_or(0, |&c| usize::from(c).min(2));
+                        let (Some(sum), Some(max)) = (sum.get_mut(col), max.get_mut(col)) else { continue };
+                        for ((&v, s), m) in src[dx..].iter().step_by(k).zip(sum.iter_mut()).zip(max.iter_mut()) {
+                            *s += v;
+                            *m = m.max(v);
+                        }
+                    }
+                }
+                for (bx, (px, m)) in row.iter_mut().zip(mrow.iter_mut()).enumerate() {
+                    for ch in 0..3 {
+                        finish_channel!(sum[ch][bx], max[ch][bx], inv[ch], clip, keep_max, px[ch], *m, ch);
+                    }
+                }
+                return;
+            }
             for (bx, (px, m)) in row.iter_mut().zip(mrow.iter_mut()).enumerate() {
                 let (layout, inv) = &layouts[py * pw + (c.x + bx * k) % pw];
                 let (mut sum, mut max) = ([0f32; 3], [f32::MIN; 3]);
@@ -128,11 +179,21 @@ impl RawImage {
                     }
                 }
                 for ch in 0..3 {
-                    let clipped = max[ch] >= clip;
-                    px[ch] = if clipped && keep_max { max[ch] } else { sum[ch] * inv[ch] };
-                    *m |= u8::from(clipped) << ch;
+                    finish_channel!(sum[ch], max[ch], inv[ch], clip, keep_max, px[ch], *m, ch);
                 }
             }
+        };
+        // one scratch per worker thread, kept for the next row, the next call and the next photo: not one allocation per
+        // output row, nor one per split of the work (`for_each_init` called its init hundreds of times per call)
+        out.data.par_chunks_mut(bw).zip(mask.par_chunks_mut(bw)).enumerate().for_each(|item| {
+            BIN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+                Ok(mut scratch) => {
+                    scratch.fit(k * wlen, if same_phase { bw } else { 0 });
+                    work(&mut scratch, item);
+                }
+                // (not reachable: a row's work never starts another one on the same thread)
+                Err(_) => work(&mut BinScratch::new(k * wlen, if same_phase { bw } else { 0 }), item),
+            })
         });
         Ok(Some(finish_binned(out, mask, &list3, crop, k)))
     }
@@ -222,6 +283,36 @@ fn finish_binned(mut out: Rgb32f, mask: Vec<u8>, list3: &[crate::opcodes::Opcode
     }
     let mask = (y0..y0 + ch).flat_map(|y| mask[y * bw + x0..y * bw + x0 + cw].iter().copied()).collect();
     (out.into_crop(x0, y0, cw, ch), mask)
+}
+
+/// What one worker needs to bin a block row: the `k` normalised sample rows, and (when the row's blocks all start at
+/// the same pattern phase) the per-colour sums and maxima of the row's blocks.
+struct BinScratch {
+    rows: Vec<f32>,
+    sum: [Vec<f32>; 3],
+    max: [Vec<f32>; 3],
+}
+
+impl BinScratch {
+    fn new(rows: usize, blocks: usize) -> BinScratch {
+        BinScratch { rows: vec![0.0; rows], sum: std::array::from_fn(|_| vec![0.0; blocks]), max: std::array::from_fn(|_| vec![0.0; blocks]) }
+    }
+
+    /// Sized for a block row of `rows` samples and `blocks` blocks (every element is written before it is read).
+    fn fit(&mut self, rows: usize, blocks: usize) {
+        self.rows.resize(rows, 0.0);
+        for v in self.sum.iter_mut().chain(self.max.iter_mut()) {
+            v.resize(blocks, 0.0);
+        }
+    }
+}
+
+thread_local! {
+    /// One [`BinScratch`] per worker thread, kept between rows, calls and photos. What it retains is the largest binned so
+    /// far on the thread: `k × wlen` samples for the rows plus `6 × bw` for the sums and maxima (`wlen = bw × k`, the
+    /// binned width in samples), so at most `k × W + 6 × W / k` `f32` for a picture `W` samples across, a few hundred KB
+    /// for a 24 MP raw at `k = 4`. Bounded by the image width and `k`, not by the number of photos or calls.
+    static BIN_SCRATCH: std::cell::RefCell<BinScratch> = const { std::cell::RefCell::new(BinScratch { rows: Vec::new(), sum: [Vec::new(), Vec::new(), Vec::new()], max: [Vec::new(), Vec::new(), Vec::new()] }) };
 }
 
 /// Colours of the `k × k` samples of a block whose corner sits at pattern position `(i, j)`
@@ -333,6 +424,106 @@ mod tests {
         let (a, m) = clean.develop_binned_masked(8, 0.99).unwrap().unwrap();
         assert!(m.iter().all(|&v| v == 0));
         assert!(a.data == clean.develop_binned(8, 0.99).unwrap().unwrap().data);
+    }
+
+    /// The per-colour row accumulation (blocks of a row all at the same pattern phase) must give the general per-block
+    /// loop's output bit for bit and the same clip mask: every Bayer order and an X-Trans, block sizes from 2 to 8 (those
+    /// the pattern allows and some it doesn't), odd image sizes and crop and active-area offsets (the phase of the first
+    /// block), clipped samples at the clip level and above, `keep_max` both ways, uniform and varying black levels and 16-bit
+    /// and float data.
+    #[test]
+    fn per_colour_rows_equal_the_general_loop_bit_for_bit() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        let patterns = [
+            (Cfa::bayer("RGGB").unwrap(), vec![2usize, 4, 6, 8]),
+            (Cfa::bayer("GRBG").unwrap(), vec![2, 4, 6]),
+            (Cfa::bayer("BGGR").unwrap(), vec![2, 4]),
+            (Cfa::bayer("GBRG").unwrap(), vec![2, 4, 8]),
+            (Cfa::xtrans(), vec![3, 6]),
+        ];
+        let blacks = [
+            BlackLevel::uniform(100.0),
+            BlackLevel { repeat_rows: 2, repeat_cols: 2, values: vec![90.0, 100.0, 110.0, 120.0], delta_h: vec![], delta_v: vec![] },
+            BlackLevel { repeat_rows: 1, repeat_cols: 1, values: vec![100.0], delta_h: (0..120).map(|i| (i % 5) as f32).collect(), delta_v: vec![] },
+        ];
+        let (mut compared, mut fast_rows) = (0, 0);
+        for (cfa, ks) in &patterns {
+            for &k in &ks[..] {
+                for (w, h, crop, area) in [(96usize, 64usize, (0usize, 0usize), (0usize, 0usize)), (53, 41, (3, 1), (2, 2)), (40, 30, (1, 0), (0, 1))]
+                {
+                    for black in &blacks {
+                        for float in [false, true] {
+                            let img = Rgb32f::filled(w, h, [0.3, 0.3, 0.3]);
+                            let mut raw = raw_from(&mosaic_from_rgb(&img, cfa), 100.0, 16383.0);
+                            raw.black = black.clone();
+                            raw.active_area = Rect::new(area.0, area.1, w - area.0, h - area.1);
+                            raw.crop = Rect::new(crop.0, crop.1, w - area.0 - crop.0 - 1, h - area.1 - crop.1 - 1);
+                            // noise over the whole range, a fifth of the samples at or above the white level
+                            let sample = |r: u32| if r.is_multiple_of(5) { 16383 + r % 300 } else { r % 16000 };
+                            raw.data = if float {
+                                RawData::F32((0..w * h).map(|_| sample(next()) as f32 + (next() % 100) as f32 / 100.0).collect())
+                            } else {
+                                RawData::U16((0..w * h).map(|_| sample(next()) as u16).collect())
+                            };
+                            for (keep_max, clip) in [(true, 0.99f32), (false, 0.99), (true, 0.3), (false, 0.3)] {
+                                let fast = raw.bin_with(k, clip, keep_max, true).unwrap();
+                                let general = raw.bin_with(k, clip, keep_max, false).unwrap();
+                                let what =
+                                    format!("{k}x{k} on {}x{} crop {crop:?} area {area:?} float {float} keep_max {keep_max} clip {clip}", w, h);
+                                match (fast, general) {
+                                    (None, None) => {}
+                                    (Some((a, am)), Some((b, bm))) => {
+                                        assert_eq!((a.width, a.height), (b.width, b.height), "{what}");
+                                        assert_eq!(am, bm, "mask, {what}");
+                                        let bits = |i: &Rgb32f| i.data.iter().flat_map(|p| p.map(f32::to_bits)).collect::<Vec<_>>();
+                                        assert_eq!(bits(&a), bits(&b), "{what}");
+                                        compared += 1;
+                                        fast_rows += usize::from(k.is_multiple_of(cfa.width));
+                                    }
+                                    _ => panic!("one path binned and the other did not: {what}"),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // the test must have exercised both paths: many comparisons, most of them on the same-phase rows
+        assert!(compared > 400 && fast_rows > 300, "compared {compared}, same-phase {fast_rows}");
+    }
+
+    /// The clip level itself counts as clipped (`max >= clip`), for every colour and on both the same-phase rows and the
+    /// general loop: one level below is not clipped, one above is. 4096 and a clip of 0.5 make the normalised value exact.
+    #[test]
+    fn a_sample_exactly_at_the_clip_level_is_clipped() {
+        let img = Rgb32f::filled(8, 8, [0.1, 0.1, 0.1]);
+        let mut raw = raw_from(&mosaic_from_rgb(&img, &Cfa::bayer("RGGB").unwrap()), 0.0, 4096.0);
+        // RGGB, k = 2 (block corner at an even phase on every block): R (0,0), G (1,0), G (0,1), B (1,1) of the block (1, 1)
+        for (dx, dy, bit) in [(0, 0, highlight::CLIPPED_R), (1, 0, highlight::CLIPPED_G), (0, 1, highlight::CLIPPED_G), (1, 1, highlight::CLIPPED_B)]
+        {
+            for (value, clipped) in [(2047u16, false), (2048, true), (2049, true)] {
+                raw.data = RawData::U16(vec![1000; 64]);
+                if let RawData::U16(d) = &mut raw.data {
+                    d[(2 + dy) * 8 + 2 + dx] = value;
+                }
+                for keep_max in [false, true] {
+                    for fast in [true, false] {
+                        let (out, mask) = raw.bin_with(2, 0.5, keep_max, fast).unwrap().unwrap();
+                        let what = format!("sample ({dx}, {dy}) = {value}, keep_max {keep_max}, fast {fast}");
+                        assert_eq!(mask[4 + 1], if clipped { bit } else { 0 }, "{what}");
+                        assert_eq!(mask.iter().filter(|&&m| m != 0).count(), usize::from(clipped), "{what}");
+                        let ch = bit.trailing_zeros() as usize;
+                        if clipped && keep_max {
+                            assert_eq!(out.get(1, 1)[ch], f32::from(value) / 4096.0, "{what}: the maximum");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("performance", "Performance"),
     ("display", "Display"),
     ("interface", "Interface"),
+    ("notifications", "Notifications"),
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("profiles", "Profiles"),
@@ -353,12 +354,17 @@ fn tab_strip(ui: &mut egui::Ui, t: &Tokens, tab: &mut String) {
 }
 
 pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
+    crate::settings_search::around(app, ui, tab, |app, ui| tab_body_page(app, ui, t, tab));
+}
+
+fn tab_body_page(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
     match tab {
         "import" => import_tab(app, ui, t),
         "folders" => super::settings_folders::settings_tab(app, ui, t),
         "performance" => performance_tab(app, ui, t),
         "display" => display_tab(app, ui, t),
         "interface" => interface_tab(app, ui, t),
+        "notifications" => super::notifications::settings_tab(app, ui, t),
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
@@ -753,6 +759,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "To hand this editor the original file itself instead (the raw, without a copy: DxO PhotoLab, for example), right-click a photo → Edit In → Open Original in Other Editor (RAW, no copy).",
         ),
     );
+    hint(ui, t, crate::i18n::tr("For more editors, each with its own items in Photo → Edit In, use Photo → Edit In → Edit In Presets…."));
 }
 
 /// A language's name as the picker shows it: its own name (`Deutsch`), or, when no loaded font
@@ -1171,7 +1178,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 && let Some(f) = app.services.pick_folder.as_mut().and_then(|f| f())
                 && let Err(e) = app.run("library.autoImport", json!({"folder": f}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             if d.auto_folder.is_some() && ui.button(crate::i18n::tr("Turn Off")).clicked() {
                 let _ = app.run("library.autoImport", json!({"folder": null}));
@@ -1309,7 +1316,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if crate::widgets::text_button(ui, "lensDbFolder", "Choose Folder…", false).clicked()
             && let Err(e) = app.run("app.lensDbFolder", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         if st.field("canDownload") == true {
             let label = if st.field("downloaded") == true { "Update" } else { "Download" };
@@ -1317,7 +1324,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             if b.clicked()
                 && let Err(e) = app.run("lens.db.download", json!({}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
         if running && crate::widgets::text_button(ui, "lensDbCancel", "Cancel", false).clicked() {
@@ -1328,7 +1335,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             && crate::widgets::text_button(ui, "lensDbRemove", "Remove", false).clicked()
             && let Err(e) = app.run("lens.db.remove", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     });
     match st.field("download").field("state").as_str() {
@@ -1720,8 +1727,11 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // activity stack, and a write in progress holds the size; this dialog draws it every frame)
     let rendered = &app.session.media.rendered;
     let activity = &app.session.activity;
+    // (read off screen for the Settings search, it starts no count)
+    let off_screen = crate::settings_search::off_screen(ui.ctx());
     let used = rendered
         .disk()
+        .filter(|_| !off_screen)
         .map(|_| rendered.disk_size_now_with(|| activity.start("cache", "Counting the preview cache", lcc_engine::activity::Cancel::No)));
     if matches!(used, Some(None)) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -1943,7 +1953,7 @@ fn smart_previews(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 };
                 app.toast(ui.ctx(), if failed > 0 { crate::i18n::tr_format!("{msg} ({failed} failed)", failed = failed, msg = msg) } else { msg });
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, crate::i18n::tr("Keep it on a drive with room: smart previews are about 1 MB per photo. The thumbnail cache stays in the catalog."));
@@ -2138,8 +2148,6 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too.",
         ),
     );
-    // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and
@@ -2391,10 +2399,11 @@ fn appearance(
     let available = ui.available_width();
     let mut cards = |ui: &mut egui::Ui, width: f32| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
-        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
+        // (in the order of the mode buttons above: dark, then light)
         let dark: Vec<_> = DarkTheme::ALL.iter().map(|d| (*d, d.kind())).collect();
         theme_card(ui, t, "Dark Theme", !light_active, &dark, &mut s.dark_theme, &mut s.favorite_themes, width);
+        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
+        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
     };
     if available < 440.0 {
         ui.vertical(|ui| cards(ui, available));

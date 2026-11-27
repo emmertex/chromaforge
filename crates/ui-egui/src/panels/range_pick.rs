@@ -199,9 +199,8 @@ pub(crate) fn luminance_tool(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Respo
 }
 
 fn run(app: &mut LccApp, ui: &egui::Ui, cmd: &str, p: serde_json::Value) {
-    if let Err(e) = app.run(cmd, p) {
-        app.toast(ui.ctx(), e);
-    }
+    let result = app.run(cmd, p);
+    app.report(ui.ctx(), result);
 }
 
 #[cfg(test)]

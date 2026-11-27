@@ -230,7 +230,7 @@ fn file_libraries_backs_up_the_library_on_the_desktop() {
     let r = app.run("catalog.backup", json!({})).unwrap();
     let backup = r["backup"].as_str().expect("where it went");
     assert!(std::path::Path::new(backup).is_dir(), "{r}");
-    assert!(app.ui.toasts.iter().any(|t| t.0.contains(backup)), "a toast says where: {:?}", app.ui.toasts);
+    assert!(app.ui.toasts.iter().any(|t| t.text.contains(backup)), "a toast says where: {:?}", app.ui.toasts);
     app.services.backup_library = Some(Box::new(|_: &mut lcc_engine::Session| Ok(json!({}))));
     let ids = file_libraries_ids(&app);
     assert!(ids.iter().any(|i| i == "file.backupLibrary") && !ids.iter().any(|i| i == "catalog.backup"), "{ids:?}");

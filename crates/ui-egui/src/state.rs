@@ -605,6 +605,9 @@ pub struct AppSettings {
     /// again shows them at once. Used only where the GPU has room for them
     /// ([`crate::render::hdr_cache_fit`]); the Settings dialog says when it hasn't.
     pub hdr_zoom_cache: bool,
+    /// How messages look and how long they stay (Settings ▸ Notifications ▸ Messages).
+    #[serde(deserialize_with = "lenient_messages")]
+    pub messages: crate::toast::MessageSettings,
     /// Edit in Other Editor: the application ("" = the system's default for the file type).
     pub external_editor: String,
     /// The file Edit in Other Editor hands over.
@@ -859,6 +862,7 @@ impl Default for AppSettings {
             preview_limit: 0,
             high_quality_adjustment_previews: false,
             hdr_zoom_cache: true,
+            messages: crate::toast::MessageSettings::default(),
             external_editor: String::new(),
             external_file: EditFile::default(),
             photocraft_path: String::new(),
@@ -1271,9 +1275,7 @@ pub enum KeywordChips {
     Grouped,
 }
 
-/// A short message at the bottom of the photo view: its text, when it goes (app time, s), and the colour label it is
-/// shown in, if any.
-pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
+pub use crate::toast::{Toast, ToastKind};
 
 /// A toast with a button (Undo…): its text, the button's label, the command the button runs and
 /// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
@@ -1296,7 +1298,8 @@ pub fn crop_mask_alpha(percent: u8) -> u8 {
     (u16::from(percent.min(100)) * 255 / 100) as u8
 }
 
-/// The most toasts on screen at once: a newer one pushes the oldest out.
+/// The most messages that go by themselves on screen at once: a newer one pushes the oldest out. Sticky messages
+/// are not counted (`toasts_shown`).
 pub const MAX_TOASTS: usize = 3;
 
 /// The Masking panel's folding sections, top to bottom (`section:mask:<key>`).
@@ -1563,6 +1566,10 @@ pub struct UiState {
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
+    /// The Export screen's preview shows the HDR rendition of an HDR export (SDR otherwise);
+    /// kept for the session (`export.previewMode`).
+    #[serde(skip)]
+    pub export_preview_hdr: bool,
     /// The left sidebar's sections: their order, which are hidden and which are folded shut.
     pub sidebar: crate::sidebar::SidebarLayout,
     /// The ids of other folded panels (the Classic modules' `panel:<key>` panels), saved here. Settings files
@@ -1674,6 +1681,12 @@ pub struct UiState {
     /// (`new` mask, or `add`/`subtract`/`intersect` on the selected one) and the text typed.
     #[serde(skip)]
     pub describe: Option<(String, String)>,
+    /// The Recolor hex field's buffer and whether its edit is under way (the panel resets the
+    /// buffer to the mask's colour between edits).
+    #[serde(skip)]
+    pub mask_recolor_hex: String,
+    #[serde(skip)]
+    pub mask_recolor_hex_edit: bool,
     /// A SAM 3 download was started from the app (to report its end once).
     #[serde(skip)]
     pub sam_downloading: bool,
@@ -1791,6 +1804,9 @@ pub struct UiState {
     /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
     /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
     pub brush_auto_range: f32,
+    /// Lens Blur Brush Refinement: how far a stroke refines the focus, 1..100 (size, feather,
+    /// flow, Auto Mask and pressure are the Masking brush's).
+    pub lens_blur_brush_amount: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
@@ -1976,6 +1992,9 @@ pub struct UiState {
     /// Transient toast text, expiry (seconds of app time), and optional colour-label styling.
     #[serde(skip)]
     pub toasts: Vec<Toast>,
+    /// Sticky messages the person dismissed whose condition has not cleared yet.
+    #[serde(skip)]
+    pub toasts_dismissed: std::collections::HashSet<String>,
     /// The toast with a button, if one is showing ([`ToastAction`]).
     #[serde(skip)]
     pub toast_action: Option<ToastAction>,
@@ -2006,6 +2025,9 @@ pub struct UiState {
     /// A Settings section to bring into view once (`app.settings {section}`), e.g. `lensProfiles`.
     #[serde(skip)]
     pub settings_section: Option<String>,
+    /// How many times Help ▸ What's New was opened: each opening starts its entries over (the newest open, the rest closed).
+    #[serde(skip)]
+    pub whats_new_opens: u64,
     /// Develop ▸ Lens Corrections: the lens maker picked in the lens picker before a model (issue #307).
     #[serde(skip)]
     pub lens_pick_make: Option<String>,
@@ -2070,6 +2092,35 @@ impl Dialog {
     pub fn create_preset_folder(parent: Option<String>) -> Dialog {
         Dialog::CreatePresetFolder { name: String::new(), parent }
     }
+    /// A fresh face-maintenance dialog scoped to the user's current selection, album, or folder when possible.
+    pub fn face_maintenance(s: &lcc_engine::Session) -> Dialog {
+        let scope = if !s.selected().is_empty() {
+            "selected"
+        } else {
+            match s.source {
+                lcc_engine::LibrarySource::Album(_) => "album",
+                lcc_engine::LibrarySource::Folder | lcc_engine::LibrarySource::LibraryFolder => "folder",
+                _ => "visible",
+            }
+        };
+        let (folders, album_ids) = match s.source {
+            lcc_engine::LibrarySource::Folder => (s.browse.as_ref().map(|b| b.path.clone()).unwrap_or_default(), Vec::new()),
+            lcc_engine::LibrarySource::LibraryFolder => (s.library_folder.clone().unwrap_or_default(), Vec::new()),
+            lcc_engine::LibrarySource::Album(album) => (String::new(), vec![album.0]),
+            _ => (String::new(), Vec::new()),
+        };
+        Dialog::FaceMaintenance {
+            mode: face_mode_default(),
+            scope: scope.to_string(),
+            folders,
+            album_ids,
+            album_choice: None,
+            include_subfolders: true,
+            min_score: face_score_default(),
+            behavior: face_behavior_default(),
+            confirm_reset: false,
+        }
+    }
 }
 
 /// A face's name being typed in the loupe: which face, and what has been typed so far.
@@ -2102,6 +2153,10 @@ pub enum Dialog {
         crossfade: u32,
         prores: bool,
         quality: u8,
+    },
+    /// File ▸ More Exports ▸ Export with Several Presets… (`crate::run_presets_ui`): the presets ticked.
+    RunPresets {
+        picked: Vec<String>,
     },
     /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
     EmailPhoto {
@@ -2249,9 +2304,12 @@ pub enum Dialog {
         from: Vec<String>,
         into: String,
     },
-    /// Auto-stack by capture time: the largest gap between consecutive shots, in seconds.
+    /// Auto-stack by capture time: the largest gap between consecutive shots, in seconds, and
+    /// which file type goes on top of each stack.
     AutoStack {
         gap: f32,
+        #[serde(default)]
+        top: lcc_catalog::StackTop,
     },
     /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
     /// over the grid it filters.
@@ -2294,6 +2352,33 @@ pub enum Dialog {
         /// flagged are left alone).
         #[serde(default)]
         suggest_flags: bool,
+    },
+    FaceMaintenance {
+        /// `detect`, `recognize`, `new`, `rebuild`, `rebuildNamed` or `rescan`.
+        #[serde(default = "face_mode_default")]
+        mode: String,
+        /// `all`, `visible`, `selected`, `folder` or `album`.
+        #[serde(default = "face_scope_default")]
+        scope: String,
+        /// One or more folder paths, separated by newlines or semicolons.
+        #[serde(default)]
+        folders: String,
+        /// Selected regular or smart albums, when `scope` is `album`.
+        #[serde(default)]
+        album_ids: Vec<u64>,
+        /// The album currently highlighted in the picker, before it is added to `album_ids`.
+        #[serde(default)]
+        album_choice: Option<u64>,
+        #[serde(default = "yes")]
+        include_subfolders: bool,
+        #[serde(default = "face_score_default")]
+        min_score: f32,
+        /// `merge` or `replace` earlier automatic detections.
+        #[serde(default = "face_behavior_default")]
+        behavior: String,
+        /// Explicit acknowledgement for the destructive reset action.
+        #[serde(default)]
+        confirm_reset: bool,
     },
     /// Library ▸ Image Quality Scanner… (issue #1313): score photos for technical
     /// quality (blur, noise, exposure, JPEG blockiness) in the background and flag them Pick /
@@ -2634,6 +2719,22 @@ fn yes() -> bool {
     true
 }
 
+fn face_mode_default() -> String {
+    "detect".into()
+}
+
+fn face_scope_default() -> String {
+    "visible".into()
+}
+
+fn face_score_default() -> f32 {
+    0.6
+}
+
+fn face_behavior_default() -> String {
+    "merge".into()
+}
+
 /// How many changes a Synchronize Folder scan found, by kind.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2677,7 +2778,7 @@ impl SyncCounts {
 /// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
 /// working across panels (W).
 pub fn is_picker(tool: &str) -> bool {
-    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite")
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite" | "lensFocus")
 }
 
 impl Default for UiState {
@@ -2776,6 +2877,7 @@ impl Default for UiState {
             face_boxes: false,
             draw_faces: false,
             hdr_preview: true,
+            export_preview_hdr: false,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
             group_open: Default::default(),
@@ -2811,6 +2913,8 @@ impl Default for UiState {
             focus_search: false,
             renaming_mask: None,
             describe: None,
+            mask_recolor_hex: String::new(),
+            mask_recolor_hex_edit: false,
             detail_due: None,
             sam_downloading: false,
             renaming_component: None,
@@ -2854,6 +2958,7 @@ impl Default for UiState {
             mask_reset_new: false,
             mask_reset_seen: None,
             brush_auto_range: 0.0,
+            lens_blur_brush_amount: 100.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,
@@ -2935,6 +3040,7 @@ impl Default for UiState {
             compare: None,
             reference: None,
             toasts: Vec::new(),
+            toasts_dismissed: std::collections::HashSet::new(),
             toast_action: None,
             last_dng_validation: None,
             last_find_missing: None,
@@ -2946,6 +3052,7 @@ impl Default for UiState {
             status: String::new(),
             dialog: None,
             settings_section: None,
+            whats_new_opens: 0,
             lens_pick_make: None,
             vignetting_calibration_info: None,
             vignetting_calibration_creating: None,
@@ -2972,23 +3079,77 @@ impl UiState {
     }
 
     /// Show a toast below those already showing: one no longer hides another (upstream #1936). The same message again
-    /// (same text and label) is not shown twice: it moves to the newest place and stays until the later of its times.
+    /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
-    pub fn show_toast(&mut self, toast: Toast) {
-        let (text, until, label) = toast;
-        let until = match self.toasts.iter().position(|t| t.0 == text && t.2 == label) {
-            Some(at) => self.toasts.remove(at).1.max(until),
-            None => until,
-        };
-        self.toasts.push((text, until, label));
-        if self.toasts.len() > MAX_TOASTS {
-            self.toasts.drain(..self.toasts.len() - MAX_TOASTS);
+    pub fn show_toast(&mut self, mut toast: Toast) {
+        // how long it stays is the policy's, with the Information time the person chose
+        if toast.key.is_none() {
+            toast.until = toast.at + crate::toast::stay_seconds(toast.kind, &toast.text, self.settings.messages.info_seconds());
         }
+        if let Some(key) = toast.key.clone() {
+            // a sticky message belongs to its condition: raised again it keeps one place, with the newest text, and
+            // one the person dismissed stays away until the condition clears
+            if self.toasts_dismissed.contains(&key) {
+                return;
+            }
+            match self.toasts.iter_mut().find(|t| t.key.as_deref() == Some(&key)) {
+                Some(shown) => *shown = toast,
+                None => self.toasts.push(toast),
+            }
+            return;
+        }
+        if let Some(at) = self.toasts.iter().position(|t| t.key.is_none() && t.text == toast.text) {
+            let older = self.toasts.remove(at);
+            toast.until = older.until.max(toast.until);
+            // a failure stays a failure when the same text comes again as a plain message
+            if older.kind == ToastKind::Error {
+                toast.kind = ToastKind::Error;
+            }
+        }
+        self.toasts.push(toast);
+        // only messages that go by themselves are counted: a sticky one is not pushed out by them
+        let transient = |t: &Toast| t.key.is_none();
+        while self.toasts.iter().filter(|t| transient(t)).count() > MAX_TOASTS {
+            if let Some(at) = self.toasts.iter().position(transient) {
+                self.toasts.remove(at);
+            }
+        }
+    }
+
+    /// The sticky condition `key` ended (or the person dismissed its message): its message goes, and a later raise of
+    /// the same key shows again.
+    pub fn clear_toast(&mut self, key: &str) {
+        self.toasts.retain(|t| t.key.as_deref() != Some(key));
+        self.toasts_dismissed.remove(key);
+    }
+
+    /// The person dismissed the sticky message `key`: it goes and stays away until the condition clears.
+    pub fn dismiss_toast(&mut self, key: &str) {
+        self.toasts.retain(|t| t.key.as_deref() != Some(key));
+        self.toasts_dismissed.insert(key.to_string());
+    }
+
+    /// The messages to draw, oldest first: those that go by themselves and as many sticky ones as
+    /// [`crate::toast::sticky_slots`] gives room (the oldest first).
+    pub fn toasts_shown(&self) -> Vec<&Toast> {
+        let stickies = self.toasts.iter().filter(|t| t.key.is_some()).count();
+        let mut room = crate::toast::sticky_slots(self.toasts.len() - stickies, stickies);
+        let mut shown = Vec::with_capacity(self.toasts.len());
+        for t in &self.toasts {
+            if t.key.is_some() {
+                if room == 0 {
+                    continue;
+                }
+                room -= 1;
+            }
+            shown.push(t);
+        }
+        shown
     }
 
     /// Let go of the toasts whose time is over at `now`.
     pub fn expire_toasts(&mut self, now: f64) {
-        self.toasts.retain(|t| t.1 >= now);
+        self.toasts.retain(|t| t.until >= now);
     }
 
     /// Which colour grading wheels (shadows, midtones, highlights) are hidden for viewing `photo`.
@@ -3318,6 +3479,11 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
 }
 
 /// A list of ids read leniently: what isn't a list is none, and what isn't text in it is left out.
+/// The message settings read leniently, each value kept inside its range.
+fn lenient_messages<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::toast::MessageSettings, D::Error> {
+    lenient::<D, crate::toast::MessageSettings>(d).map(crate::toast::MessageSettings::clamped)
+}
+
 fn lenient_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(value.as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -3367,27 +3533,92 @@ mod loupe_info_tests {
 
 #[cfg(test)]
 mod toast_tests {
-    use super::{MAX_TOASTS, UiState};
+    use super::{MAX_TOASTS, Toast, ToastKind, UiState};
 
     /// Two messages close together both stay on screen; the same one again is not shown twice; past the limit the
     /// oldest goes; each expires at its own time.
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
+        // a message stays 1.4 s from when it was raised, so `at` places its end
+        let message = |text: String, ends: f64| Toast { text, until: 0.0, kind: ToastKind::Message, key: None, at: ends - 1.4 };
         let mut ui = UiState::default();
-        ui.show_toast(("Red Label".into(), 2.0, None));
-        ui.show_toast(("Cache cleared".into(), 3.0, None));
+        ui.show_toast(message("Red Label".into(), 2.0));
+        ui.show_toast(message("Cache cleared".into(), 3.0));
         assert_eq!(ui.toasts.len(), 2);
-        assert_eq!(ui.toast().map(|t| t.0.as_str()), Some("Cache cleared"));
-        ui.show_toast(("Red Label".into(), 4.0, None));
+        assert_eq!(ui.toast().map(|t| t.text.as_str()), Some("Cache cleared"));
+        ui.show_toast(message("Red Label".into(), 4.0));
         assert_eq!(ui.toasts.len(), 2, "the same message is shown once");
-        assert_eq!(ui.toast().map(|t| (t.0.as_str(), t.1)), Some(("Red Label", 4.0)));
+        assert_eq!(ui.toast().map(|t| (t.text.as_str(), (t.until - 4.0).abs() < 1e-9)), Some(("Red Label", true)));
         for i in 0..5 {
-            ui.show_toast((format!("m{i}"), 10.0, None));
+            ui.show_toast(message(format!("m{i}"), 10.0));
         }
         assert_eq!(ui.toasts.len(), MAX_TOASTS);
-        assert_eq!(ui.toasts.first().map(|t| t.0.as_str()), Some("m2"));
-        ui.show_toast(("short".into(), 1.0, None));
+        assert_eq!(ui.toasts.first().map(|t| t.text.as_str()), Some("m2"));
+        ui.show_toast(message("short".into(), 1.0));
         ui.expire_toasts(5.0);
-        assert!(ui.toasts.iter().all(|t| t.0 != "short"));
+        assert!(ui.toasts.iter().all(|t| t.text != "short"));
+    }
+
+    /// A failure said again as a plain message is still a failure, and the longer time wins.
+    #[test]
+    fn the_same_text_again_keeps_the_error_kind() {
+        let mut ui = UiState::default();
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Error, key: None, at: 0.0 });
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Message, key: None, at: 0.0 });
+        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None, at: 0.0 }]);
+    }
+
+    /// A sticky message belongs to its key: raised again it stays one, with the newest text; clearing the key takes it
+    /// down; one the person dismissed stays away until the key is cleared.
+    #[test]
+    fn a_sticky_message_is_one_per_key_until_cleared_or_dismissed() {
+        let mut ui = UiState::default();
+        // a note with a sticky message's text does not merge into it
+        ui.show_toast(Toast::sticky("save-failed", "2 changes not written"));
+        ui.show_toast(Toast::new(ToastKind::Message, "2 changes not written", 0.0));
+        assert!(ui.toasts.iter().any(|t| t.key.is_some()) && ui.toasts.len() == 2, "{:?}", ui.toasts);
+        ui.toasts.retain(|t| t.key.is_some());
+        ui.show_toast(Toast::sticky("save-failed", "3 changes not written"));
+        ui.show_toast(Toast::sticky("sidecars-waiting", "sidecars"));
+        assert_eq!(ui.toasts.len(), 2, "{:?}", ui.toasts);
+        assert_eq!(ui.toasts.iter().find(|t| t.key.as_deref() == Some("save-failed")).map(|t| t.text.as_str()), Some("3 changes not written"));
+        ui.expire_toasts(1e9);
+        assert_eq!(ui.toasts.len(), 2, "a sticky message has no end");
+
+        ui.clear_toast("sidecars-waiting");
+        assert_eq!(ui.toasts.len(), 1);
+        ui.dismiss_toast("save-failed");
+        ui.show_toast(Toast::sticky("save-failed", "still failing"));
+        assert!(ui.toasts.is_empty(), "a dismissed message stays away while its condition lasts: {:?}", ui.toasts);
+        ui.clear_toast("save-failed");
+        ui.show_toast(Toast::sticky("save-failed", "failing again"));
+        assert_eq!(ui.toasts.len(), 1, "the cleared condition can be raised again");
+    }
+
+    /// Sticky messages take the free slots of the stack and one always shows; transient messages are neither pushed
+    /// out by them nor counted with them.
+    #[test]
+    fn a_sticky_message_never_pushes_out_a_transient_one() {
+        let mut ui = UiState::default();
+        for n in 0..MAX_TOASTS {
+            ui.show_toast(Toast::new(ToastKind::Message, format!("note {n}"), 0.0));
+        }
+        for key in ["a", "b", "c"] {
+            ui.show_toast(Toast::sticky(key, format!("sticky {key}")));
+        }
+        let transient = |ui: &UiState| ui.toasts.iter().filter(|t| t.key.is_none()).count();
+        assert_eq!(transient(&ui), MAX_TOASTS, "a full stack keeps its messages");
+        let shown = ui.toasts_shown();
+        assert_eq!(shown.iter().filter(|t| t.key.is_some()).count(), 1, "one slot for the sticky ones: {shown:?}");
+        assert_eq!(shown.iter().filter(|t| t.key.is_none()).count(), MAX_TOASTS);
+
+        // more notes come: the oldest note goes, never a sticky message
+        ui.show_toast(Toast::new(ToastKind::Message, "another", 0.0));
+        assert_eq!(transient(&ui), MAX_TOASTS);
+        assert_eq!(ui.toasts.iter().filter(|t| t.key.is_some()).count(), 3, "the conditions are kept");
+
+        // with the notes gone the sticky ones fill the room
+        ui.expire_toasts(1e9);
+        assert_eq!(ui.toasts_shown().len(), MAX_TOASTS);
     }
 }

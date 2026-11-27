@@ -16,6 +16,7 @@ pub mod recipe;
 pub mod retouch;
 pub mod segmask;
 pub mod settings;
+pub mod tone_eq;
 pub mod vignetting_calibration;
 
 pub use controls::{CONTROLS, ControlSpec, Section, Shade, Track};
@@ -23,6 +24,7 @@ pub use presets::{Preset, SettingItem, SettingsGroup, SettingsPick, apply_partia
 pub use retouch::{MAX_RETOUCH_MASKS, PartRequest, Retouch, RetouchAnalysis, RetouchMask, RetouchPart, RetouchTeeth};
 pub use segmask::SegMask;
 pub use settings::*;
+pub use tone_eq::ToneEq;
 pub use vignetting_calibration::{
     DEFAULT_VIGNETTING_CALIBRATION_PERCENT, EmbeddedVignettingMap, EvCodes, VignettingMapId, VignettingMapOrigin, absorb_portable, embed_portable,
 };
@@ -117,6 +119,7 @@ impl DevelopSettings {
         for p in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue].into_iter().flatten() {
             *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
         }
+        self.tone_eq = self.tone_eq.sanitized();
         for ch in Levels::CHANNELS {
             if let Some(c) = self.levels.channel_mut(ch) {
                 *c = c.sanitized();
@@ -194,7 +197,9 @@ impl DevelopSettings {
             || off("grading")
             || off("primaries")
             || off("levels")
+            || off("toneEq")
             || off("detail")
+            || (off("lensBlur") && self.lens_blur.enabled)
             || (off(PLUGIN_FILTERS_SECTION) && !self.plugin_filters.is_empty()))
         {
             return std::borrow::Cow::Borrowed(self);
@@ -228,11 +233,17 @@ impl DevelopSettings {
         if off("levels") {
             d.reset_section(Section::Levels);
         }
+        if off("toneEq") {
+            d.reset_section(Section::ToneEq);
+        }
         if off("detail") {
             d.reset_section(Section::Detail);
         }
         if off(PLUGIN_FILTERS_SECTION) {
             d.plugin_filters.clear();
+        }
+        if off("lensBlur") {
+            d.lens_blur.enabled = false;
         }
         std::borrow::Cow::Owned(d)
     }
@@ -278,6 +289,7 @@ impl DevelopSettings {
             // the Log variant is a switch, not a control: the whole group goes back to its default
             Section::Primaries => self.primaries = Primaries::default(),
             Section::Levels => self.levels = Levels::default(),
+            Section::ToneEq => self.tone_eq = ToneEq::default(),
             // the creative profile is not a control: the chosen look goes back to the default one,
             // and so does the camera's own local tone mapping
             Section::Profile => {
@@ -317,6 +329,8 @@ mod tests_levels_paths;
 mod tests_process;
 #[cfg(test)]
 mod tests_skin;
+#[cfg(test)]
+mod tests_tone_eq;
 
 #[cfg(test)]
 mod tests {

@@ -249,7 +249,7 @@ fn add_waiting(app: &mut LccApp, ctx: &egui::Context) {
     };
     match SyncJob::start(&mut app.session, changes, folder_watch::only_new()) {
         Ok((work, commit)) => crate::sync::start_run(app, lcc_catalog::folders::folder_label(&path), work, commit),
-        Err(e) => app.toast(ctx, format!("{path}: {e}")),
+        Err(e) => app.toast_error(ctx, format!("{path}: {e}")),
     }
 }
 
@@ -350,7 +350,9 @@ pub fn take_handoffs(app: &mut LccApp, ctx: &egui::Context) {
 }
 
 /// One later launch's arguments: the window comes to the front; links are followed as a launch
-/// link is, files and folders are imported as a launch's are.
+/// link is, files and folders are imported as a launch's are. (Native only: the web app has no
+/// later launches, and its library UI keeps no pending imports.)
+#[cfg(not(target_arch = "wasm32"))]
 pub fn handoff(app: &mut LccApp, ctx: &egui::Context, args: Vec<String>) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -377,5 +379,5 @@ fn notice(app: &mut LccApp, ctx: &egui::Context, found: &[(String, usize)]) {
         ),
         _ => crate::i18n::tr_format!("{n} new photos in {folders} folders: see the badges in Folders", n = total, folders = found.len()),
     };
-    app.toast_for(ctx, text, 8.0);
+    app.toast(ctx, text);
 }

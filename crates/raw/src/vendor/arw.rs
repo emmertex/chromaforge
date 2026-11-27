@@ -391,8 +391,10 @@ fn read_quad_tiles(bytes: &[u8], info: &ImageInfo) -> Result<Vec<u16>> {
             .par_iter()
             .map(|c| {
                 let src = chunk_bytes(bytes, c).ok_or_else(|| RawError::Corrupt("tile offset past end of file".into()))?;
-                let f = ljpeg::decode(src, (c.width as usize * c.height as usize).max(1 << 16))?;
-                // a tile's frame is half its nominal width and height: a larger one is no Sony tile (upstream #3700)
+                // a tile's frame is half its nominal width and height with four components, so it holds the tile's
+                // samples: no more are decoded, however small the tile (adapted from craft-libs #2232)
+                let f = ljpeg::decode(src, (c.width as usize).saturating_mul(c.height as usize))?;
+                // a frame of another shape is no Sony tile (upstream #3700)
                 if f.components != 4 || f.data.len() < f.width * f.height * 4 || f.width * 2 > c.width as usize || f.height * 2 > c.height as usize {
                     return Err(RawError::Corrupt(format!(
                         "lossless ARW tile: {} samples in a {}×{}×{} frame",
@@ -1776,6 +1778,30 @@ mod tests {
         };
         assert!(is_quad_tiled(&file, &info));
         assert_eq!(read_quad_tiles(&file, &info).unwrap(), mosaic);
+    }
+
+    /// craft-libs #2232: 256 tiles of 2×2 all pointing at one frame of 64×64×4 samples are refused by the decoder's
+    /// sample limit (a Limit) before the frame is decoded, not by the shape check after each tile decoded it.
+    #[test]
+    fn tiny_quad_tiles_do_not_decode_a_large_frame() {
+        let frame = ljpeg::encode(&vec![300u16; 64 * 64 * 4], 64, 64, 4, 14, 1, 0);
+        let info = ImageInfo {
+            width: 32,
+            height: 32,
+            bits_per_sample: vec![14],
+            samples_per_pixel: 1,
+            compression: 7,
+            photometric: photometric::CFA,
+            planar: 1,
+            predictor: 1,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Tiles { tile_width: 2, tile_height: 2 },
+            offsets: vec![0; 256],
+            byte_counts: vec![frame.len() as u64; 256],
+        };
+        let got = read_quad_tiles(&frame, &info);
+        assert!(matches!(got, Err(RawError::Limit(_))), "{got:?}");
     }
 
     /// #2561: a small file whose one-byte or packed 12-bit strip declares a large frame is refused before the full

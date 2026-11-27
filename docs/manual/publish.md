@@ -35,4 +35,6 @@ Deleting a service or collection forgets what was published; the published files
 photo, `publish.comments` comments where the service supports them. The configuration lives in `publish.json` in
 the library folder; what was published where is recorded in the catalog.
 
-Not yet: Flickr, SmugMug and other online services (a plug-in can add one).
+Not yet: Flickr, SmugMug and other online services of the app's own. A plug-in can add one: it gets the user's
+service and its settings, the collection's name, each photo's title, caption and keywords, and can answer
+`publish.comments` ([plugins.md](../plugins.md#publish-services)).

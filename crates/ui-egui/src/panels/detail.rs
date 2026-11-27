@@ -25,20 +25,46 @@ pub(crate) fn stand_in_shows(app: &LccApp, id: PhotoId, slot: Slot) -> bool {
 
 /// A clip's whole decoded frame drawn into `r` through the loupe's [`Frame`]: the crop, its
 /// straighten angle and the flips pick the part of the texture that shows (the uncropped frame
-/// while the Crop tool is open).
+/// while the Crop tool is open). Lens corrections and perspective (Upright, Transform) bend the
+/// mapping, so a warped frame is drawn as a grid of [`VIDEO_MESH_CELLS`]² cells, each corner
+/// mapped through the warp (green plane; the lens's vignette gain is left to export and stills).
 fn video_frame_mesh(tex: egui::TextureId, r: Rect, frame: &Frame) -> egui::Shape {
     let (w, h) = ((r.width().round() as usize).max(1), (r.height().round() as usize).max(1));
     let to_uv = frame.out_to_norm(w, h);
+    let (ow, oh) = (frame.ow.max(1.0), frame.oh.max(1.0));
+    let uv_of = |x: f64, y: f64| -> Point {
+        let n = to_uv.apply(Point::new(x, y));
+        match &frame.warp {
+            Some(warp) => {
+                let s = warp.to_source(Point::new(n.x * ow, n.y * oh), 1);
+                if s.x.is_finite() && s.y.is_finite() { Point::new(s.x / ow, s.y / oh) } else { n }
+            }
+            None => n,
+        }
+    };
+    let cells = if frame.warp.is_some() { VIDEO_MESH_CELLS } else { 1 };
     let mut mesh = egui::epaint::Mesh::with_texture(tex);
-    for (x, y) in [(0.0, 0.0), (w as f64, 0.0), (w as f64, h as f64), (0.0, h as f64)] {
-        let uv = to_uv.apply(Point::new(x, y));
-        let pos = pos2(r.left() + (x / w as f64) as f32 * r.width(), r.top() + (y / h as f64) as f32 * r.height());
-        mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(uv.x as f32, uv.y as f32), color: Color32::WHITE });
+    for j in 0..=cells {
+        for i in 0..=cells {
+            let (fx, fy) = (i as f64 / cells as f64, j as f64 / cells as f64);
+            let uv = uv_of(fx * w as f64, fy * h as f64);
+            let pos = pos2(r.left() + fx as f32 * r.width(), r.top() + fy as f32 * r.height());
+            mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(uv.x as f32, uv.y as f32), color: Color32::WHITE });
+        }
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    let row = (cells + 1) as u32;
+    for j in 0..cells as u32 {
+        for i in 0..cells as u32 {
+            let a = j * row + i;
+            mesh.add_triangle(a, a + 1, a + row + 1);
+            mesh.add_triangle(a, a + row + 1, a + row);
+        }
+    }
     egui::Shape::mesh(mesh)
 }
+
+/// Cells per side of a warped clip frame's mesh ([`video_frame_mesh`]).
+const VIDEO_MESH_CELLS: usize = 24;
 
 /// How long (s) after a brush stroke the photographer still counts as painting ([`crate::LccApp::paint_hold_until`]):
 /// long enough for the next stroke to start.
@@ -136,7 +162,7 @@ pub enum Gesture {
 /// Screen ↔ normalized-image mapping for the displayed frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasMap {
-    rect: Rect,
+    pub(super) rect: Rect,
     to_norm: Affine,
     from_norm: Affine,
     k: f32,
@@ -472,7 +498,7 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     if delta == egui::Vec2::ZERO && trackpad_delta != egui::Vec2::ZERO {
         delta = trackpad_delta;
     }
-    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove;
+    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove || super::lens_blur::is_brush(&app.ui.tool);
     let space_held = ui.input(|i| i.key_down(egui::Key::Space)) || app.space_hand.is_some();
     let cmd_or_ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
 
@@ -1899,6 +1925,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 crate::panels::genfill::canvas(app, ui, &ui.painter_at(app.canvas_rect.unwrap_or(map.rect)), &|q| map.screen(q), &d);
             }
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Edit if super::lens_blur::is_brush(&app.ui.tool) => super::lens_blur::brush_overlay(app, ui, &resp, &map),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
                 // balance, colour samples, targeted adjustment) means the same point of the photo.
@@ -1944,7 +1971,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 app.run("mask.component", json!({"id": m.id, "component": comp, "action": "delete"}))
             };
             if let Err(e) = r {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     }
@@ -3300,12 +3327,16 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
 
     if app.ui.right != RightPanel::Crop {
-        // Keyed by the dragged control's id, not the interaction label: a mask's "Exposure" slider
-        // must not bring up the global clipping mask.
+        // Keyed by the dragged control's id, not the interaction label: the interaction only says
+        // "Drag", so the id decides. The Edit panel's tone sliders carry the `light.` prefix; a
+        // mask's tone sliders (the Masking panel's local adjustments) share the bare
+        // `LocalAdjustments` field names and ask for the same clipping previews.
         if alt_held && app.session.interaction.is_some() {
             match app.ui.dragging_control.as_deref() {
-                Some("light.exposure" | "light.highlights" | "light.whites") => return Overlay::Clipping(Some(false)),
-                Some("light.shadows" | "light.blacks") => return Overlay::Clipping(Some(true)),
+                Some("light.exposure" | "light.highlights" | "light.whites" | "exposure" | "highlights" | "whites") => {
+                    return Overlay::Clipping(Some(false));
+                }
+                Some("light.shadows" | "light.blacks" | "shadows" | "blacks") => return Overlay::Clipping(Some(true)),
                 // Sharpening's sliders: each its own black-and-white view of the band it sharpens
                 Some("detail.sharpenAmount") => return Overlay::Sharpen(SharpenView::Amount),
                 Some("detail.sharpenRadius") => return Overlay::Sharpen(SharpenView::Radius),
@@ -3385,6 +3416,10 @@ fn general_interaction(
     }
     if app.ui.tool == "colorRange" {
         color_range_pick(app, ui, resp, map);
+        return;
+    }
+    if app.ui.tool == "lensFocus" {
+        lens_focus_pick(app, ui, resp, map);
         return;
     }
     if app.ui.tool == "pointColor" {
@@ -4531,6 +4566,30 @@ fn gradient_cursor(shape: &MaskShape, handle: u8, q: Pos2, map: &CanvasMap) -> O
     }
 }
 
+/// Lens Blur's focus picker: a click keeps the distance under it sharp; a drag keeps the area's
+/// (its median distance), centred where the drag began. The picker stays armed.
+fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap) {
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let n = map.norm(q);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": n.x, "y": n.y}, "focusSize": 0.0})) {
+            app.toast_error(ui.ctx(), e);
+        }
+    } else if resp.drag_stopped()
+        && let (Some(start), Some(end)) = (ui.input(|i| i.pointer.press_origin()), resp.interact_pointer_pos())
+    {
+        let (a, b) = (map.norm(start), map.norm(end));
+        let size = (a.x - b.x).abs().max((a.y - b.y).abs()).min(0.5);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": a.x, "y": a.y}, "focusSize": size})) {
+            app.toast_error(ui.ctx(), e);
+        }
+    }
+}
+
 /// Colour Range eyedropper: a click samples the colour under it for the selected mask's
 /// colour range, at normalized frame coordinates (crop, rotation and zoom aware);
 /// ⇧-click adds a sample (up to 5).
@@ -4541,7 +4600,7 @@ fn color_range_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map:
         let n = map.norm(q);
         let add = ui.input(|i| i.modifiers.shift);
         if let Err(e) = app.run("mask.sampleColor", json!({"x": n.x, "y": n.y, "add": add})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
 }
@@ -4577,6 +4636,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let n = map.norm(q);
             if let Ok(r) = app.run("mask.pointColorPick", json!({"x": n.x, "y": n.y})) {
                 app.ui.mask_point_color = r.field("index").as_u64().unwrap_or(0) as usize;
+            }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    // the mask's Recolor eyedroppers: one click samples into the active mask's colour ("to") or
+    // its Color to Replace ("from")
+    if let Some(target) = match app.ui.tool.as_str() {
+        "maskRecolor" => Some("to"),
+        "maskRecolorFrom" => Some("from"),
+        _ => None,
+    } {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
+                app.toast_error(ui.ctx(), e);
             }
             app.ui.tool.clear();
         }
@@ -6704,7 +6784,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let bar =
                         Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
                     register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
-                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id));
+                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id), ph.meta.gps.is_some());
                 }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone
@@ -6780,7 +6860,12 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         app.run("library.select", json!({"ids": [id.0], "mode": super::grid::click_mode(m, on_picture)}))
                     };
                     if compare && let Err(e) = r {
-                        app.toast(ui.ctx(), e);
+                        app.toast_error(ui.ctx(), e);
+                    }
+                    // as in Lightroom Classic, one click brings the map to the photo, at the zoom it has
+                    if map {
+                        let now = ui.input(|i| i.time);
+                        crate::map::centre_on_photo(app, *id, now);
                     }
                 }
                 // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,
@@ -6812,7 +6897,8 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
     use crate::icons::{Icon, paint};
     use lcc_catalog::Flag;
     let edited = ph.is_edited();
-    if ph.rating == 0 && ph.flag == Flag::None && !edited {
+    let gps = ph.meta.gps.is_some();
+    if ph.rating == 0 && ph.flag == Flag::None && !edited && !gps {
         return;
     }
     let bar = Rect::from_min_max(pos2(fr.left(), fr.bottom() - 15.0), fr.right_bottom());
@@ -6825,8 +6911,14 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
         Flag::Reject => paint(p, Rect::from_min_size(pos2(x, y - 5.0), vec2(10.0, 10.0)), Icon::FlagReject, t.reject),
         Flag::None => {}
     }
+    let mut right = bar.right() - 3.0;
     if edited {
-        paint(p, Rect::from_min_size(pos2(bar.right() - 13.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        right -= 13.0;
+    }
+    // the photo has a GPS position
+    if gps {
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::MapPin, t.text_label);
     }
 }
 

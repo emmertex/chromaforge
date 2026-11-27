@@ -1305,7 +1305,7 @@ fn leaving_an_edited_photo_keeps_an_auto_version() {
     let v = s.catalog.photo(PhotoId(ids[0])).unwrap().versions.clone();
     assert_eq!(v.len(), before + 1);
     assert!(v.last().unwrap().auto && v.last().unwrap().settings.light.exposure == 0.4);
-    assert_eq!(s.undo.len(), undo, "not an undo step");
+    assert_eq!(s.undo.len(), undo + 1, "only the selection is a step: the auto version is not");
     // back and away again without changes: nothing new
     s.execute("library.select", &json!({"ids": [ids[0]]})).unwrap();
     s.execute("library.select", &json!({"ids": [ids[1]]})).unwrap();
@@ -1349,6 +1349,43 @@ fn match_total_exposures() {
     assert_eq!(r["changed"].as_u64(), Some(1), "{r}");
     let e = s.develop_of(PhotoId(ids[1])).unwrap().light.exposure;
     assert_eq!(e, 5.0, "1.3 s against 1/100 s is 7.0 stops, clamped: {e}");
+}
+
+/// Match Look moves another demo photo's lightness, contrast and colour cast toward the active photo's, as one
+/// undo step, and touches nothing else.
+#[test]
+fn match_look_brings_photos_toward_the_reference() {
+    use crate::cmd::match_look::look_stats;
+    use lcc_catalog::PhotoId;
+    let mut s = demo();
+    // the reference is a virtual copy of the target, darker and warm-graded: the look to match is reachable
+    let t0 = s.catalog.photos().next().unwrap().id;
+    s.execute("library.select", &json!({"ids": [t0.0]})).unwrap();
+    let made = s.execute("photo.virtualCopy", &json!({})).unwrap();
+    let r = PhotoId(made["ids"][0].as_u64().unwrap());
+    let t = t0;
+    let ids = vec![r.0, t.0];
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": -1.0, "ids": [r.0]})).unwrap();
+    s.execute("develop.set", &json!({"control": "grading.global.hue", "value": 40.0, "ids": [r.0]})).unwrap();
+    s.execute("develop.set", &json!({"control": "grading.global.sat", "value": 30.0, "ids": [r.0]})).unwrap();
+    let look = |s: &mut Session, id| look_stats(&s.render_now(id, 160, 160).unwrap().image).unwrap();
+    let goal = look(&mut s, r);
+    let before = look(&mut s, t);
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    s.selection.active = Some(r);
+    let res = s.execute("develop.matchLook", &json!({})).unwrap();
+    assert_eq!(res["changed"].as_u64(), Some(1), "{res}");
+    let after = look(&mut s, t);
+    let dist = |x: &[f64; 4]| ((x[0] - goal[0]).powi(2) + (x[2] - goal[2]).powi(2) + (x[3] - goal[3]).powi(2)).sqrt();
+    assert!(dist(&after) < 0.3 * dist(&before), "closer to the reference: {before:?} → {after:?} (goal {goal:?})");
+    let d = s.develop_of(t).unwrap();
+    assert!(d.light.exposure < 0.0, "darker like the reference: {}", d.light.exposure);
+    assert!(d.grading.global.sat > 0.0, "a cast was added");
+    assert_eq!(d.light.highlights, 0.0, "only exposure, contrast and the global tint move");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.develop_of(t).unwrap().light.exposure, 0.0, "one undo step takes it back");
+    // nothing to match is refused, not a no-op
+    assert!(s.execute("develop.matchLook", &json!({"tone": false, "color": false})).is_err());
 }
 
 /// One test: the first Find Similar makes a signature of every demo photo, which is the cost.
@@ -1799,16 +1836,20 @@ fn undo_and_redo_show_the_photo_they_change() {
         s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
         s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
         s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+        // the move to b is a step of its own: Undo takes it back first, then the edit
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.active(), Some(a), "undoing the move shows the photo again");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.active(), Some(a), "undo shows the photo it changed");
         assert_eq!(s.selection.ids, vec![a]);
-        s.execute("library.select", &json!({"ids": [b.0]})).unwrap();
+        // (a change of selection that isn't a step: the fallback when its step is gone from the history)
+        s.selection = crate::Selection::single(b);
         s.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(s.active(), Some(a), "so does redo");
         // rating both selected photos is one step over two photos: undoing it leaves the selection
         s.execute("library.select", &json!({"ids": [a.0, b.0], "active": b.0})).unwrap();
         s.execute("photo.rate", &json!({"rating": 3})).unwrap();
-        s.execute("library.select", &json!({"ids": [a.0, b.0], "active": a.0})).unwrap();
+        s.selection = crate::Selection { ids: vec![a, b], active: Some(a) };
         let before = s.selection.clone();
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.selection, before, "a step over several photos keeps the selection");
@@ -1818,7 +1859,7 @@ fn undo_and_redo_show_the_photo_they_change() {
         let mut s = demo();
         let r = s.execute("photo.virtualCopy", &json!({})).unwrap();
         let copy = r["ids"][0].as_u64().unwrap();
-        s.execute("library.select", &json!({"ids": [copy]})).unwrap();
+        s.selection = crate::Selection::single(lcc_catalog::PhotoId(copy));
         s.execute("edit.undo", &json!({})).unwrap();
         assert!(s.selection.ids.iter().all(|&id| s.catalog.photo(id).is_some()), "{:?}", s.selection);
         assert!(s.selection.active.is_none_or(|a| s.selection.ids.contains(&a)));

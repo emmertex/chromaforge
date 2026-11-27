@@ -29,11 +29,6 @@ pub fn label_background(base: Color32, label: Option<lcc_catalog::ColorLabel>, s
     label.map_or(base, |l| base.lerp_to_gamma(label_color(l), if selected { 0.32 } else { 0.22 }))
 }
 
-/// Label confirmations use a pale colour and dark text, distinct from neutral/error HUDs.
-pub fn label_toast_colors(label: lcc_catalog::ColorLabel) -> (Color32, Color32) {
-    (Color32::WHITE.lerp_to_gamma(label_color(label), 0.3), Color32::from_rgb(36, 24, 24))
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
     /// Top bar, side panels, bottom bar, tool strip.
@@ -78,6 +73,10 @@ pub struct Tokens {
     pub thumb: Color32,
     pub thumb_hover: Color32,
     pub accent: Color32,
+    /// A search match in text (Settings search): a translucent fill over the text, and the line round it.
+    /// Warm in every theme, so it stands apart from the cool accent that selection uses.
+    pub find: Color32,
+    pub find_edge: Color32,
     pub star: Color32,
     pub pick: Color32,
     pub reject: Color32,
@@ -178,6 +177,8 @@ impl Default for Tokens {
             thumb: Color32::from_rgb(0xa0, 0xa0, 0xa0),
             thumb_hover: Color32::from_rgb(0xe0, 0xe0, 0xe0),
             accent: Color32::from_rgb(0x01, 0x65, 0xdd),
+            find: Color32::from_rgba_unmultiplied(0xff, 0xb4, 0x00, 90),
+            find_edge: Color32::from_rgb(0xff, 0xb4, 0x00),
             star: Color32::from_rgb(0xd8, 0xd8, 0xd8),
             pick: Color32::from_rgb(0xf0, 0xf0, 0xf0),
             reject: Color32::from_rgb(0xe0, 0x4a, 0x4a),
@@ -250,6 +251,8 @@ impl Tokens {
                 thumb: rgb(0x5e5e5e),
                 thumb_hover: rgb(0x262626),
                 accent: rgb(0x0a62d0),
+                find: Color32::from_rgba_unmultiplied(0xff, 0xd0, 0x00, 150),
+                find_edge: rgb(0xa86600),
                 star: rgb(0x3a3a3a),
                 pick: rgb(0x2a2a2a),
                 reject: rgb(0xc83434),
@@ -285,6 +288,8 @@ impl Tokens {
                 thumb: rgb(0x606060),
                 thumb_hover: rgb(0x202020),
                 accent: rgb(0x0a62d0),
+                find: Color32::from_rgba_unmultiplied(0xff, 0xd0, 0x00, 150),
+                find_edge: rgb(0xa86600),
                 star: rgb(0x3a3a3a),
                 pick: rgb(0x2a2a2a),
                 reject: rgb(0xc83434),
@@ -917,6 +922,28 @@ mod tests {
         }
     }
 
+    /// A search match in text (Settings search) shows in every theme: its outline reads against the
+    /// field and the panel (3:1), and its fill tints the panel enough to see by itself.
+    #[test]
+    fn a_search_match_is_easy_to_see_in_every_theme() {
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            for (what, surface) in [("panel", t.chrome), ("field", t.field), ("inset", t.inset)] {
+                assert!(contrast(t.find_edge, surface) >= 3.0, "{kind:?}: outline on the {what}: {:.2}", contrast(t.find_edge, surface));
+                // the fill is a colour, not a shade: judged by how far it moves the surface, not by luminance
+                let moved =
+                    |a: Color32, b: Color32| u32::from(a.r().abs_diff(b.r())) + u32::from(a.g().abs_diff(b.g())) + u32::from(a.b().abs_diff(b.b()));
+                assert!(moved(surface.blend(t.find), surface) >= 60, "{kind:?}: fill on the {what}: {}", moved(surface.blend(t.find), surface));
+                // and the text stays readable through the fill
+                assert!(
+                    contrast(t.text, surface.blend(t.find)) >= 4.5,
+                    "{kind:?}: text through the fill on the {what}: {:.2}",
+                    contrast(t.text, surface.blend(t.find))
+                );
+            }
+        }
+    }
+
     /// Every theme scrolls 100 points a wheel notch, and a zoom notch stays egui's stock ~1.22x
     /// #122: a button must not read as a text field. In every theme its fill stands apart from a
     /// field's and the panel's; in the dark themes it is raised (lighter than the chrome).
@@ -953,7 +980,11 @@ mod tests {
             lcc_testkit::skip!(Fonts, "built without CRAFT_FONTS_DIR: no craft-fonts to check");
             return;
         }
-        let face = lcc_engine::craft_fonts().iter().find(|f| f.covers(script)).unwrap_or_else(|| panic!("font input includes {script}"));
+        let Some(face) = lcc_engine::craft_fonts().iter().find(|f| f.covers(script)) else {
+            assert!(lcc_engine::fonts::BUILD_LANGUAGE.is_some(), "font input includes {script}");
+            lcc_testkit::skip!(Fonts, "this single-language build embeds no {script} face");
+            return;
+        };
         set_language(Locale::En);
         let definitions = font_definitions(lcc_engine::craft_fonts());
         let face_name = craft_font_name(face);
@@ -1016,6 +1047,11 @@ mod tests {
 
     #[test]
     fn separate_web_chinese_face_is_available_in_every_ui_family() {
+        // it switches to Chinese and then to Japanese, so both must be in the build
+        if !crate::i18n::Locale::ZhHans.in_build() || !crate::i18n::Locale::Ja.in_build() {
+            lcc_testkit::skip!(Fonts, "a single-language build cannot switch between Chinese and Japanese");
+            return;
+        }
         // Simulate the WASM build, which embeds only the Japanese face. The Chinese face arrives
         // as a separate file and must precede that face when the UI uses Chinese.
         static JAPANESE: &[lcc_engine::CraftFont] = &[lcc_engine::CraftFont {
@@ -1156,6 +1192,16 @@ mod tests {
         let (regular, _) = width_and_ink(definitions.clone(), "Library", FontFamily::Proportional);
         let (strong, _) = width_and_ink(definitions, "Library", semibold_family());
         assert!(strong > regular, "strong Latin stays wider than regular: {strong} px, {regular} px");
+    }
+
+    /// A Latin-only build (`CRAFT_FONTS_LANGUAGE=en`, F-F6BC) embeds no craft-fonts. Text in a script
+    /// with no face still lays out and paints Inter's missing-glyph boxes, and never panics.
+    #[test]
+    fn text_in_a_script_without_a_face_paints_boxes_and_never_panics() {
+        for text in ["日本語の文字", "简体中文字", "繁體中文字"] {
+            let (width, ink) = width_and_ink(font_definitions(&[]), text, FontFamily::Proportional);
+            assert!(width > 0.0 && ink > 0, "{text:?} draws boxes without a face: {width} px, ink {ink}");
+        }
     }
 
     /// A face with one fixed weight is registered once: nothing heavier can be asked of it. Without

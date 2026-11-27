@@ -162,7 +162,7 @@ pub fn survey_step(app: &mut LccApp, d: isize) -> Result<Value, String> {
     let i = app.session.selection.active.and_then(|a| v.iter().position(|x| *x == a)).unwrap_or(0);
     let j = (i as isize + d).clamp(0, v.len() as isize - 1) as usize;
     let Some(&pick) = v.get(j) else { return Ok(Value::Null) };
-    app.session.selection.active = Some(pick);
+    app.session.navigating(|s| s.selection.active = Some(pick));
     Ok(json!({"active": pick.0}))
 }
 
@@ -470,7 +470,7 @@ pub fn show_survey(app: &mut LccApp, ui: &mut egui::Ui) {
             app.image_rect = Some(img);
         }
         if resp.clicked() {
-            app.session.selection.active = Some(*id);
+            app.session.navigating(|s| s.selection.active = Some(*id));
         }
         if resp.double_clicked() {
             let _ = app.run("library.select", json!({"ids": [id.0]}));

@@ -18,6 +18,11 @@ Written after 26.46.2; keep it current. CI mechanics: [`ci.md`](ci.md). Changelo
 4. **Fix failures on a `fix/release-<ver>-ci` branch** merged to `main` (re-merge `origin/main` first), never on `release`.
 5. **main → release:** branch `prep/release-<ver>-to-release` from `origin/release`, merge `origin/main`, PR to
    `release`, merge with `gh pr merge --admin --merge` (the ruleset wants a non-author approval; admins bypass).
+   **Nightly gate:** the Release workflow fails before any draft is made when the newest completed Nightly on the
+   release commit's history is red ([`ci.md`](ci.md) → *Release gate*). Check it before this step
+   (`gh run list --workflow nightly.yml -L 3`); if red, fix on `main`, dispatch Nightly
+   (`gh workflow run nightly.yml --ref main`), and push to `release` again once it is green (a fresh
+   `-to-release-2` branch from `origin/release` with `origin/main` merged).
 6. **Draft notes:** the workflow seeds the draft with generated notes. While the build runs, once the draft
    exists: `gh release edit v<ver> --notes-file docs/changelog/<ver>.md`. The final job reads the draft body for
    `latest.json` (the updater's notes), so do it before that job.
@@ -27,8 +32,11 @@ Written after 26.46.2; keep it current. CI mechanics: [`ci.md`](ci.md). Changelo
    A download with no entry fails too (a new or renamed file: add its entry, drop the old name's); a pre-release
    (`26.48.0-rc.1`) is checked against the release's entries. The desktop packages build with the `dist` cargo
    profile (thin LTO, one codegen unit; `PACKAGE_PROFILE=release` for a quicker local package).
-   macOS ships `-macos-arm64.dmg` and `-macos-x64.dmg` only (no universal image since #1269): the updater since
-   26.48.0 takes the one for the Mac it runs on; Macs on 26.47.x or earlier download one of them once by hand.
+   macOS ships `-macos-arm64.dmg`, `-macos-x64.dmg` and, through 26.48.x only, `-macos-universal.dmg`: the
+   updater since 26.48.0 takes the image for the Mac it runs on, while 26.47.x and earlier take only the
+   universal one, so 26.48 keeps it to bring them over. **With 26.49.0, remove it (#1269):** drop
+   `--arch universal` (and `--skip-build` from the next line) in `release.yml`, the `macos-universal.dmg` entry in
+   `packaging/size-budget.toml`, and the universal mentions on the download/install pages.
 7. **Publish** when the Release workflow succeeded and the draft has all assets (19 in 26.46.2; compare with the
    previous release): `gh release edit v<ver> --draft=false --latest`.
 8. **Clean up** local prep branches, finished agents' worktrees and scratch/target dirs.
@@ -47,4 +55,8 @@ Written after 26.46.2; keep it current. CI mechanics: [`ci.md`](ci.md). Changelo
 - **Tests that press a toggling command** (`panel.presets`) must first put the panel in the state they expect.
 - **Never `pkill -f <run id>`** from the agent shell: it kills the shell itself. Stop background tasks properly.
 - `gh pr merge --auto` on a PR into `release` waits for an approval; use `--admin`.
+- **The Nightly's WARP job** (DX12's software adapter) catches shader bugs real GPUs hide: in 26.48.1 a `continue`
+  in `finish.wgsl`'s Recolor loop threw masked renders off. Reproduce with `WGPU_BACKEND=dx12
+  <PREFIX>_GPU_SOFTWARE=1 <PREFIX>_GPU_BACKEND=dx12 cargo test -p lcc-gpu --release --test it -- equivalence
+  --test-threads=1` on Windows; `git bisect --first-parent` over the merges finds the PR.
 - `[skip ci]` PRs bundled into another PR have no changelog entries; cross-check the generated PR list.

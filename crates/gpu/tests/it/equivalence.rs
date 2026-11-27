@@ -320,6 +320,16 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() },
                 PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
+                PointColor {
+                    lum: 0.6,
+                    chroma: 0.1,
+                    hue: 45.0,
+                    hue_uniformity: 80.0,
+                    sat_uniformity: 60.0,
+                    lum_uniformity: 40.0,
+                    range: 90.0,
+                    ..Default::default()
+                },
             ];
         }),
         ("b&w mix", |s| {
@@ -689,6 +699,21 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.masks = vec![
                 m(radial, L { noise: 80.0, moire: 60.0, defringe: 100.0, ..Default::default() }),
                 m(linear, L { noise: -60.0, moire: -40.0, ..Default::default() }),
+            ];
+        }),
+        ("masks (recolor)", |s| {
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.7) };
+            let m = |shape, adjust| Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+                adjust,
+                ..Default::default()
+            };
+            use lcc_develop::LocalAdjustments as L;
+            // a purple target on a gradient mask, and a grey-to-white one with a Range next to it
+            s.masks = vec![
+                m(radial, L { recolor: 100.0, recolor_r: 0.48, recolor_g: 0.25, recolor_b: 0.69, ..Default::default() }),
+                m(linear, L { recolor: 70.0, recolor_r: 0.9, recolor_g: 0.9, recolor_b: 0.95, recolor_range: -50.0, ..Default::default() }),
             ];
         }),
         ("masks (auto mask brush)", |s| {
@@ -1352,6 +1377,34 @@ fn overlays_match() {
     };
     let req = RenderRequest { overlay: lcc_pipeline::Overlay::PointColorRange(0), ..RenderRequest::fit(640, 640) };
     check("point color range overlay", &src, &raw, &s, &req);
+    // The clipping overlay reads only the finished 8-bit channels at 0 and 255, a hard decision:
+    // a pixel rounding to 255 in one renderer and 254 in the other lands in another category
+    // (solid versus tinted versus untouched), so compare the share of category flips instead of
+    // LSBs, as the gamut-warning case does.
+    let s = DevelopSettings::default();
+    let category = |p: &[u8; 4]| -> u8 {
+        let (r, g, b) = (p[0], p[1], p[2]);
+        if r == 255 || g == 255 || b == 255 {
+            u8::from(!(r == 255 && g == 255 && b == 255)) + 1 // 1 solid, 2 tinted highlight clip
+        } else if r == 0 || g == 0 || b == 0 {
+            u8::from(!(r == 0 && g == 0 && b == 0)) + 3 // 3 solid, 4 tinted shadow clip
+        } else {
+            0
+        }
+    };
+    for (name, mode) in [
+        ("clipping both sides", lcc_pipeline::Overlay::Clipping(None)),
+        ("clipping shadows", lcc_pipeline::Overlay::Clipping(Some(true))),
+        ("clipping highlights", lcc_pipeline::Overlay::Clipping(Some(false))),
+    ] {
+        let req = RenderRequest { overlay: mode, ..RenderRequest::fit(640, 640) };
+        let cpu = render(&src, &raw, &s, &req).image;
+        let gpu = lcc_gpu::render(&src, &raw, &s, &req, None).expect("gpu").image;
+        let flips = cpu.data.iter().zip(&gpu.data).filter(|(a, b)| category(a) != category(b)).count() as f64 / cpu.data.len() as f64;
+        let clipped = cpu.data.iter().filter(|p| category(p) != 0).count() as f64 / cpu.data.len() as f64;
+        eprintln!("{name:<28} clipped {clipped:.3}%  category flips {flips:.4}%");
+        assert!(flips < 0.001, "{name}: {flips}");
+    }
     // Visualize Spots is a binary threshold of a high-pass: a 1-LSB difference near the threshold
     // flips a pixel, so compare the share of differing pixels instead of LSBs.
     let s = DevelopSettings::default();

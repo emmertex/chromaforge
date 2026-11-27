@@ -163,9 +163,11 @@ pub fn poll_jobs(app: &mut LccApp, ctx: &egui::Context) {
             },
             Job::Geocode(rx) => match rx.try_recv() {
                 Ok(Ok(params)) => match app.run("map.reverseGeocode", params) {
-                    Ok(v) => {
-                        app.toast(ctx, crate::i18n::tr_format!("Filled the location of {n} photos", n = v.field("changed").as_u64().unwrap_or(0)))
+                    // the overlay says "Reverse Geocode" when photos changed; only a lookup that filled none is a toast
+                    Ok(v) if v.field("changed").as_u64().unwrap_or(0) == 0 => {
+                        app.toast(ctx, crate::i18n::tr_format!("Filled the location of {n} photos", n = 0))
                     }
+                    Ok(_) => {}
                     Err(e) => app.toast_error(ctx, e),
                 },
                 Ok(Err(e)) => app.toast_error(ctx, e),
@@ -363,49 +365,95 @@ fn style_section(app: &mut LccApp, ui: &mut egui::Ui) {
 fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
     section(ui, "Saved Locations", true, |ui| {
         let list = app.run("map.locations", json!({})).ok().and_then(|v| v.field("locations").as_array().cloned()).unwrap_or_default();
+        let picked: Vec<u64> = app.session.selected().iter().map(|id| id.0).collect();
         for l in &list {
             let name = l["name"].as_str().unwrap_or("").to_string();
             let private = l["private"].as_bool().unwrap_or(false);
-            ui.horizontal(|ui| {
-                let mut p = private;
-                if ui.checkbox(&mut p, "").on_hover_text(tr("Private: photos here are exported without their location")).changed() {
-                    let _ = app.run("map.saveLocation", json!({"name": name, "private": p}));
+            let row = ui.horizontal(|ui| {
+                // as in Lightroom Classic: ticked when the selected photos are all inside, mixed when
+                // some are; ticking it moves the selected photos to the location's centre
+                let here = l["selected"].as_u64().unwrap_or(0) as usize;
+                let all = !picked.is_empty() && here == picked.len();
+                let mut ticked = all;
+                let tip = if picked.is_empty() {
+                    tr("Select photos to move them to this location")
+                } else if all {
+                    tr("The selected photos are in this location")
+                } else {
+                    tr("Move the selected photos to this location")
+                };
+                let b = ui
+                    .add_enabled(!picked.is_empty(), egui::Checkbox::without_text(&mut ticked).indeterminate(here > 0 && !all))
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip);
+                crate::widgets::register(ui.ctx(), format!("map:locationHere:{name}"), b.rect);
+                if b.clicked() && !all {
+                    place_at_location(app, ui.ctx(), picked.clone(), &name);
                 }
                 let label = format!("{}{}  ({})", if private { "🔒 " } else { "" }, name, l["photos"].as_u64().unwrap_or(0));
-                if ui.link(label).clicked() {
+                let link = ui.link(label);
+                let link = if private { link.on_hover_text(tr("Private: photos here are exported without their location")) } else { link };
+                if link.clicked() {
+                    app.map.active_location = Some(name.clone());
                     let _ = app.run("map.search", json!({"query": name}));
+                }
+                let b = ui.small_button(tr("Edit…")).on_hover_text(tr("Edit this saved location"));
+                crate::widgets::register(ui.ctx(), format!("map:locationEdit:{name}"), b.rect);
+                if b.clicked() {
+                    match super::open_edit_location(app, &name) {
+                        Ok(()) => {
+                            let _ = app.run("map.search", json!({"query": name}));
+                        }
+                        Err(e) => app.toast_error(ui.ctx(), e),
+                    }
                 }
                 if ui.small_button("×").on_hover_text(tr("Delete this saved location")).clicked() {
                     let _ = app.run("map.deleteLocation", json!({"name": name}));
                 }
             });
+            crate::widgets::register(ui.ctx(), format!("map:locationRow:{name}"), row.response.rect);
+            location_drop(app, ui, row.response.rect, &name);
         }
         if list.is_empty() {
-            ui.label(RichText::new(tr("Name a place, set its radius and save it at the map's centre (or right-click the map).")).weak().size(11.0));
+            ui.label(RichText::new(tr("Right-click the map and choose New Location Here…, or add one at the map's centre.")).weak().size(11.0));
         }
         ui.separator();
-        let resp = ui.add(egui::TextEdit::singleline(&mut app.map.new_name).hint_text(tr("New location name")));
-        crate::access::label(&resp, "New location name");
-        if resp.has_focus() {
-            app.text_focus = true;
-        }
-        ui.horizontal(|ui| {
-            ui.label(tr("Radius"));
-            ui.add(egui::DragValue::new(&mut app.map.new_radius).range(10.0..=100_000.0).speed(10.0).suffix(" m"));
-            ui.checkbox(&mut app.map.new_private, tr("Private"));
-        });
-        if ui.button(tr("Save at Map Centre")).clicked() {
+        let b = ui.button(tr("New Location at Map Centre…"));
+        crate::widgets::register(ui.ctx(), "map:newLocationAtCentre", b.rect);
+        if b.clicked() {
             let c = app.map.centre();
-            let name = app.map.new_name.clone();
-            match app.run(
-                "map.saveLocation",
-                json!({"name": name, "lat": c.lat, "lon": c.lon, "radius": app.map.new_radius, "private": app.map.new_private}),
-            ) {
-                Ok(_) => app.map.new_name.clear(),
-                Err(e) => app.toast_error(ui.ctx(), e),
-            }
+            super::open_new_location(app, c, None);
         }
     });
+}
+
+/// Photos dragged from the filmstrip or the grid and dropped on a saved location's row take its
+/// centre as their position (one undo step), as dropping them on the map does at that point.
+fn location_drop(app: &mut LccApp, ui: &mut egui::Ui, rect: egui::Rect, name: &str) {
+    let Some(ids) = app.ui.dragging_photos.clone() else { return };
+    let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+    if !pos.is_some_and(|p| rect.contains(p)) {
+        return;
+    }
+    if app.session.catalog.saved_location(name).is_none() {
+        return;
+    }
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.painter().rect_stroke(rect.expand(2.0), 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    crate::panels::grid::drag_hint(ui.ctx(), crate::i18n::tr_format!("Place at {name}", name = name));
+    if released {
+        app.ui.dragging_photos = None;
+        place_at_location(app, ui.ctx(), ids, name);
+    }
+}
+
+/// Puts the photos at a saved location's centre (one undo step). The overlay says what changed; only
+/// a refusal is a toast.
+fn place_at_location(app: &mut LccApp, ctx: &egui::Context, ids: Vec<u64>, name: &str) {
+    let Some(centre) = app.session.catalog.saved_location(name).map(|l| l.centre()) else { return };
+    if let Err(e) = app.run("map.geotag", json!({"ids": ids, "lat": centre.lat, "lon": centre.lon})) {
+        app.toast_error(ctx, e);
+    }
 }
 
 fn track_section(app: &mut LccApp, ui: &mut egui::Ui) {
@@ -523,9 +571,10 @@ fn geocode_section(app: &mut LccApp, ui: &mut egui::Ui) {
         if ui.add_enabled(can, egui::Button::new(tr("Look Up Selected Photos"))).clicked() {
             match app.run("map.lookup", json!({})) {
                 Ok(v) if v.get("pending").is_some() => app.toast(ui.ctx(), tr("Looking up locations…")),
-                Ok(v) => {
-                    app.toast(ui.ctx(), crate::i18n::tr_format!("Filled the location of {n} photos", n = v.field("found").as_u64().unwrap_or(0)))
+                Ok(v) if v.field("found").as_u64().unwrap_or(0) == 0 => {
+                    app.toast(ui.ctx(), crate::i18n::tr_format!("Filled the location of {n} photos", n = 0))
                 }
+                Ok(_) => {}
                 Err(e) => app.toast_error(ui.ctx(), e),
             }
         }

@@ -6,6 +6,7 @@
 //! | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` | `catalog` | [`HostApi::catalog`] |
 //! | `metadata.setStandard`| `metadataWrite`             | [`HostApi::set_metadata`]               |
 //! | `library.add`         | `libraryAdd`                | [`HostApi::library_add`]                |
+//! | `library.remove`      | `libraryRemove`             | [`HostApi::library_remove`]             |
 //! | `photo.pixels`        | `pixels`                    | [`HostApi::photo_pixels`]               |
 //! | `develop.setCrop`     | `crop`                      | [`HostApi::set_crop`]                   |
 //! | `photo.virtualCopy`   | `virtualCopy`               | [`HostApi::virtual_copy`]               |
@@ -68,6 +69,13 @@ pub trait HostApi {
     fn library_add(&mut self, params: &Value) -> Result<Value, String> {
         let _ = params;
         Err("library.add: not available".into())
+    }
+    /// Removes photos from the library: `{ids: [photo ids]}` → `{removed, skipped}`. Soft-delete
+    /// into Recently Deleted, one undo step; the files on disk are never touched. Ids already
+    /// deleted are skipped; ids the library doesn't know are an error.
+    fn library_remove(&mut self, params: &Value) -> Result<Value, String> {
+        let _ = params;
+        Err("library.remove: not available".into())
     }
     /// A downsized copy of photo `photo`'s pixels: the whole frame as the crop tool shows it
     /// (orientation, lens and perspective applied, no crop, no straighten), long edge at most
@@ -196,6 +204,7 @@ fn writes(method: &str, p: &Value) -> bool {
     match method {
         "metadata.setStandard"
         | "library.add"
+        | "library.remove"
         | "develop.setCrop"
         | "photo.virtualCopy"
         | "ns.set"
@@ -292,7 +301,7 @@ impl CallContext<'_> {
             if job.cancelled() {
                 return Err("cancelled".into());
             }
-            if matches!(method, "metadata.setStandard" | "library.add" | "develop.setCrop" | "photo.virtualCopy") {
+            if matches!(method, "metadata.setStandard" | "library.add" | "library.remove" | "develop.setCrop" | "photo.virtualCopy") {
                 return Err(format!("{method}: writes to the catalog aren't available in a job yet"));
             }
             if method == "program.start" {
@@ -320,6 +329,16 @@ impl CallContext<'_> {
                     return Err("library.add: params must be {path, from, stack?, album?}".into());
                 }
                 self.host.library_add(p)
+            }
+            "library.remove" => {
+                if !self.perms.library_remove {
+                    return Err(self.refuse(Request::group(Group::LibraryRemove)));
+                }
+                let ids = p.get("ids").and_then(Value::as_array).ok_or("library.remove: params must be {ids: [photo ids]}")?;
+                if ids.iter().any(|i| i.as_str().is_none()) {
+                    return Err("library.remove: `ids` must be photo ids (strings)".into());
+                }
+                self.host.library_remove(p)
             }
             "photo.pixels" => {
                 if !self.perms.pixels {

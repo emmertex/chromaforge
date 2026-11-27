@@ -90,6 +90,51 @@ pub enum Job {
     Download(Receiver<Result<usize, String>>),
 }
 
+/// The Edit Location panel: a saved location being created or changed. Nothing is saved until
+/// Save; the circle and its handles on the map show the draft meanwhile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocationEditor {
+    /// The location's name in the library (`None`: a new location).
+    pub original: Option<String>,
+    pub name: String,
+    pub centre: LatLon,
+    /// Metres.
+    pub radius: f64,
+    pub private: bool,
+    /// The radius field counts kilometres (else metres).
+    pub km: bool,
+    /// Why the last Save was refused.
+    pub error: Option<String>,
+}
+
+impl LocationEditor {
+    pub fn json(&self) -> Value {
+        json!({"original": self.original, "name": self.name, "lat": self.centre.lat, "lon": self.centre.lon, "radius": self.radius, "private": self.private, "error": self.error})
+    }
+}
+
+/// Which handle of a saved location's circle is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocationHandle {
+    /// The centre: moves the location.
+    Centre,
+    /// The knob on the circle's top edge: changes the radius.
+    Edge,
+}
+
+/// A saved-location handle being dragged: the circle follows the pointer and is saved (one undo
+/// step) on release, or written to the open Edit Location panel when it is that panel's circle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocationDrag {
+    /// The saved location (`None`: the Edit Location panel's draft).
+    pub name: Option<String>,
+    pub handle: LocationHandle,
+    /// Screen offset from the pointer to the centre when the drag began (the centre doesn't jump).
+    pub grab: egui::Vec2,
+    pub centre: LatLon,
+    pub radius: f64,
+}
+
 /// The Map module's state (not in `ui.json`: `map.json` beside it).
 pub struct MapUi {
     pub prefs: MapPrefs,
@@ -106,10 +151,12 @@ pub struct MapUi {
     pub focus_search: bool,
     pub results: Vec<(String, LatLon)>,
     pub jobs: Vec<Job>,
-    /// The new-location form.
-    pub new_name: String,
-    pub new_radius: f64,
-    pub new_private: bool,
+    /// The Edit Location panel over the map (a new location or an existing one), while open.
+    pub editor: Option<LocationEditor>,
+    /// The saved location whose radius handle shows (clicked on the map or in the list).
+    pub active_location: Option<String>,
+    /// A saved-location handle being dragged.
+    pub dragging_location: Option<LocationDrag>,
     /// The add-server form.
     pub new_server: (String, String, String),
     /// A pin being dragged: its photos.
@@ -118,6 +165,11 @@ pub struct MapUi {
     pub menu_at: Option<LatLon>,
     /// Pins as drawn last frame: (screen centre, photo ids) — for `map.inspect`-style queries and tests.
     pub drawn: Vec<(egui::Pos2, Vec<u64>)>,
+    /// The card over a hovered pin (Lightroom Classic's): stays while the pointer is on the pin or
+    /// the card, so its arrows can step through the pin's photos.
+    pub hover_card: Option<HoverCard>,
+    /// The map moving to a photo clicked in the filmstrip ([`centre_on_photo`]).
+    pub glide: Option<Glide>,
     /// The selection the map last saw (sorted ids): a filmstrip selection change reveals the new
     /// pins when they lie off screen (fork #741). `None` before the first frame.
     pub last_selection: Option<Vec<u64>>,
@@ -129,6 +181,29 @@ pub struct MapUi {
     centre_name: Option<(LatLon, Option<String>)>,
     pins_cache: Option<(u64, usize, String, i64, std::sync::Arc<Vec<lcc_geo::Cluster<u64>>>)>,
 }
+
+/// The card over a hovered pin: the pin's photos, the one shown, where the pin is and where the
+/// card was drawn last frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverCard {
+    pub ids: Vec<u64>,
+    pub index: usize,
+    pub anchor: egui::Pos2,
+    pub rect: Option<egui::Rect>,
+}
+
+/// The map's centre on its way to a place: from and to (Web Mercator, 0..1), when it started (egui
+/// time, s), and the centre it set last frame (anything else moving the map ends the glide).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glide {
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    pub start: f64,
+    pub last: LatLon,
+}
+
+/// How long the map takes to glide to a nearby photo (s).
+pub const GLIDE_SECONDS: f64 = 0.45;
 
 impl Default for MapUi {
     fn default() -> Self {
@@ -144,13 +219,15 @@ impl Default for MapUi {
             focus_search: false,
             results: Vec::new(),
             jobs: Vec::new(),
-            new_name: String::new(),
-            new_radius: 200.0,
-            new_private: false,
+            editor: None,
+            active_location: None,
+            dragging_location: None,
             new_server: Default::default(),
             dragging_pin: None,
             menu_at: None,
             drawn: Vec::new(),
+            hover_card: None,
+            glide: None,
             last_selection: None,
             canvas: None,
             names: None,
@@ -337,6 +414,65 @@ pub fn reveal_selection(app: &mut LccApp, force: bool) -> bool {
     true
 }
 
+/// One click on a filmstrip thumbnail (Lightroom Classic): the map centres on that photo's pin at
+/// the zoom it has, gliding there when the pin is within a few map widths, jumping when it is
+/// farther. A photo without a position leaves the map alone. Returns whether the map moves.
+pub fn centre_on_photo(app: &mut LccApp, id: lcc_catalog::PhotoId, now: f64) -> bool {
+    let Some(to) = app.session.catalog.photo(id).and_then(|p| p.meta.gps).map(|g| LatLon::new(g.0, g.1)).filter(|g| g.is_valid()) else {
+        return false;
+    };
+    // the selection this click made is the map's: no reveal of it on top of the move
+    let mut sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    sel.sort_unstable();
+    app.map.last_selection = Some(sel);
+    let from = lcc_geo::mercator::project(app.map.centre());
+    let mut target = lcc_geo::mercator::project(to);
+    // the short way round the antimeridian
+    let dx = target.0 - from.0;
+    target.0 = from.0 + (dx - dx.round());
+    let world = lcc_geo::mercator::world_px(app.map.prefs.zoom);
+    let px = (target.0 - from.0).hypot(target.1 - from.1) * world;
+    if px < 0.5 {
+        app.map.glide = None;
+        return false;
+    }
+    let r = app.map.canvas.unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 700.0)));
+    let near = px <= 3.0 * f64::from(r.width().max(r.height()));
+    let zoom = app.map.prefs.zoom;
+    if near {
+        app.map.glide = Some(Glide { from, to: target, start: now, last: app.map.centre() });
+    } else {
+        app.map.glide = None;
+        app.map.set_view(to, zoom);
+        app.map.save();
+    }
+    true
+}
+
+/// Moves the map one frame along its glide; `true` while it is still on its way.
+pub fn glide_step(m: &mut MapUi, now: f64) -> bool {
+    let Some(g) = m.glide else { return false };
+    let c = m.centre();
+    // someone else moved the map (a drag, a zoom, a search): it stops here
+    if (c.lat - g.last.lat).abs() > 1e-9 || (c.lon - g.last.lon).abs() > 1e-9 {
+        m.glide = None;
+        return false;
+    }
+    let t = ((now - g.start) / GLIDE_SECONDS).clamp(0.0, 1.0);
+    // ease in and out
+    let e = t * t * (3.0 - 2.0 * t);
+    let at = lcc_geo::mercator::unproject(g.from.0 + (g.to.0 - g.from.0) * e, g.from.1 + (g.to.1 - g.from.1) * e);
+    let zoom = m.prefs.zoom;
+    m.set_view(at, zoom);
+    if t >= 1.0 {
+        m.glide = None;
+        m.save();
+        return false;
+    }
+    m.glide = Some(Glide { last: m.centre(), ..g });
+    true
+}
+
 // ---------- the Module
 
 pub struct MapModule;
@@ -392,7 +528,109 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("map.tileCache", "Tile Cache", None, ""),
     ("map.showInfo", "Show Map Info", None, ""),
     ("map.showKey", "Show Map Key", None, ""),
+    ("map.newLocation", "New Saved Location", None, ""),
+    ("map.editLocation", "Edit Saved Location", None, ""),
+    ("map.locationEditor", "Edit Location Panel", None, ""),
 ];
+
+// ---------- saved locations: the Edit Location panel
+
+/// How saved-location names compare (the library keys them this way).
+fn location_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// A radius that suits the zoom: about 60 px on screen, rounded down to 1, 2 or 5 × 10ⁿ metres.
+pub fn default_radius(lat: f64, zoom: f64) -> f64 {
+    let want = (lcc_geo::mercator::metres_per_px(lat, zoom) * 60.0).clamp(10.0, 100_000.0);
+    let decade = 10f64.powf(want.log10().floor());
+    [1.0, 2.0, 5.0, 10.0].into_iter().map(|k| k * decade).filter(|v| *v <= want).fold(decade, f64::max)
+}
+
+/// Open the Edit Location panel for a new location at `centre` (saved only by Save).
+pub fn open_new_location(app: &mut LccApp, centre: LatLon, radius: Option<f64>) {
+    let mut n = app.session.catalog.saved_locations().count() + 1;
+    let mut name = crate::i18n::tr_format!("Location {n}", n = n);
+    while app.session.catalog.saved_location(&name).is_some() && n < 100_000 {
+        n += 1;
+        name = crate::i18n::tr_format!("Location {n}", n = n);
+    }
+    let radius = radius.unwrap_or_else(|| default_radius(centre.lat, app.map.prefs.zoom));
+    app.map.editor = Some(LocationEditor { original: None, name, centre, radius, private: false, km: radius >= 1000.0, error: None });
+    app.map.active_location = None;
+}
+
+/// Open the Edit Location panel for the saved location `name`.
+pub fn open_edit_location(app: &mut LccApp, name: &str) -> Result<(), String> {
+    let l = app.session.catalog.saved_location(name).cloned().ok_or_else(|| format!("no saved location `{name}`"))?;
+    app.map.editor = Some(LocationEditor {
+        original: Some(l.name.clone()),
+        name: l.name.clone(),
+        centre: l.centre(),
+        radius: l.radius,
+        private: l.private,
+        km: l.radius >= 1000.0,
+        error: None,
+    });
+    app.map.active_location = Some(l.name);
+    Ok(())
+}
+
+/// The panel's Save: create or change the location (one undo step), refusing an empty name or one
+/// another location already has; the panel closes when it worked, else shows why.
+pub fn save_location_editor(app: &mut LccApp) -> Result<Value, String> {
+    let ed = app.map.editor.clone().ok_or("no saved location is being edited")?;
+    let name = ed.name.trim().to_string();
+    let refuse = |app: &mut LccApp, why: String| {
+        if let Some(e) = app.map.editor.as_mut() {
+            e.error = Some(why.clone());
+        }
+        Err(why)
+    };
+    if name.is_empty() {
+        return refuse(app, crate::i18n::tr("Give the location a name").to_string());
+    }
+    let same = ed.original.as_deref().is_some_and(|o| location_key(o) == location_key(&name));
+    if !same && app.session.catalog.saved_location(&name).is_some() {
+        return refuse(app, crate::i18n::tr_format!("A saved location named “{name}” already exists", name = name));
+    }
+    let rename = ed.original.as_deref().filter(|o| *o != name);
+    let params = json!({"name": name, "lat": ed.centre.lat, "lon": ed.centre.lon, "radius": ed.radius, "private": ed.private, "rename": rename});
+    match app.run("map.saveLocation", params) {
+        Ok(v) => {
+            if let (Some(o), LocationFilter::Location(f)) = (ed.original.as_deref(), &app.map.filter)
+                && location_key(o) == location_key(f)
+            {
+                app.map.filter = LocationFilter::Location(name.clone());
+            }
+            app.map.editor = None;
+            app.map.active_location = Some(name);
+            Ok(v)
+        }
+        Err(e) => refuse(app, e),
+    }
+}
+
+/// The panel's Delete: remove the location being edited (undoable) and close the panel.
+pub fn delete_location_editor(app: &mut LccApp) -> Result<Value, String> {
+    let ed = app.map.editor.clone().ok_or("no saved location is being edited")?;
+    let Some(name) = ed.original else {
+        app.map.editor = None;
+        return Ok(json!({"deleted": null}));
+    };
+    let v = app.run("map.deleteLocation", json!({"name": name}))?;
+    if matches!(&app.map.filter, LocationFilter::Location(f) if location_key(f) == location_key(&name)) {
+        app.map.filter = LocationFilter::All;
+    }
+    app.map.editor = None;
+    app.map.active_location = None;
+    Ok(v)
+}
+
+/// The radius as the panel and the drag label show it: metres below 1 km, else kilometres.
+pub fn radius_label(m: f64) -> String {
+    if m >= 1000.0 { format!("{:.2} km", m / 1000.0).replace(".00 km", " km") } else { format!("{} m", m.round()) }
+}
 
 fn f(p: &Value, k: &str) -> Option<f64> {
     p.get(k).and_then(Value::as_f64)
@@ -410,6 +648,7 @@ fn view_json(app: &LccApp) -> Value {
         "pins": m.drawn.iter().map(|(p, ids)| json!({"x": p.x, "y": p.y, "ids": ids})).collect::<Vec<_>>(),
         "tiles": {"loaded": m.tiles.loaded, "failed": m.tiles.failed, "error": m.tiles.last_error, "fetcher": m.tiles.has_fetcher()},
         "attribution": m.server().attribution,
+        "locationEditor": m.editor.as_ref().map(LocationEditor::json), "activeLocation": m.active_location,
     })
 }
 
@@ -437,6 +676,59 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 app.map.save();
             }
             Ok(view_json(app))
+        }
+        "map.newLocation" => {
+            let c = app.map.centre();
+            let at = LatLon::new(f(p, "lat").unwrap_or(c.lat), f(p, "lon").unwrap_or(c.lon));
+            if !at.is_valid() {
+                return Err(format!("{}, {} is not a position", at.lat, at.lon));
+            }
+            let radius = f(p, "radius").filter(|r| r.is_finite() && (lcc_geo::places::MIN_RADIUS_M..=lcc_geo::places::MAX_RADIUS_M).contains(r));
+            open_new_location(app, at, radius);
+            if let (Some(n), Some(e)) = (s(p, "name"), app.map.editor.as_mut()) {
+                e.name = n.to_string();
+            }
+            Ok(json!({"editor": app.map.editor.as_ref().map(LocationEditor::json)}))
+        }
+        "map.editLocation" => {
+            let name = s(p, "name").ok_or("missing `name`")?.to_string();
+            open_edit_location(app, &name)?;
+            Ok(json!({"editor": app.map.editor.as_ref().map(LocationEditor::json)}))
+        }
+        "map.locationEditor" => {
+            if let Some(e) = app.map.editor.as_mut() {
+                if let Some(n) = s(p, "name") {
+                    e.name = n.to_string();
+                }
+                if let Some(r) = f(p, "radius") {
+                    if !(r.is_finite() && (lcc_geo::places::MIN_RADIUS_M..=lcc_geo::places::MAX_RADIUS_M).contains(&r)) {
+                        return Err(format!("the radius is {}–{} m", lcc_geo::places::MIN_RADIUS_M, lcc_geo::places::MAX_RADIUS_M));
+                    }
+                    e.radius = r;
+                }
+                if let (Some(lat), Some(lon)) = (f(p, "lat"), f(p, "lon")) {
+                    let at = LatLon::new(lat, lon);
+                    if !at.is_valid() {
+                        return Err(format!("{lat}, {lon} is not a position"));
+                    }
+                    e.centre = at;
+                }
+                if let Some(v) = p.get("private").and_then(Value::as_bool) {
+                    e.private = v;
+                }
+            }
+            match s(p, "action") {
+                None => {}
+                Some("save") => {
+                    save_location_editor(app)?;
+                }
+                Some("delete") => {
+                    delete_location_editor(app)?;
+                }
+                Some("cancel") => app.map.editor = None,
+                Some(other) => return Err(format!("action is save|delete|cancel, not `{other}`")),
+            }
+            Ok(json!({"editor": app.map.editor.as_ref().map(LocationEditor::json), "active": app.map.active_location}))
         }
         "map.showInfo" | "map.showKey" => {
             let flag = if id == "map.showInfo" { &mut app.map.prefs.show_info } else { &mut app.map.prefs.show_key };

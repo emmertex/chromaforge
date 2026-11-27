@@ -200,6 +200,7 @@ pub(crate) fn window_id(dialog: &Dialog) -> egui::Id {
         // (the Settings screen's own layer: `settings_screen::LAYER`)
         Dialog::Settings { .. } => crate::settings_screen::LAYER,
         Dialog::QualityScanner { .. } => "app-quality-scan-dialog",
+        Dialog::FaceMaintenance { .. } => "app-face-maintenance-dialog",
         _ => return egui::Id::new("app-dialog").with(std::mem::discriminant(dialog)),
     };
     egui::Id::new(own)
@@ -286,6 +287,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::FaceModel { .. } => "Add Face Model",
         Dialog::WhatsNew => "What's New",
         Dialog::Cull { .. } => "Assisted Culling",
+        Dialog::FaceMaintenance { mode, .. } if mode == "reset" => "Reset Face Data",
+        Dialog::FaceMaintenance { .. } => "Face Maintenance",
         Dialog::QualityScanner { .. } => "Image Quality Scanner",
         Dialog::SmartRules { id: None, .. } => "Create Smart Collection",
         Dialog::SmartRules { .. } => "Edit Smart Collection",
@@ -302,6 +305,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::Export { .. } => "Export",
         Dialog::ContactSheet { .. } => "Contact Sheet PDF",
         Dialog::Timelapse { .. } => "Timelapse Video",
+        Dialog::RunPresets { .. } => "Export with Several Presets",
         Dialog::CropOverlays { .. } => "Choose Overlays to Cycle",
         Dialog::BookPrefs { .. } => "Book Preferences",
         Dialog::EmailPhoto { .. } => "Email Photo",
@@ -447,10 +451,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::PresetsManager { .. } | Dialog::ProfileManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
-            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } | Dialog::EmailPhoto { .. } => 480.0,
+            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::RunPresets { .. } | Dialog::SlideshowExport { .. } | Dialog::EmailPhoto { .. } => 480.0,
             Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } | Dialog::CreatePresetFolder { .. } => 440.0,
             // (a wider column than most: the weight sliders sit beside their labels)
             Dialog::QualityScanner { .. } => 540.0,
+            Dialog::FaceMaintenance { .. } => 580.0,
             _ => DIALOG_W,
         } })
         .show(ctx, |ui| {
@@ -487,7 +492,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             );
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
                 Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
-                Dialog::AutoStack { gap } => {
+                Dialog::AutoStack { gap, top } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
                         egui::Slider::new(gap, 0.0..=86400.0)
@@ -497,7 +502,28 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             .custom_parser(crate::panels::dialogs::parse_gap),
                     );
                     crate::widgets::named(r, crate::i18n::tr("Stack photos taken within this time of each other:"));
-                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "preview": true})).unwrap_or_default();
+                    // which file type each new stack shows (a stack without one keeps its first photo)
+                    let h = ui.label(egui::RichText::new(crate::i18n::tr("Put on top of each stack:")).color(t.text_label));
+                    crate::widgets::register(ui.ctx(), "label:autoStackTop", h.rect);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (i, (value, label)) in [
+                            (lcc_catalog::StackTop::First, "First photo in time"),
+                            (lcc_catalog::StackTop::Raw, "Raw file"),
+                            (lcc_catalog::StackTop::Jpeg, "JPEG file"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            if crate::widgets::text_button(ui, &format!("autoStackTop-{i}"), label, *top == value).clicked() {
+                                *top = value;
+                            }
+                        }
+                    });
+                    if *top != lcc_catalog::StackTop::First {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Stacks without one keep their first photo in time.")).color(t.text_dim));
+                    }
+                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "top": *top, "preview": true})).unwrap_or_default();
                     let scope = if app.session.selection.ids.len() > 1 { "the selected photos" } else { "the photos in view" };
                     crate::dialog_frame::note(ui,
                         egui::RichText::new({
@@ -583,6 +609,129 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Lower it when a panning or moving burst splits into several groups.")).color(t.text_dim));
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Scores stay on the photos: filter or make smart collections with Focus, Eyes Open, Aesthetic and Cull Score.")).color(t.text_dim));
                 }
+                Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, confirm_reset } => {
+                    ui.label(egui::RichText::new(crate::i18n::tr("Named, ignored, and manually drawn face regions are preserved by scans.")).color(t.text_label));
+                    ui.add_space(4.0);
+                    let mode_label = match mode.as_str() {
+                        "recognize" => "Recognize Existing Faces",
+                        "new" => "Scan New Items",
+                        "rebuild" => "Rebuild All Embeddings",
+                        "rebuildNamed" => "Rebuild Named Faces",
+                        "rescan" => "Rescan and Merge",
+                        "reset" => "Reset All Face Data",
+                        _ => "Detect and Recognize",
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(crate::i18n::tr("Action")).color(t.text_label));
+                        let combo = crate::widgets::combo_box("faceMaintenanceMode")
+                            .selected_text(crate::i18n::tr(mode_label))
+                            .width(320.0)
+                            .show_ui(ui, |ui| {
+                                for (value, label) in [
+                                    ("detect", "Detect and Recognize"),
+                                    ("recognize", "Recognize Existing Faces"),
+                                    ("new", "Scan New Items"),
+                                    ("rebuild", "Rebuild All Embeddings"),
+                                    ("rebuildNamed", "Rebuild Named Faces"),
+                                    ("rescan", "Rescan and Merge"),
+                                    ("reset", "Reset All Face Data"),
+                                ] {
+                                    let r = ui.selectable_value(mode, value.to_string(), crate::i18n::tr(label));
+                                    crate::widgets::register(ui.ctx(), format!("faceMaintenance:mode:{value}"), r.rect);
+                                }
+                            });
+                        crate::widgets::register(ui.ctx(), "combo:faceMaintenanceMode", combo.response.rect);
+                    });
+                    if mode == "reset" {
+                        ui.add_space(6.0);
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Reset removes every face region, name, recognition example, and decision across the catalog, then pauses the face scan.")).color(t.caution));
+                        let r = crate::dialog_frame::checkbox(
+                            ui,
+                            confirm_reset,
+                            crate::i18n::tr("I understand this removes all face data from the catalog"),
+                        );
+                        crate::widgets::register(ui.ctx(), "check:faceMaintenanceConfirmReset", r.rect);
+                    } else {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(crate::i18n::tr("Face scan")).font(t.semibold(12.5)).color(t.text));
+                        let selected_count = app.session.selected().len();
+                        ui.horizontal_wrapped(|ui| {
+                            for (value, label) in [
+                                ("visible", "the photos in view"),
+                                ("selected", "the selected photos"),
+                                ("all", "the whole catalog"),
+                                ("folder", "Folder"),
+                                ("album", "Collection"),
+                            ] {
+                                let enabled = value != "selected" || selected_count > 0;
+                                let r = ui.add_enabled_ui(enabled, |ui| {
+                                    ui.radio_value(scope, value.to_string(), crate::i18n::tr(label))
+                                }).inner;
+                                crate::widgets::register(ui.ctx(), format!("faceMaintenance:scope:{value}"), r.rect);
+                            }
+                        });
+                        match scope.as_str() {
+                            "folder" => {
+                                ui.label(egui::RichText::new(crate::i18n::tr("Enter folders, one path per line. Only catalog photos in those folders are scanned.")).color(t.text_dim));
+                                let r = ui.add(egui::TextEdit::multiline(folders).desired_rows(2).hint_text(crate::i18n::tr("Folder")));
+                                crate::widgets::register(ui.ctx(), "field:faceMaintenanceFolders", r.rect);
+                                let r = crate::dialog_frame::checkbox(ui, include_subfolders, crate::i18n::tr("Include subfolders"));
+                                crate::widgets::register(ui.ctx(), "check:faceMaintenanceSubfolders", r.rect);
+                            }
+                            "album" => {
+                                let entries = crate::album_picker::entries_from(&app.session.catalog, |_| None);
+                                ui.horizontal(|ui| {
+                                    ui.label(crate::i18n::tr("Collection"));
+                                    let picked = crate::album_picker::AlbumPicker::new("faceMaintenanceAlbum", album_choice, &entries)
+                                        .width(300.0)
+                                        .show(ui);
+                                    if picked.changed()
+                                        && let Some(id) = album_choice.take()
+                                        && !album_ids.contains(&id)
+                                    {
+                                        album_ids.push(id);
+                                    }
+                                });
+                                let mut remove = Vec::new();
+                                for id in album_ids.clone() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(crate::album_picker::path_label(&entries, id));
+                                        let r = ui.button(crate::i18n::tr("Remove"));
+                                        crate::widgets::register(ui.ctx(), format!("button:faceMaintenanceAlbumRemove:{id}"), r.rect);
+                                        if r.clicked() {
+                                            remove.push(id);
+                                        }
+                                    });
+                                }
+                                if !remove.is_empty() {
+                                    album_ids.retain(|id| !remove.contains(id));
+                                }
+                            }
+                            _ => {}
+                        }
+                        if matches!(mode.as_str(), "detect" | "new" | "rescan") {
+                            ui.add_space(6.0);
+                            let r = ui.add(
+                                egui::Slider::new(min_score, 0.6..=1.0)
+                                    .text(crate::i18n::tr("Detection"))
+                                    .step_by(0.01)
+                                    .fixed_decimals(2),
+                            );
+                            crate::widgets::register(ui.ctx(), "field:faceMaintenanceMinScore", r.rect);
+                        }
+                        if mode == "rescan" {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(crate::i18n::tr("Detection")).color(t.text_label));
+                            ui.horizontal_wrapped(|ui| {
+                                for (value, label) in [("merge", "Merge"), ("replace", "Replace")] {
+                                    let r = ui.radio_value(behavior, value.to_string(), crate::i18n::tr(label));
+                                    crate::widgets::register(ui.ctx(), format!("faceMaintenance:behavior:{value}"), r.rect);
+                                }
+                            });
+                            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Replace removes only earlier automatic detections; named, ignored, and manual regions are preserved.")).color(t.text_dim));
+                        }
+                    }
+                }
                 Dialog::QualityScanner {
                     scope,
                     accepted,
@@ -594,6 +743,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     overwrite_metadata,
                     star_breaks,
                 } => {
+
                     // what a scan measures, and how far it reaches
                     let selected = app.session.selection.ids.len();
                     // a folder is "shown" when one is open: the Folders panel's choice, or Browse's
@@ -707,23 +857,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     );
                 }
                 Dialog::WhatsNew => {
-                    ui.scope(|ui| {
-                        for line in WHATS_NEW.lines() {
-                            let l = line.trim_end();
-                            if let Some(h) = l.strip_prefix("### ") {
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(12.5)).color(t.text));
-                            } else if let Some(h) = l.strip_prefix("## ") {
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(14.0)).color(t.text));
-                            } else if l.starts_with("# ") || l.is_empty() {
-                            } else if let Some(b) = l.strip_prefix("- ") {
-                                ui.label(egui::RichText::new(format!("•  {}", crate::i18n::tr(b).replace('`', ""))).color(t.text_label));
-                            } else {
-                                ui.label(egui::RichText::new(crate::i18n::tr(l.trim()).replace('`', "")).color(t.text_label));
-                            }
-                        }
-                    });
+                    if let Some(url) = crate::notes_view::whats_new(ui, &t, app.ui.whats_new_opens) {
+                        crate::notes_view::open_link(app, ui.ctx(), &url);
+                    }
                 }
                 Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::model_dialog(app, ui, &t, info, accepted),
                 Dialog::FaceModel { info, accepted, .. } => crate::panels::faces::model_dialog(app, ui, &t, info, accepted),
@@ -1287,6 +1423,23 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     field(ui, "Quality", |ui| { ui.add(egui::Slider::new(quality, 1..=100)); });
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Each photo with its own edits, in the order shown. No audio.")).color(t.text_dim));
                 }
+                Dialog::RunPresets { picked } => {
+                    let n = app.session.selected().len();
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} photos", n = n)).color(t.text_dim));
+                    for (p, _) in app.session.all_export_presets() {
+                        let mut on = picked.iter().any(|x| x.eq_ignore_ascii_case(&p.name));
+                        if crate::dialog_frame::checkbox(ui, &mut on, p.name.clone()).changed() {
+                            picked.retain(|x| !x.eq_ignore_ascii_case(&p.name));
+                            if on {
+                                picked.push(p.name.clone());
+                            }
+                        }
+                    }
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("Each photo is read once and exported with every preset ticked, each to its own folder.")).color(t.text_dim),
+                    );
+                }
                 Dialog::EmailPhoto { long_edge, quality } => {
                     let n = app.session.selected().len();
                     ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} photos", n = n)).color(t.text_dim));
@@ -1676,7 +1829,23 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             crate::widgets::named(ui.add(egui::TextEdit::multiline(&mut wm.text).desired_rows(2).hint_text(crate::i18n::tr("© Your Name")).desired_width(f32::INFINITY)), crate::i18n::tr("Text"))
                         });
                     }
-                    choices(ui, "Position", "watermarkDialogAnchor", &WM_POSITIONS, &mut wm.anchor);
+                    // a 3 × 3 grid laid out like the corners, edges and centre it picks (ids as before:
+                    // `button:watermarkDialogAnchor-{0..8}`; adapted from upstream #4720)
+                    field(ui, "Position", |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                            for (r, row) in WM_POSITIONS.chunks(3).enumerate() {
+                                ui.horizontal(|ui| {
+                                    for (c, (v, l)) in row.iter().enumerate() {
+                                        let i = r * 3 + c;
+                                        if crate::widgets::text_button(ui, &format!("watermarkDialogAnchor-{i}"), l, wm.anchor == *v).clicked() {
+                                            wm.anchor = *v;
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    });
                     choices(ui, "Rotate", "watermarkDialogRotation", &[(0u16, "0°"), (90, "90°"), (180, "180°"), (270, "270°")], &mut wm.rotation);
                     let mut size = wm.size as f64 * 100.0;
                     if !graphic && num(ui, &WM_SIZE, &mut size) {
@@ -1709,7 +1878,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                                     Ok(_) => {
                                         app.toast(ui.ctx(), format!("Saved watermark preset “{}”", preset_name.trim()));
                                     }
-                                    Err(e) => app.toast(ui.ctx(), e),
+                                    Err(e) => app.toast_error(ui.ctx(), e),
                                 }
                             }
                             crate::widgets::named(ui.add(egui::TextEdit::singleline(preset_name).hint_text(crate::i18n::tr("Preset name")).desired_width(ui.available_width())), crate::i18n::tr("Preset name"));
@@ -1800,6 +1969,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::LightroomResult { first: Some(_), .. } => "Show in Library",
                     Dialog::ContactSheet { .. } => "Choose PDF…",
                     Dialog::Timelapse { .. } => "Choose File…",
+                    Dialog::RunPresets { .. } => "Export",
                     Dialog::EmailPhoto { .. } => "Export",
                     Dialog::SlideshowExport { .. } => "Export…",
                     Dialog::Print => "Print to PDF…",
@@ -1860,6 +2030,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::CaptureTime { .. } => "Change Time",
                     Dialog::Cull { .. } => "Cull",
                     Dialog::QualityScanner { .. } => "Scan",
+                    Dialog::FaceMaintenance { mode, .. } if mode == "reset" => "Reset Face Data",
+                    Dialog::FaceMaintenance { .. } => "Scan",
                     Dialog::CopySettings { .. } => "Copy",
                     Dialog::PasteSettings { .. } => "Paste",
                     Dialog::TextPrompt { command, .. } => prompt_verb(command),
@@ -1875,7 +2047,16 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     _ => false,
                 };
+                let face_maintenance_blocked = matches!(
+                    &dlg,
+                    Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, confirm_reset, .. }
+                        if (mode == "reset" && !*confirm_reset)
+                            || (scope == "folder" && folders.trim().is_empty())
+                            || (scope == "album" && album_ids.is_empty() && album_choice.is_none())
+                            || (scope == "selected" && app.session.selected().is_empty())
+                );
                 let can_confirm = !rename_blocked
+                    && !face_maintenance_blocked
                     && (informational
                         || !matches!(
                             &dlg,
@@ -1971,6 +2152,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::Export { .. }
                         | Dialog::ContactSheet { .. }
                         | Dialog::Timelapse { .. }
+                        | Dialog::RunPresets { .. }
                         | Dialog::EmailPhoto { .. }
                         | Dialog::SlideshowExport { .. }
                         | Dialog::Print
@@ -1985,7 +2167,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::AdvancedSearch { .. }
                 ) =>
             {
-                app.toast(ctx, e)
+                app.toast_error(ctx, e)
             }
             // the SAM 3 dialog stays open to show the download (or why it can't start)
             Err(e) if matches!(dlg, Dialog::SamModel { .. }) => {
@@ -1993,6 +2175,13 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     *error = Some(e);
                 }
             }
+            // Face Maintenance stays open on a missing model, invalid scope or active scan, so the choices are not lost.
+            Err(e) if matches!(dlg, Dialog::FaceMaintenance { .. }) => app.toast_error(ctx, e),
+            Ok(_) if matches!(&dlg, Dialog::FaceMaintenance { mode, .. } if mode == "reset") => {
+                app.toast(ctx, crate::i18n::tr("Reset"));
+                close = true;
+            }
+            Ok(_) if matches!(dlg, Dialog::FaceMaintenance { .. }) => close = true,
             Ok(r) if matches!(dlg, Dialog::NewAlbum { .. }) && r.get("skipped").and_then(serde_json::Value::as_u64).is_some_and(|n| n > 0) => {
                 // albums hold library photos (issue #684): say which part of the selection stayed out
                 crate::panels::grid::toast_skipped(app, ctx, &r);
@@ -2001,18 +2190,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             // a move says how it went, or why nothing moved
             Ok(r) if matches!(dlg, Dialog::MovePhotos { .. }) => {
                 if let Dialog::MovePhotos { name, .. } = &dlg {
-                    let text = crate::panels::left::moved_text(r.field("moved").as_u64().unwrap_or(0), name);
-                    app.toast(ctx, text);
+                    crate::panels::left::say_nothing_moved(app, ctx, r.field("moved").as_u64().unwrap_or(0), name);
                 }
                 close = true;
             }
             // a prompt (Rename Folder, …) that is refused closes and says why
             Err(e) if matches!(dlg, Dialog::MovePhotos { .. } | Dialog::TextPrompt { .. }) => {
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
                 close = true;
             }
             Err(e) if matches!(dlg, Dialog::TextPrompt { .. }) => {
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
                 close = true;
             }
             // photos dated to a year or a month alone have no time to shift: say so (and, in the same
@@ -2034,7 +2222,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             // empty), unless the library it names has gone
             Err(e) if matches!(dlg, Dialog::LightroomDestination { .. }) => {
                 close = !crate::lightroom_destination::keeps_open_on_error(app, &dlg);
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
             }
             Ok(_) if keeps_open(app, &dlg) => {
                 if let Dialog::SamModel { error, .. } = &mut dlg {
@@ -2425,7 +2613,7 @@ fn sam_model_body(app: &mut LccApp, ui: &mut egui::Ui, error: Option<&str>) {
             if r.clicked()
                 && let Err(e) = crate::links::open(app, SAM_HELP)
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
     }
@@ -2625,7 +2813,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             r
         }
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
-        Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AutoStack { gap, top } => app.run("stack.auto", json!({"gap": gap, "top": top})),
         Dialog::AdvancedSearch { search } => {
             // a half-typed number or an unsupported condition keeps the panel open on the problem
             crate::advanced_search::draft_query(search).and_then(|query| app.run("library.advancedSearch", json!({"query": query})))
@@ -2654,6 +2842,48 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
                 app.run("photo.rejectEyes", json!({"closed": closed_eyes, "blurry": blurry_eyes, "soft": soft_eyes, "mainOnly": !everyone}))?;
             }
             r
+        }
+        Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, confirm_reset } => {
+            if mode == "reset" {
+                let result = app.run("faces.reset", json!({"confirmed": confirm_reset}))?;
+                app.caches.faces_epoch = app.caches.faces_epoch.wrapping_add(1);
+                app.caches.faces_next_pump = 0.0;
+                return Ok(result);
+            }
+            let mut params = json!({"mode": mode, "minScore": min_score});
+            match scope.as_str() {
+                "all" | "visible" | "selected" => *params.field_mut("scope") = json!(scope),
+                "folder" => {
+                    let paths: Vec<&str> = folders.lines().map(str::trim).filter(|path| !path.is_empty()).collect();
+                    if paths.is_empty() {
+                        return Err(crate::i18n::tr("Enter at least one folder path").to_string());
+                    }
+                    *params.field_mut("scope") = json!("all");
+                    *params.field_mut("folders") = json!(paths);
+                    *params.field_mut("includeSubfolders") = json!(include_subfolders);
+                }
+                "album" => {
+                    let mut ids = album_ids.clone();
+                    if let Some(id) = album_choice {
+                        ids.push(*id);
+                    }
+                    ids.sort_unstable();
+                    ids.dedup();
+                    if ids.is_empty() {
+                        return Err(crate::i18n::tr("Choose at least one collection").to_string());
+                    }
+                    *params.field_mut("scope") = json!("all");
+                    *params.field_mut("albums") = json!(ids);
+                }
+                _ => return Err(crate::i18n::tr("Choose a valid face-maintenance scope").to_string()),
+            }
+            if mode == "rescan" {
+                *params.field_mut("behavior") = json!(behavior);
+            }
+            let result = app.run("faces.maintain", params)?;
+            app.caches.faces_epoch = app.caches.faces_epoch.wrapping_add(1);
+            app.caches.faces_next_pump = 0.0;
+            Ok(result)
         }
         Dialog::QualityScanner { scope, accepted, rejected, apply_flags, rescan, weights, auto_rate, overwrite_metadata, star_breaks } => {
             let settings = QualityScanSettings {
@@ -2726,7 +2956,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
                 && let Some(ctx) = app.tasks.repaint.clone()
             {
                 let text = crate::i18n::tr_format!("Updated “{name}”", name = name);
-                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}), 10.0);
+                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}));
             }
             r
         }
@@ -2736,6 +2966,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::ContactSheet { options } => app.run("app.contactSheet", json!(options)),
         Dialog::Timelapse { .. } => app.run("app.timelapse", crate::timelapse_ui::dialog_params(dlg).unwrap_or_default()),
+        Dialog::RunPresets { .. } => app.run("app.runPresets", crate::run_presets_ui::dialog_params(dlg).unwrap_or_default()),
         Dialog::EmailPhoto { .. } => app.run("app.emailPhoto", crate::email_photo::dialog_params(dlg).unwrap_or_default()),
         Dialog::SlideshowExport { settings } => app.run("app.slideshowExport", json!(settings)),
         Dialog::Print => app.run("app.print", json!({})),
@@ -2902,7 +3133,7 @@ pub(crate) fn start_export(
         if let Some(ctx) = app.tasks.repaint.clone() {
             match saved {
                 Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
-                Err(e) => app.toast(&ctx, e),
+                Err(e) => app.toast_error(&ctx, e),
             }
         }
     }
@@ -3102,7 +3333,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
                     picked = preset_name.trim().to_string();
                     preset_name.clear();
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         let user = presets.iter().any(|(p, b)| !*b && p.name.eq_ignore_ascii_case(&picked));
@@ -3110,7 +3341,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
         if r.clicked() && user {
             match app.run("export.deletePreset", json!({"name": picked})) {
                 Ok(_) => picked.clear(),
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         let can_rename = user && named;
@@ -3121,7 +3352,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
                     picked = preset_name.trim().to_string();
                     preset_name.clear();
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
     });
@@ -3185,7 +3416,8 @@ const EXPORT_TOPS: &str = "export-screen-tops";
 const EXPORT_JUMP: &str = "export-screen-jump";
 
 /// The Export screen's rail: its groups (name, the section keys it covers).
-const EXPORT_GROUPS: [(&str, &[&str]); 7] = [
+const EXPORT_GROUPS: [(&str, &[&str]); 8] = [
+    ("Preview", &["Preview"]),
     ("Where", &["Location", "Naming"]),
     ("Video", &["Video"]),
     ("File", &["FileSettings"]),
@@ -3326,12 +3558,20 @@ pub(crate) fn export_screen(app: &mut LccApp, ctx: &egui::Context) {
             let h = r.available_height();
             export_presets(app, &mut r, f, h);
         }
-        // every setting, one scrolling page
-        let w = content.width().min(860.0);
-        let column = egui::Rect::from_min_size(
-            egui::pos2(content.left() + ((content.width() - w) / 2.0).max(0.0), content.top()),
-            egui::vec2(w, content.height()),
-        );
+        // every setting, one scrolling page; with room to spare, the preview of the first photo
+        // sits beside it (a card of its own); in a narrow window it is the page's last section
+        const MIN_SETTINGS: f32 = 640.0;
+        let gap = crate::export_preview::WIDTH + 24.0;
+        let beside = content.width() >= MIN_SETTINGS + gap;
+        let w = if beside { content.width() - gap } else { content.width().min(860.0) };
+        let column = if beside {
+            egui::Rect::from_min_size(content.min, egui::vec2(w, content.height()))
+        } else {
+            egui::Rect::from_min_size(
+                egui::pos2(content.left() + ((content.width() - w) / 2.0).max(0.0), content.top()),
+                egui::vec2(w, content.height()),
+            )
+        };
         let mut page = ui.new_child(egui::UiBuilder::new().max_rect(column.shrink2(egui::vec2(16.0, 0.0))));
         page.ctx().data_mut(|d| d.insert_temp(egui::Id::new(EXPORT_SCREEN), true));
         egui::ScrollArea::vertical().id_salt("export-page").auto_shrink([false, false]).show(&mut page, |ui| {
@@ -3352,9 +3592,47 @@ pub(crate) fn export_screen(app: &mut LccApp, ctx: &egui::Context) {
             } else {
                 crate::dialog_frame::form(ui, EXPORT_LABEL_W, body);
             }
+            // (a narrow window: the preview closes the page)
+            if !beside && export_section(app, ui, "Preview", "Preview", "") {
+                let cap = (column.height() * 0.45).clamp(160.0, 460.0);
+                crate::export_preview::draw(
+                    app,
+                    ui,
+                    ExportForm {
+                        opts: &mut opts,
+                        full_size: &mut full_size,
+                        resize: &mut resize,
+                        preset_name: &mut preset_name,
+                        limit_kb: &mut limit_kb,
+                        dir: &mut dir,
+                    },
+                    false,
+                    Some(cap - 44.0),
+                );
+            }
             ui.add_space(40.0);
         });
         page.ctx().data_mut(|d| d.remove::<bool>(egui::Id::new(EXPORT_SCREEN)));
+        if beside {
+            let pane = egui::Rect::from_min_max(egui::pos2(column.right() + 16.0, content.top() + 12.0), content.max);
+            let mut card = ui.new_child(egui::UiBuilder::new().max_rect(pane));
+            crate::dialog_frame::card_frame(ctx).show(&mut card, |ui| {
+                crate::export_preview::draw(
+                    app,
+                    ui,
+                    ExportForm {
+                        opts: &mut opts,
+                        full_size: &mut full_size,
+                        resize: &mut resize,
+                        preset_name: &mut preset_name,
+                        limit_kb: &mut limit_kb,
+                        dir: &mut dir,
+                    },
+                    true,
+                    None,
+                );
+            });
+        }
     });
     ctx.memory_mut(|m| m.set_modal_layer(shown.response.layer_id));
     // the rows may have closed Export or opened another dialog (a folder picker, Watermark…)
@@ -3569,7 +3847,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
     }
 
     // ---- File Settings: format (quality) / color space / bit depth
-    const FORMATS: [(F, &str); 10] = [
+    const FORMATS: [(F, &str); 11] = [
         (F::Jpeg, "JPEG"),
         (F::Png, "PNG"),
         (F::Tiff, "TIFF"),
@@ -3579,8 +3857,11 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         (F::Jxl, "JPEG XL"),
         (F::Dng, "DNG"),
         (F::RenderedDng, "DNG"),
+        (F::Exr, "OpenEXR"),
         (F::Original, "Original files"),
     ];
+    use lcc_engine::export::ExrPrimaries as P;
+    const EXR_PRIMARIES: [(P, &str); 2] = [(P::Rec2020, "Linear Rec. 2020"), (P::AcesCg, "ACEScg")];
     const SPACES: [(C, &str); 5] =
         [(C::Srgb, "sRGB"), (C::DisplayP3, "P3"), (C::AdobeRgb, "Adobe RGB"), (C::ProPhoto, "ProPhoto"), (C::Rec2020, "Rec.2020")];
     let mut summary = label_of(&FORMATS, opts.format);
@@ -3588,7 +3869,9 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         summary = format!("{summary} ({}%)", opts.quality);
     }
     if rendered {
-        if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
+        if opts.format == F::Exr {
+            summary = format!("{summary} / {}", label_of(&EXR_PRIMARIES, opts.exr_primaries));
+        } else if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
             summary = format!("{summary} / {}", label_of(&SPACES, opts.effective_space()));
         }
         let depths = lcc_engine::export::ExportOptions::bit_depths(opts.format);
@@ -3616,6 +3899,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 (F::Webp, "WebP"),
                 (F::Avif, "AVIF"),
                 (F::Jxl, "JPEG XL"),
+                (F::Exr, "OpenEXR"),
                 (F::Dng, "DNG"),
                 (F::Original, "Original files"),
             ],
@@ -3641,8 +3925,13 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         }
         let rendered = opts.format.is_rendered();
         let depths = lcc_engine::export::ExportOptions::bit_depths(opts.format);
+        // HDR AVIF and JPEG XL fix their own depth (10- or 16-bit PQ/HLG, or an 8-bit base with a gain map)
+        if opts.hdr && matches!(opts.format, F::Avif | F::Jxl) {
+            opts.bit_depth = None;
+        }
         if rendered
             && depths.len() > 1
+            && !(opts.hdr && matches!(opts.format, F::Avif | F::Jxl))
             && let Some(first) = depths.first()
         {
             let mut bd = opts.bit_depth.filter(|b| depths.iter().any(|d| d.0 == *b)).unwrap_or(first.0);
@@ -3678,20 +3967,31 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 &mut opts.dng_compression,
             );
         }
-        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl) {
+        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl | F::Exr) {
             let tip = crate::i18n::tr(
                 "Photos edited in HDR: JPEG with an HDR gain map (looks right everywhere, brighter highlights on HDR displays), AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ; TIFF needs 32-bit float",
             );
-            crate::dialog_frame::checkbox(ui, &mut opts.hdr, crate::i18n::tr("HDR output")).on_hover_text(tip);
+            let hdr_box = crate::dialog_frame::checkbox(ui, &mut opts.hdr, crate::i18n::tr("HDR output")).on_hover_text(tip);
+            crate::widgets::register(ui.ctx(), "check:exportHdr", hdr_box.rect);
             if opts.hdr && !opts.hdr_output() {
                 crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("HDR TIFF needs 32-bit float.")).color(t.text_dim));
             }
-            if opts.hdr && opts.format == F::Avif {
+            // AVIF and JPEG XL can store one HDR image, or an SDR image with a gain map
+            if opts.hdr && opts.hdr_output() && matches!(opts.format, F::Avif | F::Jxl) {
+                use lcc_engine::export::HdrMode as M;
+                choices(ui, "HDR mode", "exportHdrMode", &[(M::GainMap, "Gain map"), (M::SingleLayer, "HDR image")], &mut opts.hdr_mode);
+            }
+            if opts.hdr && opts.format == F::Avif && !opts.gain_map() {
                 use lcc_engine::export::HdrCurve as H;
                 choices(ui, "HDR curve", "exportHdrCurve", &[(H::Pq, "PQ"), (H::Hlg, "HLG")], &mut opts.hdr_transfer);
             }
         }
         if !rendered {
+        } else if opts.hdr && opts.gain_map() && opts.format == F::Avif {
+            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB with an HDR gain map (AVIF)")).color(t.text_dim))
+                .on_hover_text(crate::i18n::tr(
+                    "Gain map: looks right everywhere, and shows HDR on viewers that read gain maps. Other viewers show the SDR image.",
+                ));
         } else if opts.format == F::Avif && opts.hdr {
             let label = if opts.hdr_transfer == lcc_engine::export::HdrCurve::Hlg {
                 crate::i18n::tr("Color space: Rec. 2020 HLG (HDR AVIF)")
@@ -3702,10 +4002,14 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         } else if opts.format == F::Png && opts.hdr {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ, 16-bit (HDR PNG)")).color(t.text_dim))
                 .on_hover_text(crate::i18n::tr("Viewers that don't read the PNG cICP chunk show PQ values as sRGB: flat and washed out. For a picture that looks right everywhere, use JPEG (gain map)."));
-        } else if opts.format == F::Jxl && opts.hdr {
+        } else if opts.format == F::Jxl && opts.hdr && !opts.gain_map() {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ (HDR JPEG XL)")).color(t.text_dim));
         } else if opts.format == F::Avif {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB (AVIF)")).color(t.text_dim));
+        } else if opts.format == F::Exr {
+            choices(ui, "Primaries", "exportExrPrimaries", &EXR_PRIMARIES, &mut opts.exr_primaries);
+            let note = "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.";
+            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
         } else {
             use lcc_engine::export::OutputSpace as C;
             choices(
@@ -3718,6 +4022,15 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             if opts.effective_space() != opts.color_space {
                 let note = "Lossy JPEG XL writes Adobe RGB and ProPhoto as Rec. 2020; choose Lossless to keep them.";
                 crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+            }
+            if opts.hdr && opts.gain_map() {
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(
+                        "HDR gain map: looks right everywhere; few viewers read JPEG XL gain maps yet, so most show the SDR image.",
+                    ))
+                    .color(t.text_dim),
+                );
             }
         }
         if opts.format == F::Jxl {
@@ -3834,7 +4147,9 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         };
         if export_section(app, ui, "Watermark", "Watermarking", &summary) {
             let mut wm_on = opts.watermark.is_some();
-            if crate::dialog_frame::checkbox(ui, &mut wm_on, crate::i18n::tr("Watermark")).changed() {
+            let wm_box = crate::dialog_frame::checkbox(ui, &mut wm_on, crate::i18n::tr("Watermark"));
+            crate::widgets::register(ui.ctx(), "check:exportWatermark", wm_box.rect);
+            if wm_box.changed() {
                 opts.watermark = wm_on.then(|| lcc_engine::export::Watermark { text: "© ".into(), ..Default::default() });
             }
             let wm_shown = opts.watermark.clone();
@@ -3984,7 +4299,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                             app.toast(ui.ctx(), crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim()));
                             preset_name.clear();
                         }
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
                 crate::widgets::named(
@@ -4602,7 +4917,7 @@ fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: 
     if let Some(name) = delete
         && let Err(e) = app.run("naming.deletePreset", json!({"name": name}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     if let Some(name) = save_as.as_mut() {
         let mut save = false;
@@ -4622,7 +4937,7 @@ fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: 
         if save {
             match app.run("naming.savePreset", json!({"name": name.trim(), "template": template.trim()})) {
                 Ok(_) => save_as = None,
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
     }
@@ -4716,6 +5031,7 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::StopWaiting { .. }
         | Dialog::VignettingCreateAnyway { .. }
         | Dialog::VignettingReplace { .. } => ConfirmStyle::Plain,
+        Dialog::FaceMaintenance { mode, .. } if mode == "reset" => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }
@@ -4750,6 +5066,10 @@ mod gap_tests {
 
     #[test]
     fn gap_text_reads_back_what_it_shows() {
+        if lcc_engine::fonts::BUILD_LANGUAGE.is_some() {
+            lcc_testkit::skip!(Fonts, "a single-language build offers only its language and English");
+            return;
+        }
         for v in [0.0, 1.0, 12.0, 59.0, 60.0, 90.0, 600.0, 3599.0, 3600.0, 3601.0, 3661.0, 3900.0, 7325.0, 86340.0, 86399.0] {
             assert_eq!(parse_gap(&fmt_gap(v)), Some(v), "{}", fmt_gap(v));
         }

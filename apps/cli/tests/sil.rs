@@ -604,10 +604,13 @@ fn sil_workflow() {
     let r = s.request("ui.set", json!({"view": "detail"}));
     s.check(r["ok"] == true, "switching to Detail failed", &r.to_string());
     s.ok("develop.auto", json!({}));
-    s.ok("develop.set", json!({"values": {"light.exposure": 0.7, "light.contrast": 20, "color.vibrance": 15}}));
+    s.ok("develop.set", json!({"values": {"light.exposure": 0.7, "light.contrast": 20, "color.vibrance": 15, "sensor.highlightMode": 1}}));
     s.ok("develop.wbPick", json!({"x": 0.5, "y": 0.5}));
     s.ok("crop.set", json!({"rect": [0.1, 0.1, 0.9, 0.85], "angle": 2.0}));
     s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    // Lens Blur from the subject (no depth model here), focus picked at the centre
+    let lb = s.ok("lensBlur.set", json!({"amount": 60, "focus": {"x": 0.5, "y": 0.5}, "focalRange": 15, "bokeh": "hexagon"}));
+    s.check(lb["enabled"] == true && lb["bokeh"] == "hexagon", "lensBlur.set did not switch Lens Blur on", &lb.to_string());
     s.undo_redo_roundtrip();
     s.request("ui.settle", json!({"timeoutMs": 20000}));
     s.consistent();
@@ -631,6 +634,29 @@ fn sil_workflow() {
         s.check(d["light"] == a["light"] && d["color"] == a["color"], "Synchronize did not reach every selected photo", &i.to_string());
     }
     s.undo_redo_roundtrip();
+    s.consistent();
+
+    // --- Match Total Exposures and Match Look (plan 7.6): both answer with counts that add up to the selection,
+    // never touch the reference photo, and come back as one undo step
+    s.ok("library.select", json!({"ids": [ids[0], ids[5], ids[6]], "active": ids[0]}));
+    let before_ref = s.ok("develop.get", json!({"id": ids[0]}));
+    // the SIL photos carry no shutter / aperture / ISO: a clean refusal is right, a success must count the selection
+    let me = s.cmd("develop.matchExposure", json!({}));
+    let me_n = me["result"]["changed"].as_u64().unwrap_or(0) + me["result"]["skipped"].as_u64().unwrap_or(0);
+    let me_ok = if me["ok"] == true { me_n <= 2 } else { me["error"].as_str().is_some_and(|e| !e.is_empty()) };
+    s.check(me_ok, "Match Total Exposures neither matched the selection nor refused cleanly", &me.to_string());
+    let before_ml = s.ok("develop.get", json!({"id": ids[5]}));
+    let ml = s.ok("develop.matchLook", json!({}));
+    let ml_n = ml["changed"].as_u64().unwrap_or(0) + ml["skipped"].as_u64().unwrap_or(0);
+    s.check(ml_n == 2, "Match Look did not account for every selected photo", &ml.to_string());
+    let after_ref = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(after_ref["light"] == before_ref["light"], "matching changed the reference photo", &after_ref["light"].to_string());
+    let matched = s.ok("develop.get", json!({"id": ids[5]}));
+    s.undo_redo_roundtrip();
+    s.ok("edit.undo", json!({}));
+    let undone = s.ok("develop.get", json!({"id": ids[5]}));
+    s.check(undone["light"] == before_ml["light"], "one undo did not take Match Look back", &format!("{} vs {}", undone["light"], matched["light"]));
+    s.ok("edit.redo", json!({}));
     s.consistent();
 
     // --- versions: virtual copy with its own edits, history back and forth
@@ -769,10 +795,12 @@ fn sil_raw_workflow() {
     let (dir, n) = shoot(&s.root, 0, 3);
     s.start();
     let ids = import(&mut s, &dir, n);
-    for &id in &ids {
+    for (i, &id) in ids.iter().enumerate() {
         s.ok("library.select", json!({"ids": [id], "active": id}));
         s.ok("develop.auto", json!({}));
         s.ok("develop.set", json!({"values": {"light.shadows": 30, "detail.nrLuminance": 20}}));
+        // each highlight reconstruction method (plan 7.2) through preview, export, XMP and reopen
+        s.ok("develop.set", json!({"control": "sensor.highlightMode", "value": i % 3}));
         s.ok("develop.wb", json!({"mode": "custom", "temp": 5200, "tint": 5}));
         s.undo_redo_roundtrip();
     }
@@ -780,6 +808,42 @@ fn sil_raw_workflow() {
     s.export_decodes(&ids, json!({"format": "dng"}), false);
     s.ok("photo.saveMetadataToFile", json!({"ids": ids}));
     s.consistent();
+    s.reopen_keeps_everything();
+    s.finish();
+}
+
+/// Video (7.11): a synthetic clip imported, graded, given lens corrections, Transform and Upright,
+/// a poster frame picked, then exported as a movie that carries all of it; undo / redo and a reopen
+/// keep it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn sil_video() {
+    let mut s = Sil::new("video");
+    let dir = s.root.join("clips");
+    std::fs::create_dir_all(&dir).expect("the clip folder");
+    lcc_video::test_util::write_clip(&dir.join("clip.mp4"), 64, 48, 30, |_| 110, &[]);
+    s.start();
+    let ids = import(&mut s, &dir, 1);
+    let id = ids[0];
+    s.ok("library.select", json!({"ids": [id], "active": id}));
+    s.ok("develop.set", json!({"values": {"light.exposure": 0.5, "optics.vignetting": 80, "geometry.rotate": 3}}));
+    s.undo_redo_roundtrip();
+    s.cmd("geometry.upright", json!({"mode": "level"}));
+    s.undo_redo_roundtrip();
+    let v = s.cmd("video.setPoster", json!({"time": 0.5}));
+    if v["ok"] == true {
+        s.undo_redo_roundtrip();
+    }
+    s.consistent();
+    let dev = s.ok("develop.get", json!({"id": id}));
+    s.check(dev["optics"]["vignetting"].as_f64().is_some_and(|v| v > 0.0), "the clip lost its lens correction", &dev["optics"].to_string());
+    let files = s.export_decodes(&ids, json!({"format": "jpeg"}), false);
+    for f in &files {
+        match lcc_video::probe(f) {
+            Ok(info) => s.check(info.width > 0 && info.height > 0 && info.duration > 0.5, "the exported movie is empty", &format!("{info:?}")),
+            Err(e) => s.fail("the exported movie does not decode", &format!("{}: {e}", f.display())),
+        }
+    }
     s.reopen_keeps_everything();
     s.finish();
 }
@@ -820,7 +884,7 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
     let hostile = r.chance(8);
     let num = |r: &mut Rng, lo: f64, hi: f64| if hostile { json!(r.pick(&[-1e30, 1e30, 0.0, -0.0, 1e-300])) } else { json!(r.f(lo, hi)) };
     let album = albums.first().map_or(json!(1), |a| json!(r.pick(&[*a, albums[albums.len() - 1], 424_242])));
-    match r.below(36) {
+    match r.below(37) {
         0 => ("library.select", json!({"ids": [id], "active": id})),
         1 => ("library.select", json!({"ids": some, "mode": r.pick(&["replace", "add", "toggle", "range"])})),
         2 => ("library.selectAll", json!({})),
@@ -839,6 +903,8 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
                 "color.vibrance",
                 "effects.clarity",
                 "detail.sharpenAmount",
+                "toneEq.ev3",
+                "toneEq.detail",
                 "nope.control",
             ]);
             ("develop.set", json!({"control": c, "value": num(r, -2.0, 2.0)}))
@@ -876,6 +942,11 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
         32 => ("vignettingCalibration.create", json!({})),
         33 => ("vignettingCalibration.apply", json!({"map": if hostile { json!({"grid": [300, 2]}) } else { json!("0".repeat(64)) }, "ids": some})),
         34 => ("vignettingCalibration.remove", json!({"ids": some})),
+        // Lens Blur: a picked focus anywhere (hostile: far outside the photo, huge amounts)
+        35 => (
+            "lensBlur.set",
+            json!({"amount": num(r, 0.0, 100.0), "focus": {"x": num(r, 0.0, 1.0), "y": num(r, 0.0, 1.0)}, "bokeh": r.pick(&["circle", "hexagon", "ring", "nope"])}),
+        ),
         _ => ("app.export", json!({"format": "jpeg", "longEdge": 200, "ids": [id], "dir": root.join("monkey-export").to_string_lossy()})),
     }
 }
@@ -969,6 +1040,55 @@ fn diffuser_dng(level: f64, seed: u64) -> Vec<u8> {
     lcc_raw::write_dng(&raw, &DngWriteOptions::default()).unwrap()
 }
 
+/// Skin-tone uniformity on Point Color (completion plan 7.9): a sample picked on the photo, its three uniformity
+/// sliders set through the develop controls (a hostile value clamped, an unknown field refused), the same on a mask's
+/// Point Color; undo, redo, a consistent catalog, an export that decodes, and a reopen that keeps it all.
+#[test]
+fn sil_skin_uniformity() {
+    let mut s = Sil::new("skinuniformity");
+    let (dir, n) = shoot(&s.root, 2, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    let picked = s.ok("pointColor.pick", json!({"x": 0.4, "y": 0.5}));
+    let i = picked["index"].as_u64().unwrap_or(0);
+    s.ok(
+        "develop.set",
+        json!({"values": {
+            format!("pointColor.{i}.hueUniformity"): 70,
+            format!("pointColor.{i}.satUniformity"): 1e9,
+            format!("pointColor.{i}.lumUniformity"): 30,
+        }}),
+    );
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let pc = &d["point_colors"][i as usize];
+    s.check(pc["hue_uniformity"] == 70.0 && pc["lum_uniformity"] == 30.0, "the uniformity sliders didn't stick", &pc.to_string());
+    s.check(pc["sat_uniformity"] == 100.0, "an out-of-range uniformity wasn't clamped", &pc.to_string());
+    let bad = s.request("develop.set", json!({"control": format!("pointColor.{i}.uniformity"), "value": 10}));
+    s.check(bad["ok"] == false, "an unknown Point Color field was accepted", &bad.to_string());
+    s.undo_redo_roundtrip();
+
+    // the same sliders on a mask's local Point Color
+    s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    s.ok("mask.pointColorPick", json!({"x": 0.5, "y": 0.5}));
+    s.ok("mask.pointColorSet", json!({"index": 0, "values": {"hue_uniformity": 50, "sat_uniformity": -20, "lum_uniformity": 400}}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let m = &d["masks"][0]["point_colors"][0];
+    s.check(
+        m["hue_uniformity"] == 50.0 && m["sat_uniformity"] == 0.0 && m["lum_uniformity"] == 100.0,
+        "the mask's uniformity wasn't set within its range",
+        &m.to_string(),
+    );
+    s.undo_redo_roundtrip();
+    s.request("ui.settle", json!({"timeoutMs": 20000}));
+    s.consistent();
+    s.export_decodes(&[ids[0]], json!({"format": "jpeg", "longEdge": 400}), true);
+    s.reopen_keeps_everything();
+    let after = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(after["point_colors"] == d["point_colors"], "the uniformity didn't survive a reopen", &after["point_colors"].to_string());
+    s.finish();
+}
+
 /// Flat-field correction end to end (design notes §10): a reference and three photos of the same setup, the map made
 /// from the reference, applied to a selection, its amount, removed from one, the reference removed while the others
 /// keep their correction; undo, redo, a consistent catalog, and a reopen that keeps it all. No corpus needed.
@@ -1032,6 +1152,54 @@ fn sil_vignetting_calibration() {
     let after = s.ok("vignettingCalibration.photo", json!({"id": others[1]}));
     s.check(after["map"]["id"] == map && after["missing"] == false, "the map didn't survive a reopen", &after.to_string());
     s.check(after["map"]["withdrawn"] == true, "the withdrawn state didn't survive a reopen", &after.to_string());
+    s.finish();
+}
+
+/// Mean linear luminance of a decoded export.
+fn mean_luma(path: &Path) -> f64 {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let Ok(d) = lcc_codecs::decode(&bytes, Default::default()) else { return f64::NAN };
+    let px = &d.image.data;
+    px.iter().map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64).sum::<f64>() / px.len().max(1) as f64
+}
+
+/// Tone Equalizer (completion plan 7.10): band exposures through `develop.set`, hostile values clamped, undo and
+/// redo, the section's eye, an export that gets brighter when every band is raised, copy/paste to another photo and
+/// a reopen that keeps it. No corpus needed.
+#[test]
+fn sil_tone_equalizer() {
+    let mut s = Sil::new("toneeq");
+    let (dir, n) = shoot(&s.root, 2, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    let export = json!({"format": "jpeg", "longEdge": 300});
+    let before = s.export_decodes(&[ids[0]], export.clone(), true);
+    let values: serde_json::Map<String, Value> = (0..9).map(|i| (format!("toneEq.ev{i}"), json!(1.0))).collect();
+    s.ok("develop.set", json!({"values": values}));
+    // hostile values: clamped, never a panic
+    s.ok("develop.set", json!({"control": "toneEq.ev8", "value": 1e300}));
+    s.cmd("develop.set", json!({"control": "toneEq.detail", "value": "lots"}));
+    s.ok("develop.set", json!({"control": "toneEq.size", "value": -1e9}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let t = d["settings"]["tone_eq"].clone();
+    let t = if t.is_null() { d["tone_eq"].clone() } else { t };
+    s.check(t["ev8"] == json!(2.0) && t["size"] == json!(0.0), "Tone Equalizer values weren't clamped", &d.to_string());
+    s.undo_redo_roundtrip();
+    let after = s.export_decodes(&[ids[0]], export.clone(), true);
+    let (b, a) = (mean_luma(&before[0]), mean_luma(&after[0]));
+    s.check(a > b * 1.2, "raising every band didn't brighten the export", &format!("{b} -> {a}"));
+    // the eye switches it off: the export is back where it was
+    s.ok("develop.sectionEnabled", json!({"section": "toneEq", "enabled": false}));
+    let off = s.export_decodes(&[ids[0]], export.clone(), true);
+    let o = mean_luma(&off[0]);
+    s.check((o - b).abs() < 0.02 * b.max(1e-3) + 1e-3, "the eye didn't switch the Tone Equalizer off", &format!("{b} vs {o}"));
+    s.ok("develop.sectionEnabled", json!({"section": "toneEq", "enabled": true}));
+    s.ok("develop.copy", json!({"groups": ["toneEq"]}));
+    s.ok("library.select", json!({"ids": [ids[1]], "active": ids[1]}));
+    s.ok("develop.paste", json!({}));
+    s.consistent();
+    s.reopen_keeps_everything();
     s.finish();
 }
 
@@ -1114,4 +1282,40 @@ fn sil_camera_colour() {
     }
     assert!(compared.len() >= 10, "only {} bodies have both a table and a spectral matrix", compared.len());
     assert!(failures.is_empty(), "camera colour: {failures:#?}");
+}
+
+/// Adaptive presets (plan 7.8): a preset's mask recipes are made again on every photo it is
+/// applied to, a user preset saves masks as recipes, and the edits survive undo and a reopen.
+#[test]
+fn sil_adaptive_presets() {
+    let mut s = Sil::new("adaptivepresets");
+    let (dir, n) = shoot(&s.root, 3, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    let out = s.ok("preset.apply", json!({"id": "lc.adaptive.subjectAndSky", "ids": ids}));
+    s.check(out["skipped"].as_array().is_some_and(Vec::is_empty), "scene masks were skipped", &out.to_string());
+    for &i in &ids {
+        let d = s.ok("develop.get", json!({"id": i}));
+        let masks = d["masks"].as_array().map_or(0, Vec::len);
+        s.check(masks == 2, "the adaptive preset did not add its two masks", &d["masks"].to_string());
+        s.check(d["color"]["vibrance"].as_f64().is_some_and(|v| v > 0.0), "the preset's look did not apply", &d["color"].to_string());
+    }
+    // the same preset again replaces its own masks
+    s.ok("preset.apply", json!({"id": "lc.adaptive.subjectAndSky", "ids": [ids[0]]}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(d["masks"].as_array().map_or(0, Vec::len) == 2, "applying again doubled the masks", &d["masks"].to_string());
+    // a user preset made of a photo's masks brings them to another photo
+    s.ok("library.select", json!({"ids": [ids[1]], "active": ids[1]}));
+    let made = s.ok("preset.create", json!({"name": "SIL adaptive", "groups": ["masks"]}));
+    let out = s.ok("preset.apply", json!({"id": made["id"], "ids": [ids[2]]}));
+    s.check(out["skipped"].is_array(), "preset.apply did not report skipped masks", &out.to_string());
+    let d = s.ok("develop.get", json!({"id": ids[2]}));
+    s.check(d["masks"].as_array().map_or(0, Vec::len) == 4, "the user preset did not add the photo's masks", &d["masks"].to_string());
+    // hostile ids are errors, not crashes
+    s.cmd("preset.apply", json!({"id": "lc.adaptive.nope", "ids": ids}));
+    s.cmd("preset.apply", json!({"id": "lc.adaptive.deepSky", "amount": f64::MAX, "ids": [u64::MAX]}));
+    s.consistent();
+    s.undo_redo_roundtrip();
+    s.reopen_keeps_everything();
+    s.finish();
 }

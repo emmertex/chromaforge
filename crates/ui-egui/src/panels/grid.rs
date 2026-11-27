@@ -1335,7 +1335,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         let marks = bar.shrink2(vec2(if square { 8.0 } else { 3.0 }, 1.0));
         register(ui.ctx(), format!("cellmarks:{}", id.0), marks);
         if show_badges || photo.label.is_some() {
-            paint_badges(p, &t, marks, &photo, false, app.session.catalog.is_vignetting_reference(photo.id));
+            paint_badges(p, &t, marks, &photo, false, app.session.catalog.is_vignetting_reference(photo.id), false);
         }
     }
     let badge_bar = Rect::from_min_max(pos2(img_rect.left(), img_rect.bottom() - 24.0), img_rect.right_bottom());
@@ -1536,7 +1536,7 @@ fn paint_outlined(p: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
 /// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
 /// from the left, its colour label and edited mark from the right, sized to the bar's height so
 /// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
-pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool, reference: bool) {
+pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool, reference: bool, gps: bool) {
     let h = bar.height().clamp(10.0, 40.0);
     let y = bar.center().y;
     let star = (h * 0.62).round().max(8.0);
@@ -1590,6 +1590,13 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
         let s = (h * 0.5).round();
         let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
         paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Radial, colour);
+        right -= s + 4.0;
+    }
+    // the photo has a GPS position (the filmstrip's marks; grid cells show it with their badges on the photo)
+    if gps {
+        let s = (h * 0.55).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::MapPin, colour);
     }
 }
 
@@ -1632,7 +1639,7 @@ pub(crate) fn reorder_drop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: 
     };
     app.ui.dragging_photos = None;
     if let Err(e) = app.run("album.orderPhotos", json!({"album": album.0, "ids": dragged, "before": before.map(|b| b.0)})) {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
 }
 
@@ -1676,7 +1683,7 @@ fn folder_header(app: &mut LccApp, ui: &mut egui::Ui, b: &lcc_engine::Browse, id
                     let n = local.len();
                     match app.run("photo.addToLibrary", json!({"ids": local})) {
                         Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Added {n} photo{} to My Photos", if n == 1 { "" } else { "s" }, n = n)),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
             }
@@ -1904,7 +1911,7 @@ pub fn stack_badge(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, sid: lcc_ca
 /// not. The selection stays as it is (Compare keeps its pair).
 pub fn toggle_stack(app: &mut LccApp, ctx: &egui::Context, id: PhotoId) {
     if let Err(e) = app.run("stack.toggle", json!({"ids": [id.0]})) {
-        app.toast(ctx, e);
+        app.toast_error(ctx, e);
     }
 }
 
@@ -1921,7 +1928,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if alt.clicked()
         && let Err(e) = app.run("photo.showAlternatives", json!({"id": id.0}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     // Photo ▸ Edit In: a copy with this photo's edits, opened in PhotoCraft or another editor
     // (desktop only: the web can't start programs)
@@ -1988,7 +1995,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if b.clicked() {
                     match app.run("album.addPhotos", json!({"id": aid})) {
                         Ok(r) => toast_skipped(app, ui.ctx(), &r),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
             }
@@ -2067,7 +2074,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if set_reference.clicked()
             && let Err(e) = app.run("photo.setReference", json!({"id": id.0}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     });
     crate::widgets::menu_button(ui, crate::i18n::tr("Photo Merge"), |ui| {
@@ -2078,6 +2085,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ("dialog.mergeHdrPanorama", "HDR Panorama…"),
             ("dialog.mergeFocusStack", "Focus Stack…"),
             (crate::menus::PIXEL_SHIFT_ID, crate::menus::PIXEL_SHIFT_LABEL),
+            (crate::menus::PIXEL_SHIFT_PLAIN_ID, crate::menus::PIXEL_SHIFT_PLAIN_LABEL),
         ] {
             if ui.add_enabled(n >= 2, egui::Button::new(crate::i18n::tr(label))).clicked() {
                 let _ = app.run(id, json!({}));
@@ -2113,8 +2121,9 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 && let Some(into) = v.into_iter().next()
             {
                 match app.run("photo.moveToFolder", json!({"folder": into})) {
-                    Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved {} photo(s)", r.field("moved"))),
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Ok(r) if r.field("moved").as_u64().unwrap_or(0) == 0 => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved {} photo(s)", 0)),
+                    Ok(_) => {}
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
         }
@@ -2152,7 +2161,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     crate::i18n::tr_format!("{n} similar photo{} · View ▸ Clear Filters to see all", if n == 1 { "" } else { "s" }, n = n),
                 );
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     ui.separator();
@@ -2168,7 +2177,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         let n = r.field("files").as_array().map_or(0, Vec::len);
                         app.toast(ui.ctx(), crate::i18n::tr_format!("Exported {n} photo{}", if n == 1 { "" } else { "s" }, n = n));
                     }
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
         }
@@ -2215,7 +2224,7 @@ fn quick_collection_item(app: &mut LccApp, ui: &mut egui::Ui) {
     if r.clicked() {
         match app.run("album.toggleTarget", json!({})) {
             Ok(r) => toast_skipped(app, ui.ctx(), &r),
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 }

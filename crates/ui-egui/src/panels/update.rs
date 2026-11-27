@@ -171,11 +171,16 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
             let notes = a["notes"].as_str().unwrap_or("").trim().to_string();
             if !notes.is_empty() {
                 ui.add_space(4.0);
-                egui::ScrollArea::vertical()
+                // the release notes: the app's Markdown subset, like What's New
+                let clicked = egui::ScrollArea::vertical()
                     .id_salt("update-notes")
                     .max_height(crate::panels::dialogs::list_height(ui, 220.0))
                     .auto_shrink([false, true])
-                    .show(ui, |ui| notes_body(ui, &t, &notes));
+                    .show(ui, |ui| crate::notes_view::flat(ui, &t, crate::notes_view::UPDATE_LOOK, notes.lines().take(400)))
+                    .inner;
+                if let Some(url) = clicked {
+                    crate::notes_view::open_link(app, ui.ctx(), &url);
+                }
             }
         }
         "current" => {
@@ -262,7 +267,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
             && button(ui, "button:updateReleasePage", tr("Open the Release Page"))
             && let Err(e) = app.run("app.openReleasePage", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         if check == "found" && can_verify && !ready && !downloading && button(ui, "button:updateDownload", tr("Download")) {
             let _ = app.session.execute("update.download", &json!({}));
@@ -323,9 +328,13 @@ pub(crate) fn next_change(seconds: i64) -> u64 {
 /// The "Last checked … ago" line (nothing before the first check). The window repaints when the words
 /// would change, so the line stays true without any input.
 fn last_checked(ui: &mut egui::Ui, t: &Tokens, status: &Value) {
-    let Some(seconds) = status.field("lastCheckedAgo").as_i64() else {
-        return;
-    };
+    if let Some(seconds) = status.field("lastCheckedAgo").as_i64() {
+        last_checked_line(ui, t, seconds);
+    }
+}
+
+/// The "Last checked … ago" line for a check that finished `seconds` ago, repainting when its words change.
+pub(crate) fn last_checked_line(ui: &mut egui::Ui, t: &Tokens, seconds: i64) {
     ui.label(egui::RichText::new(ago_text(seconds)).font(t.font(11.5)).color(t.text_dim));
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(next_change(seconds)));
 }
@@ -342,7 +351,7 @@ fn install(app: &mut LccApp, ctx: &egui::Context) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        Err(e) => app.toast(ctx, e.to_string()),
+        Err(e) => app.toast_error(ctx, e.to_string()),
     }
 }
 
@@ -368,27 +377,6 @@ fn settings(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if !app.session.updater.persistent() {
         ui.label(egui::RichText::new(tr("These settings are saved in the app's settings folder.")).font(t.font(11.0)).color(t.text_dim));
     }
-}
-
-/// The release notes: the app's Markdown subset (`### Heading`, `- item`, prose).
-fn notes_body(ui: &mut egui::Ui, t: &Tokens, notes: &str) {
-    ui.scope(|ui| {
-        for line in notes.lines().take(400) {
-            let l = line.trim_end();
-            if let Some(h) = l.strip_prefix("### ") {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(12.5)).color(t.text));
-            } else if let Some(h) = l.strip_prefix("## ") {
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(13.5)).color(t.text));
-            } else if l.starts_with("# ") || l.is_empty() {
-            } else if let Some(b) = l.strip_prefix("- ") {
-                ui.label(egui::RichText::new(format!("•  {}", crate::i18n::tr(b).replace('`', ""))).color(t.text_label));
-            } else {
-                ui.label(egui::RichText::new(crate::i18n::tr(l.trim()).replace('`', "")).color(t.text_label));
-            }
-        }
-    });
 }
 
 /// `12.3 MB`.

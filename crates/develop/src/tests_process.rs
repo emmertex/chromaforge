@@ -238,3 +238,41 @@ fn grain_saved_without_the_new_fields_loads_with_their_defaults() {
     assert_eq!((s.grain.amount, s.grain.size, s.grain.roughness, s.grain.seed), (20.0, 25.0, 50.0, 0));
     assert_eq!((s.grain.color, s.grain.response, s.grain.size_variation, s.grain.clumping), (d.color, d.response, d.size_variation, d.clumping));
 }
+
+/// Glow (beyond Lightroom) rides on the settings like Levels and Primaries: nothing is written
+/// while it is at its default, so settings saved before it existed keep their JSON and `hash64`
+/// (and every cached preview stays valid), and a partial that names no field loads its defaults.
+#[test]
+fn glow_writes_nothing_while_default_and_keeps_hashes_stable() {
+    let d = DevelopSettings::default();
+    assert!(d.to_json().get("glow").is_none(), "the default Glow is not serialised");
+    // settings that never had Glow keep their JSON and hash (a legacy file re-saved gains no field)
+    let old = DevelopSettings::from_json(&legacy()).unwrap();
+    let resaved = DevelopSettings::from_json(&old.to_json()).unwrap();
+    assert!(old.to_json().get("glow").is_none());
+    assert_eq!(old.hash64(), resaved.hash64());
+    let mut g = d.clone();
+    g.glow.amount = 40.0;
+    assert_ne!(g.hash64(), d.hash64(), "turning Glow on retires the cached previews");
+    let back = DevelopSettings::from_json(&g.to_json()).unwrap();
+    assert_eq!(back.glow, g.glow, "Glow round-trips");
+    // a Glow named without its fields comes at their defaults, Amount alone
+    let partial = d.merged(&serde_json::json!({"glow": {"amount": 30.0}})).unwrap();
+    assert_eq!((partial.glow.amount, partial.glow.threshold, partial.glow.spread), (30.0, 50.0, 25.0));
+    assert_eq!(partial.glow.mode, GlowComposite::Screen);
+    // malformed Glow values are read leniently, not fatally
+    let hostile = d.merged(&serde_json::json!({"glow": {"amount": 1e308, "threshold": -1e308, "spread": 1e308, "gain": -1e308, "gamma": 1e308, "ratio": -1e308, "recovery": 1e308}})).unwrap();
+    assert_eq!(
+        (
+            hostile.glow.amount,
+            hostile.glow.threshold,
+            hostile.glow.spread,
+            hostile.glow.gain,
+            hostile.glow.gamma,
+            hostile.glow.ratio,
+            hostile.glow.recovery
+        ),
+        (100.0, 0.0, 100.0, 0.0, 100.0, 0.0, 100.0),
+        "the merge clamps Glow through its control specs"
+    );
+}

@@ -186,6 +186,6 @@ fn a_plugin_adds_a_button_that_runs_its_command() {
     let id = "quick:plugin:test.quickbar/go";
     assert!(widget(&h, id).is_some(), "the plug-in's button is in the bar");
     assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
-    let ran = h.step_until(Duration::from_secs(20), |h| h.app.ui.toasts.iter().any(|t| t.0 == "ran"));
+    let ran = h.step_until(Duration::from_secs(20), |h| h.app.ui.toasts.iter().any(|t| t.text == "ran"));
     assert!(ran, "the command ran and its message shows: {:?}", h.app.ui.toasts);
 }
