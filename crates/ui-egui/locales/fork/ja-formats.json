@@ -179,6 +179,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "マーケットプレイスのメンテナー {reviewer} が確認しました。",
   "Running on the processor: {}.": "プロセッサーで実行中：{}。",
   "Running on {}.": "{}で実行中。",
+  "Search online for “{q}”…": "「{q}」をオンラインで検索…",
   "Second graphics card not used: {why}": "2枚目のグラフィックカードは使われていません: {why}",
   "Select {n} look-alikes": "似た顔を{n}件選択",
   "Selected cell {n}": "選択中のセル {n}",

@@ -179,6 +179,7 @@
   "Reviewed by {reviewer}, a marketplace maintainer.": "Revisado por {reviewer}, responsable del mercado.",
   "Running on the processor: {}.": "Se ejecuta en el procesador: {}.",
   "Running on {}.": "Se ejecuta en {}.",
+  "Search online for “{q}”…": "Buscar «{q}» en línea…",
   "Second graphics card not used: {why}": "Segunda tarjeta gráfica sin usar: {why}",
   "Select {n} look-alikes": "Seleccionar {n} parecidas",
   "Selected cell {n}": "Celda seleccionada {n}",
