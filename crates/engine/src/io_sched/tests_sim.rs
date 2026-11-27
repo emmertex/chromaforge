@@ -1,8 +1,7 @@
 //! The controller against the spec's simulator (§7 "Controller (PR 5)"): the Rust port of the
 //! fluid model ([`super::sim`]) runs the product's controller ([`super::limits`]) on every
 //! scenario of §5.7.1 from starts 8, 4 and 1, and the results are compared with the Python
-//! simulator's run for run ([`super::sim_reference`]: `io_controller_sim.py` and
-//! `io_controller_seeds.py`, `python3 -I`).
+//! simulator's run for run ([`super::sim_reference`], generated with `python3 -I`).
 //!
 //! Tolerances: every run's completion time equals Python's within 1e-9 (relative; the port keeps
 //! the order of floating-point operations, so in practice they are identical), and every settled

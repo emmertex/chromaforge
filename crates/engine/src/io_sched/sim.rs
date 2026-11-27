@@ -1,7 +1,6 @@
 //! Test harness: the spec's fluid model of devices, links and admission (§5.7.1), translated from
-//! `io_controller_sim.py` (functions `simulate`, `jobs`, `flat_after`, `hdd`, `scenarios`,
-//! `noise_scenarios`) and `io_controller_seeds.py` (`wave`) in the lab repo `bulk-ops/`, read as
-//! a reference. The controller under test is the product's ([`super::limits::Controller`]).
+//! the spec's Python simulator (not in this repository: functions `simulate`, `jobs`, `flat_after`,
+//! `hdd`, `scenarios`, `noise_scenarios` and `wave`), read as a reference. The controller under test is the product's ([`super::limits::Controller`]).
 //!
 //! The scenarios' job sizes and noise come from Python's `random.Random` (MT19937 with Python's
 //! seeding: an int seed's 32-bit words; a str seed's bytes followed by their SHA-512, as one
@@ -555,7 +554,7 @@ pub(crate) fn noise_scenarios() -> Vec<Scenario> {
     out
 }
 
-/// `io_controller_seeds.py wave`: a hard drive best at 1 with another reader in bursts.
+/// The simulator's `wave`: a hard drive best at 1 with another reader in bursts.
 pub(crate) fn wave(period: f64, phase: f64) -> Scenario {
     one("wave", Device { wave_period: period, wave_lo: 0.3, wave_phase: phase, ..device("d", hdd(1, 200.0)) }, "hdd", jobs(2500, 30.0, 0.0, 1), &[1])
 }

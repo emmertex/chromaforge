@@ -1,4 +1,4 @@
-// Generated from io_controller_sim.py / io_controller_seeds.py runs (python3 -I, lab bulk-ops 3efee10).
+// Generated from runs of the spec's Python simulator (not in this repository; python3 -I).
 // Clean scenarios: (scenario index, start, completion s, settled limits in volume order).
 pub(super) const CLEAN: &[(usize, usize, f64, &[usize])] = &[
     (0, 8, 338.30000000004264, &[8]),

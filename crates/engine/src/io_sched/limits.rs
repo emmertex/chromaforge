@@ -2,9 +2,9 @@
 //! is learned from its own throughput and the process's, one volume probing at a time, each probe
 //! judged against fresh baselines (A-B-A).
 //!
-//! The rule, translated from the spec's simulator (`io_controller_sim.py`, class `Controller`, the
-//! `floor` up rule with no repeats; read as a reference, structure kept so the two can be compared
-//! line by line):
+//! The rule, translated from the spec's Python simulator (not in this repository: class `Controller`,
+//! the `floor` up rule with no repeats; read as a reference, structure kept so the two can be
+//! compared line by line):
 //! - a volume starts at today's limit (the calls' `workers()`), and follows it until its first
 //!   measurement ([`Controller::offer_start`]);
 //! - a **window** runs only while the volume is at its limit ([`Demand::AtLimit`]); it ends after
