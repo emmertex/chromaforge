@@ -484,3 +484,41 @@ fn the_cut_and_the_limit_under_the_cap() {
         assert_eq!(under_cap(own, cap, cut), want, "{own} under {cap}, cut {cut}");
     }
 }
+
+/// A volume's floor (PR 1's "at least 2" for a destination that several cards copy into): a down
+/// step stops at it (at, below and above the step's own result), a limit learned below a floor
+/// that rises comes up to it, and a down-probe measuring under it ends.
+#[test]
+fn the_floor_holds_a_down_step() {
+    for (start, floor, want) in [(2, 2, 2), (2, 1, 1), (4, 2, 2), (4, 3, 3), (4, 1, 2), (8, 2, 4)] {
+        let mut r = Rig::new(start);
+        r.ctl.set_floor(&V, floor);
+        // a failed up-probe, then the down step's baseline
+        for _ in 0..3 {
+            r.window(100.0, 1000.0);
+        }
+        r.window(100.0, 1000.0);
+        assert_eq!(r.limit(), want, "from {start} with floor {floor}");
+        assert_eq!(r.phase(), Some(if want == start { Phase::Hold } else { Phase::Probe }), "from {start} with floor {floor}");
+    }
+    let (mut r, kept) = Rig::down_probe(2, 100.0, 1000.0);
+    assert_eq!((kept, r.limit()), (Some(true), 1));
+    r.ctl.set_floor(&V, 2);
+    assert_eq!(r.limit(), 2);
+    assert!(r.ctl.take_events().iter().any(|e| matches!(e, Event::Floor { limit: 2, .. })));
+    // mid down-probe (2 -> 1): it ends, and the limit is the floor
+    let mut r = Rig::new(2);
+    for _ in 0..4 {
+        r.window(100.0, 1000.0);
+    }
+    assert_eq!((r.phase(), r.limit()), (Some(Phase::Probe), 1));
+    r.ctl.set_floor(&V, 2);
+    assert_eq!((r.phase(), r.limit(), r.ctl.token()), (Some(Phase::Hold), 2, None));
+    assert!(r.ctl.take_events().iter().any(|e| matches!(e, Event::Aborted { reason: AbortReason::Floor, .. })));
+    // a volume not measured yet starts at least at its floor
+    let mut ctl: Controller<&str> = Controller::new(32, 8);
+    ctl.offer_start(0.0, &V, 1);
+    ctl.set_floor(&V, 2);
+    ctl.offer_start(0.0, &V, 1);
+    assert_eq!(ctl.limit(&V), 2);
+}

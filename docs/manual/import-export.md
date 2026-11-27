@@ -17,7 +17,8 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
 - Apply a develop preset, a metadata preset, keywords, and add the photos to a collection.
 - Files on several drives, cards or shares are read side by side. Each drive starts with as many readers as before
   and then finds its own number: it gets more while more readers read it faster (an SSD, a RAID or a fast card), fewer
-  when they slow it down (a hard drive seeking between files), one drive trying a change at a time; what a drive
+  when they slow it down (a hard drive seeking between files), one drive trying a change at a time, never fewer than
+  two copies at once into a drive that several cards are copied into (one card that hangs can't hold it); what a drive
   learned is kept until it has had no files for 10 minutes. A drive that stops answering for about 30 s (longer after it was idle or the computer woke) has its files
   reported as "volume not responding" while the others are read; Cancel returns even while a drive hangs; a file that
   crashes the reader fails alone. Work reading the same drive at the same time (the review beside Reading originals,

@@ -18,9 +18,10 @@
 //! - a **probe** is a baseline at the current limit, a window at the probe limit, a second
 //!   baseline at the stored limit; up (`L + ceil(L/4)`, at most the cap) is kept when the probe
 //!   beats the baselines' mean by [`UP_GAIN`], is not below either baseline, and the process total
-//!   rose by at least [`TOTAL_SHARE`] of the volume's own gain; down (`L − max(1, L/2)`), tried
-//!   after a failed up, is kept when the total falls by no more than [`DOWN_TOTAL`] and the volume
-//!   keeps `1 − `[`DOWN_OWN`] of its rate; a kept step probes the same way again;
+//!   rose by at least [`TOTAL_SHARE`] of the volume's own gain; down (`L − max(1, L/2)`, never
+//!   below the volume's floor: [`Controller::set_floor`]), tried after a failed up, is kept when
+//!   the total falls by no more than [`DOWN_TOTAL`] and the volume keeps `1 − `[`DOWN_OWN`] of its
+//!   rate; a kept step probes the same way again;
 //! - a probe **aborts** (stored limit back, token released) when the volume runs out of work, a
 //!   window is discarded, or a window can't complete within `max(90 s, 3 × the last window)`;
 //! - **hold** after a failed down or an abort: [`HOLD_FIRST`] windows, doubling to [`HOLD_MAX`];
@@ -147,6 +148,8 @@ pub(crate) enum AbortReason {
     Discarded,
     /// A window moved no byte (nothing to judge).
     NoBytes,
+    /// The volume's floor rose above the limit being measured.
+    Floor,
 }
 
 /// What the controller did, for the profile output and the tests.
@@ -166,6 +169,8 @@ pub(crate) enum Event<K> {
     Aborted { vol: K, reason: AbortReason, limit: usize },
     /// It holds for `windows` windows at `limit`.
     Hold { vol: K, limit: usize, windows: u32 },
+    /// Its floor rose above its limit: the limit is now `limit`.
+    Floor { vol: K, limit: usize },
     /// Forgotten after [`FORGET`] with no jobs.
     Forgotten { vol: K, limit: usize },
 }
@@ -182,6 +187,8 @@ struct VolCtl {
     limit: usize,
     /// Its start limit (the calls' `workers()` when it was first measured).
     start: usize,
+    /// It is never stepped down below this ([`Controller::set_floor`]).
+    floor: usize,
     /// Measured at least once: it no longer follows its calls' `workers()`.
     learned: bool,
     phase: Phase,
@@ -206,6 +213,7 @@ impl VolCtl {
         VolCtl {
             limit,
             start: limit,
+            floor: 1,
             learned: false,
             phase: Phase::Base1,
             up: true,
@@ -274,10 +282,11 @@ impl<K: Clone + Eq + Hash> Controller<K> {
 
     /// Volume `k`'s calls run `hint` jobs at once today (PR 1's `workers()`): a volume not yet
     /// measured takes that limit (so a short call, or one too short to measure anything, runs as
-    /// before); a measured one keeps what it learned.
+    /// before); a measured one keeps what it learned. Never below the volume's floor.
     pub(crate) fn offer_start(&mut self, now: f64, k: &K, hint: usize) {
         let hint = hint.clamp(1, self.cap);
         let s = self.vols.entry(k.clone()).or_insert_with(|| VolCtl::new(hint, now));
+        let hint = hint.max(s.floor);
         if !s.learned && s.limit != hint {
             s.limit = hint;
             s.start = hint;
@@ -310,8 +319,34 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         l.saturating_add(l.div_ceil(4)).min(self.cap)
     }
 
-    fn down(l: usize) -> usize {
-        l.saturating_sub((l / 2).max(1)).max(1)
+    /// `L − max(1, L/2)`, at least 1, and not below `floor` (nor above `l`).
+    fn down(l: usize, floor: usize) -> usize {
+        l.saturating_sub((l / 2).max(1)).max(1).max(floor.min(l))
+    }
+
+    /// Volume `k` is never stepped down below `floor` (clamped to 1..=cap), and a limit below it
+    /// is raised to it (a probe measuring under it ends first). The scheduler sets 2 for a volume
+    /// every job needs while another is held to one fewer (PR 1's cap, §5.3: a hung card's copy
+    /// never holds the only slot of the destination another card copies into), else 1. A volume
+    /// it doesn't know is left alone.
+    pub(crate) fn set_floor(&mut self, k: &K, floor: usize) {
+        let floor = floor.clamp(1, self.cap);
+        let Some(mut s) = self.vols.remove(k) else { return };
+        if s.floor != floor {
+            s.floor = floor;
+            if s.limit < floor && self.probing(k, &s) {
+                self.abort(k, &mut s, AbortReason::Floor);
+            }
+            if s.limit < floor {
+                s.limit = floor;
+                s.win = None;
+                // (one not measured yet takes its start, at least the floor, from offer_start)
+                if s.learned {
+                    self.events.push(Event::Floor { vol: k.clone(), limit: floor });
+                }
+            }
+        }
+        self.vols.insert(k.clone(), s);
     }
 
     fn probing(&self, k: &K, s: &VolCtl) -> bool {
@@ -410,11 +445,11 @@ impl<K: Clone + Eq + Hash> Controller<K> {
                 s.learned = true;
                 s.base1 = rate;
                 s.base1_total = total;
-                s.target = if s.up { self.up(s.limit) } else { Self::down(s.limit) };
+                s.target = if s.up { self.up(s.limit) } else { Self::down(s.limit, s.floor) };
                 if s.target == s.limit && s.up {
                     // (at the cap a step up can't happen: the up-probe counts as failed)
                     s.up = false;
-                    s.target = Self::down(s.limit);
+                    s.target = Self::down(s.limit, s.floor);
                 }
                 if s.target == s.limit {
                     return self.finish(k, s);

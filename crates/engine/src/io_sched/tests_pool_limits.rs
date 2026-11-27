@@ -336,6 +336,26 @@ fn a_destination_its_card_cant_fill_is_not_at_its_limit() {
     assert_eq!(super::tests::ok_count(&call.join()), 2000);
 }
 
+/// A destination that two cards copy into keeps at least 2 running (PR 1's cap): here one copy
+/// finishes each half second whatever the limit, so a step down to 1 costs nothing measurable,
+/// but a hung card's copy would then hold the destination's only slot.
+#[test]
+fn a_destination_of_two_cards_keeps_at_least_two() {
+    let h = H::new();
+    let dev = Arc::new(Device::default());
+    let mut copies = jobs("/a", Some("/c"), 1000, &dev, false);
+    copies.extend(jobs("/b", Some("/c"), 1000, &dev, false));
+    let call = start(&h, copies, 2);
+    for _ in 0..80 {
+        step_on(&h, &call, &dev, &["/c"], |w| w.min(1));
+    }
+    let c = learned(&h, "/c");
+    assert!(c.windows >= 4, "an up-probe was judged and a down step tried: {c:?}");
+    assert!(c.limit >= 2, "{c:?}");
+    dev.finish(usize::MAX / 2);
+    assert_eq!(super::tests::ok_count(&call.join()), 2000);
+}
+
 /// A window whose jobs wait at the work gate (memory, not the volume, holds them up) is discarded:
 /// the limit stays.
 #[test]

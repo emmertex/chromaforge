@@ -1224,12 +1224,14 @@ impl Sched {
             let busy = pv.active > 0;
             self.ctl.note_busy(t, &key, busy);
             if busy {
-                // (a volume not measured yet runs at today's limit: its calls' `workers()`, and at
-                // least 2 for a volume not held to one fewer while another is, as PR 1's cap, so a
-                // hung card's copy never holds the only slot of the SSD the other card copies into)
+                // (at least 2 for a volume not held to one fewer while another is, as PR 1's cap,
+                // so a hung card's copy never holds the only slot of the SSD the other card copies
+                // into: a floor for what it learns too; a volume not measured yet runs at today's
+                // limit, its calls' `workers()`)
+                let floor = if some_cut && !limits::cut(pv.active, total) { 2 } else { 1 };
+                self.ctl.set_floor(&key, floor);
                 let workers = self.calls.values().filter(|c| c.vols.get(v).is_some_and(|cv| cv.active > 0)).map(|c| c.workers).max().unwrap_or(1);
-                let hint = if some_cut && !limits::cut(pv.active, total) { workers.max(2) } else { workers };
-                self.ctl.offer_start(t, &key, hint);
+                self.ctl.offer_start(t, &key, workers);
             }
         }
     }
@@ -1384,10 +1386,14 @@ pub(crate) fn describe(e: &Event<VolumeKey>) -> String {
                 AbortReason::Deadline => "window could not complete",
                 AbortReason::Discarded => "window discarded",
                 AbortReason::NoBytes => "window moved no bytes",
+                AbortReason::Floor => "its floor rose",
             };
             format!("io-limit {vol}: probe ended ({why}): limit {limit}")
         }
         Event::Hold { vol, limit, windows } => format!("io-limit {vol}: holds at limit {limit} for {windows} windows"),
+        Event::Floor { vol, limit } => {
+            format!("io-limit {vol}: raised to {limit}: a destination of copies from several volumes keeps at least {limit}")
+        }
         Event::Forgotten { vol, limit } => format!("io-limit {vol}: forgotten after 10 minutes with no jobs (was {limit})"),
     }
 }
