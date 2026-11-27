@@ -235,11 +235,20 @@ impl VolCtl {
 /// Every volume's limit and where it is in its probe cycle; the one probing token.
 pub(crate) struct Controller<K> {
     vols: HashMap<K, VolCtl>,
+    /// Everything but the volumes (a tick steps one volume's state against it, in place).
+    st: Ctl<K>,
+}
+
+/// The controller's state shared by its volumes.
+struct Ctl<K> {
     token: Option<K>,
     cap: usize,
     /// The limit of a volume not seen yet.
     start: usize,
     events: Vec<Event<K>>,
+    /// Bumped whenever what [`Controller::limits`], [`Controller::raised`] or
+    /// [`Controller::token`] show may have changed, and on every event.
+    generation: u64,
 }
 
 impl<K: Clone + Eq + Hash> Controller<K> {
@@ -247,12 +256,12 @@ impl<K: Clone + Eq + Hash> Controller<K> {
     /// offers another ([`Controller::offer_start`]).
     pub(crate) fn new(cap: usize, start: usize) -> Controller<K> {
         let cap = cap.max(1);
-        Controller { vols: HashMap::new(), token: None, cap, start: start.clamp(1, cap), events: Vec::new() }
+        Controller { vols: HashMap::new(), st: Ctl { token: None, cap, start: start.clamp(1, cap), events: Vec::new(), generation: 0 } }
     }
 
     /// Volume `k`'s limit now.
     pub(crate) fn limit(&self, k: &K) -> usize {
-        self.vols.get(k).map_or(self.start, |s| s.limit)
+        self.vols.get(k).map_or(self.st.start, |s| s.limit)
     }
 
     /// How far volume `k`'s limit is above its start (the import's read-ahead grows with it).
@@ -267,7 +276,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
 
     /// The volume probing (holding the token).
     pub(crate) fn token(&self) -> Option<&K> {
-        self.token.as_ref()
+        self.st.token.as_ref()
     }
 
     /// The volumes it knows, with their limits.
@@ -275,23 +284,64 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         self.vols.iter().map(|(k, s)| (k, s.limit))
     }
 
+    /// Changes so far to what [`Controller::limits`], [`Controller::raised`] and
+    /// [`Controller::token`] show, and events (an unchanged value: nothing new to publish).
+    pub(crate) fn generation(&self) -> u64 {
+        self.st.generation
+    }
+
     /// What it did since the last call.
     pub(crate) fn take_events(&mut self) -> Vec<Event<K>> {
-        std::mem::take(&mut self.events)
+        std::mem::take(&mut self.st.events)
     }
 
     /// Volume `k`'s calls run `hint` jobs at once today (PR 1's `workers()`): a volume not yet
     /// measured takes that limit (so a short call, or one too short to measure anything, runs as
     /// before); a measured one keeps what it learned. Never below the volume's floor.
     pub(crate) fn offer_start(&mut self, now: f64, k: &K, hint: usize) {
-        let hint = hint.clamp(1, self.cap);
-        let s = self.vols.entry(k.clone()).or_insert_with(|| VolCtl::new(hint, now));
+        let hint = hint.clamp(1, self.st.cap);
+        if !self.vols.contains_key(k) {
+            self.vols.insert(k.clone(), VolCtl::new(hint, now));
+            self.st.generation += 1;
+        }
+        let Some(s) = self.vols.get_mut(k) else { return };
         let hint = hint.max(s.floor);
         if !s.learned && s.limit != hint {
             s.limit = hint;
             s.start = hint;
             // (its window measured another limit)
             s.win = None;
+            self.st.generation += 1;
+        }
+    }
+
+    /// Volume `k` is never stepped down below `floor` (clamped to 1..=cap), and a limit below it
+    /// is raised to it (a probe measuring under it ends first). The scheduler sets 2 for a volume
+    /// every job needs while another is held to one fewer (PR 1's cap, §5.3: a hung card's copy
+    /// never holds the only slot of the destination another card copies into), else 1. A volume
+    /// it doesn't know is left alone.
+    pub(crate) fn set_floor(&mut self, k: &K, floor: usize) {
+        let floor = floor.clamp(1, self.st.cap);
+        let Some(s) = self.vols.get_mut(k) else { return };
+        if s.floor == floor {
+            return;
+        }
+        s.floor = floor;
+        // (its published floor-raised limit: republished)
+        self.st.generation += 1;
+        if s.limit >= floor {
+            return;
+        }
+        if self.st.probing(k, s) {
+            self.st.abort(k, s, AbortReason::Floor);
+        }
+        if s.limit < floor {
+            s.limit = floor;
+            s.win = None;
+            // (one not measured yet takes its start, at least the floor, from offer_start)
+            if s.learned {
+                self.st.push(Event::Floor { vol: k.clone(), limit: floor });
+            }
         }
     }
 
@@ -303,15 +353,39 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         {
             let limit = s.limit;
             self.vols.remove(k);
-            if self.token.as_ref() == Some(k) {
-                self.token = None;
+            if self.st.token.as_ref() == Some(k) {
+                self.st.token = None;
             }
-            self.events.push(Event::Forgotten { vol: k.clone(), limit });
+            self.st.push(Event::Forgotten { vol: k.clone(), limit });
         }
         if busy {
-            let start = self.start;
-            self.vols.entry(k.clone()).or_insert_with(|| VolCtl::new(start, now)).last_busy = now;
+            match self.vols.get_mut(k) {
+                Some(s) => s.last_busy = now,
+                None => {
+                    self.vols.insert(k.clone(), VolCtl::new(self.st.start, now));
+                    self.st.generation += 1;
+                }
+            }
         }
+    }
+
+    /// One tick for volume `k` at `now`: where it stands, its counters, the process's total bytes.
+    pub(crate) fn tick(&mut self, now: f64, k: &K, demand: Demand, c: Counters, total: f64) {
+        if !self.vols.contains_key(k) {
+            self.vols.insert(k.clone(), VolCtl::new(self.st.start, now));
+            self.st.generation += 1;
+        }
+        // (stepped in place: the shared state is a separate field)
+        if let Some(s) = self.vols.get_mut(k) {
+            self.st.step(now, k, s, demand, c, total);
+        }
+    }
+}
+
+impl<K: Clone + Eq + Hash> Ctl<K> {
+    fn push(&mut self, e: Event<K>) {
+        self.generation += 1;
+        self.events.push(e);
     }
 
     fn up(&self, l: usize) -> usize {
@@ -324,44 +398,8 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         l.saturating_sub((l / 2).max(1)).max(1).max(floor.min(l))
     }
 
-    /// Volume `k` is never stepped down below `floor` (clamped to 1..=cap), and a limit below it
-    /// is raised to it (a probe measuring under it ends first). The scheduler sets 2 for a volume
-    /// every job needs while another is held to one fewer (PR 1's cap, §5.3: a hung card's copy
-    /// never holds the only slot of the destination another card copies into), else 1. A volume
-    /// it doesn't know is left alone.
-    pub(crate) fn set_floor(&mut self, k: &K, floor: usize) {
-        let floor = floor.clamp(1, self.cap);
-        let Some(mut s) = self.vols.remove(k) else { return };
-        if s.floor != floor {
-            s.floor = floor;
-            if s.limit < floor && self.probing(k, &s) {
-                self.abort(k, &mut s, AbortReason::Floor);
-            }
-            if s.limit < floor {
-                s.limit = floor;
-                s.win = None;
-                // (one not measured yet takes its start, at least the floor, from offer_start)
-                if s.learned {
-                    self.events.push(Event::Floor { vol: k.clone(), limit: floor });
-                }
-            }
-        }
-        self.vols.insert(k.clone(), s);
-    }
-
     fn probing(&self, k: &K, s: &VolCtl) -> bool {
         self.token.as_ref() == Some(k) && matches!(s.phase, Phase::Base1 | Phase::Probe | Phase::Base2)
-    }
-
-    /// One tick for volume `k` at `now`: where it stands, its counters, the process's total bytes.
-    pub(crate) fn tick(&mut self, now: f64, k: &K, demand: Demand, c: Counters, total: f64) {
-        let start = self.start;
-        let mut s = match self.vols.remove(k) {
-            Some(s) => s,
-            None => VolCtl::new(start, now),
-        };
-        self.step(now, k, &mut s, demand, c, total);
-        self.vols.insert(k.clone(), s);
     }
 
     fn step(&mut self, now: f64, k: &K, s: &mut VolCtl, demand: Demand, c: Counters, total: f64) {
@@ -397,6 +435,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
             if s.phase == Phase::Base1 && self.token.is_none() {
                 // (taken before the first baseline, so no baseline overlaps another's probe)
                 self.token = Some(k.clone());
+                self.generation += 1;
             }
             s.win = Some(Window { t0: now, at: c, total0: total });
             return;
@@ -414,7 +453,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         s.last_window = span;
         let (busy, gate) = (c.busy - w.at.busy, c.gate - w.at.gate);
         if gate > GATE_SHARE * busy {
-            self.events.push(Event::Discarded { vol: k.clone(), limit: s.limit, gate: if busy > 0.0 { gate / busy } else { 1.0 } });
+            self.push(Event::Discarded { vol: k.clone(), limit: s.limit, gate: if busy > 0.0 { gate / busy } else { 1.0 } });
             if self.probing(k, s) {
                 self.abort(k, s, AbortReason::Discarded);
             }
@@ -422,13 +461,13 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         }
         if c.bytes <= w.at.bytes {
             // (no byte moved: every rate would be 0, and 0 ≥ 0 passes every up and down rule)
-            self.events.push(Event::NoBytes { vol: k.clone(), limit: s.limit, jobs });
+            self.push(Event::NoBytes { vol: k.clone(), limit: s.limit, jobs });
             if self.probing(k, s) {
                 self.abort(k, s, AbortReason::NoBytes);
             }
             return;
         }
-        self.events.push(Event::Window { vol: k.clone(), phase: s.phase, limit: s.limit, rate, total: tot, span, jobs });
+        self.push(Event::Window { vol: k.clone(), phase: s.phase, limit: s.limit, rate, total: tot, span, jobs });
         self.window_done(k, s, rate, tot);
     }
 
@@ -454,7 +493,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
                 if s.target == s.limit {
                     return self.finish(k, s);
                 }
-                self.events.push(Event::Probe { vol: k.clone(), from: s.limit, to: s.target });
+                self.push(Event::Probe { vol: k.clone(), from: s.limit, to: s.target });
                 s.old = s.limit;
                 s.limit = s.target;
                 s.phase = Phase::Probe;
@@ -478,7 +517,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
                     // volume keeps most of its rate: no starving one volume on a shared link)
                     s.probe_total >= base_total * (1.0 - DOWN_TOTAL) && s.probe >= mean * (1.0 - DOWN_OWN)
                 };
-                self.events.push(Event::Decided {
+                self.push(Event::Decided {
                     vol: k.clone(),
                     up: s.up,
                     from: s.limit,
@@ -513,7 +552,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
             s.limit = s.old;
         }
         s.win = None;
-        self.events.push(Event::Aborted { vol: k.clone(), reason, limit: s.limit });
+        self.push(Event::Aborted { vol: k.clone(), reason, limit: s.limit });
         self.finish(k, s);
     }
 
@@ -521,7 +560,7 @@ impl<K: Clone + Eq + Hash> Controller<K> {
         s.phase = Phase::Hold;
         s.hold_left = s.hold_len;
         s.hold_len = s.hold_len.saturating_mul(2).min(HOLD_MAX);
-        self.events.push(Event::Hold { vol: k.clone(), limit: s.limit, windows: s.hold_left });
+        self.push(Event::Hold { vol: k.clone(), limit: s.limit, windows: s.hold_left });
         if self.token.as_ref() == Some(k) {
             self.token = None;
         }

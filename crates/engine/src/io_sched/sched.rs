@@ -393,6 +393,10 @@ pub(crate) struct Sched {
     profile: bool,
     /// Windows completed and discarded per volume (published with the limits).
     windows: HashMap<VolumeKey, (u64, u64)>,
+    /// The controller's generation last published ([`Controller::generation`]).
+    published: Option<u64>,
+    /// A submit came in: the next step offers its volumes' start limits before admission.
+    starts_due: bool,
 }
 
 impl Sched {
@@ -426,6 +430,8 @@ impl Sched {
             measured_total: 0,
             profile: lcc_pipeline::profiling(),
             windows: HashMap::new(),
+            published: None,
+            starts_due: false,
         }
     }
 
@@ -474,19 +480,20 @@ impl Sched {
             log::info!("io: the computer woke from sleep: every volume gets a grace period");
             self.shared.note_wake(now);
         }
-        // (every step, before the tick and admission: newly submitted work starts at its volume's
-        // starting limit, not the controller's default)
-        if !self.calls.is_empty() {
+        // (a call with every outcome is forgotten below: the tick sees its volumes go idle first,
+        // so what the controller learned, and the probe it held, are settled and published)
+        let ending = self.calls.values().any(|c| c.closed && c.remaining == 0);
+        let ticking = !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || ending || self.last_tick.elapsed() >= self.tick);
+        // (before admission on a step that took a submit, and at every tick: newly submitted work
+        // starts at its volume's starting limit, not the controller's default; the floors and the
+        // 10-minute forget follow the volumes' work at the tick's pace)
+        if !self.calls.is_empty() && (std::mem::take(&mut self.starts_due) || ticking) {
             self.offer_starts(now);
         }
         // (a late step's time was the sleep, not the volumes' silence)
         if late || self.calls.is_empty() {
             self.since = now;
         }
-        // (a call with every outcome is forgotten below: the tick sees its volumes go idle first,
-        // so what the controller learned, and the probe it held, are settled and published)
-        let ending = self.calls.values().any(|c| c.closed && c.remaining == 0);
-        let ticking = !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || ending || self.last_tick.elapsed() >= self.tick);
         if ticking {
             self.last_tick = std::time::Instant::now();
             self.tick(now, now.saturating_sub(self.since));
@@ -521,7 +528,10 @@ impl Sched {
                 };
                 self.calls.insert(call, state);
             }
-            Msg::Submit { call, jobs } => self.submit(call, jobs),
+            Msg::Submit { call, jobs } => {
+                self.submit(call, jobs);
+                self.starts_due = true;
+            }
             Msg::Close { call } => {
                 if let Some(c) = self.calls.get_mut(&call) {
                     c.closed = true;
@@ -671,6 +681,8 @@ impl Sched {
     }
 
     fn admit(&mut self, now: u64) {
+        // (the tick runs once per period, not every step: this is what stops a linked cancel's
+        // queued jobs on the steps between ticks)
         self.take_cancels();
         // blocked volumes: hold while their running jobs may show they work, else one recovery
         // job first (or fail their queued jobs at once when none may run)
@@ -1207,12 +1219,10 @@ impl Sched {
         }
     }
 
-    /// The controller's tick (§5.7): every volume's demand and counters; what it learned is
-    /// published for the import's read-ahead and printed under `<PREFIX>_PROFILE`.
-    /// Each volume's starting limit, before admission, on every step (the bookkeeping tick, which
-    /// measures and changes limits, runs only once per tick period): a volume with jobs that isn't
-    /// measured yet takes its calls' `workers()`, so newly submitted work never starts under the
-    /// controller's default; one idle for [`super::limits::FORGET`] is forgotten first.
+    /// Each volume's starting limit and floor, before admission on a step that took a submit and
+    /// at every tick: a volume with jobs that isn't measured yet takes its calls' `workers()`, so
+    /// newly submitted work never starts under the controller's default; one idle for
+    /// [`super::limits::FORGET`] is forgotten first.
     fn offer_starts(&mut self, now: u64) {
         let t = secs(now);
         let total = self.total();
@@ -1236,6 +1246,8 @@ impl Sched {
         }
     }
 
+    /// The controller's tick (§5.7), after admission: every volume's demand and counters; what it
+    /// learned is published for the import's read-ahead and printed under `<PREFIX>_PROFILE`.
     fn adapt(&mut self, now: u64) {
         let t = secs(now);
         let total = self.total();
@@ -1270,6 +1282,13 @@ impl Sched {
             let line = describe(&e);
             self.report(&line);
         }
+        // (published only when something it shows changed: limits change at window boundaries,
+        // seconds apart, and the planning thread takes the same lock)
+        let generation = self.ctl.generation();
+        if self.published == Some(generation) {
+            return;
+        }
+        self.published = Some(generation);
         let learned = self
             .ctl
             .limits()
