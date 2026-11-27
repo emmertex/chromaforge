@@ -14,7 +14,11 @@ use crate::headless::Headless;
 use crate::render::Slot;
 use crate::{LccApp, Services};
 
-const T: Duration = Duration::from_secs(20);
+/// How long a wait for something that must come (a render, a picture) may take before the test
+/// gives up. Not a budget: every wait below ends as soon as what it waits for is there, and a
+/// render takes seconds on a loaded 4-core machine running the suite in parallel. Only a hang
+/// reaches it.
+const T: Duration = Duration::from_secs(180);
 
 /// A headless app with `n` raws (camera JPEG instant, raw decodes taking `decode` each).
 fn raws(n: u64, decode: Duration) -> Headless {
@@ -115,7 +119,7 @@ fn coming_back_to_an_edited_or_synced_photo_shows_its_edit_not_the_camera_jpeg()
         // away to an unedited photo (its camera JPEG is fine there), and back
         exec(&mut h, "library.next", json!({}));
         let mut seen = Vec::new();
-        frames(&mut h, Duration::from_millis(600), &mut seen, |_| false);
+        assert!(frames(&mut h, T, &mut seen, |h| h.app.loupe_shown.is_some_and(|(p, s)| p == PhotoId(4) && s != "none")), "away on photo 4");
         exec(&mut h, "library.previous", json!({}));
         seen.clear();
         assert!(frames(&mut h, T, &mut seen, |h| rendered(h, id) || h.app.loupe_shown == Some((id, "cached"))));
@@ -133,7 +137,7 @@ fn coming_back_to_an_edited_or_synced_photo_shows_its_edit_not_the_camera_jpeg()
         let id = PhotoId(3);
         exec(&mut h, "library.next", json!({}));
         let mut seen = Vec::new();
-        frames(&mut h, Duration::from_millis(600), &mut seen, |_| false);
+        assert!(frames(&mut h, T, &mut seen, |h| h.app.loupe_shown.is_some_and(|(p, s)| p == PhotoId(4) && s != "none")), "away on photo 4");
         // synced from photo 4: another exposure for photo 3
         let mut d = (*h.app.session.catalog.photo(id).unwrap().develop).clone();
         d.light.exposure = -0.7;
@@ -161,7 +165,10 @@ fn an_unedited_raw_still_shows_its_camera_jpeg_first() {
     let r = h.request("ui.set", json!({"view": "detail"}), T);
     assert_eq!(r["ok"], true, "{r}");
     let mut seen = Vec::new();
-    assert!(frames(&mut h, Duration::from_secs(3), &mut seen, |h| h.app.loupe_shown == Some((PhotoId(2), "embedded"))), "{seen:?}");
+    // (until its first picture, whichever comes: on a loaded machine the render may beat a wait
+    // for the camera JPEG alone, and then fail only after the whole wait)
+    assert!(frames(&mut h, T, &mut seen, |h| h.app.loupe_shown.is_some_and(|(p, s)| p == PhotoId(2) && s != "none")), "{seen:?}");
+    assert_eq!(h.app.loupe_shown, Some((PhotoId(2), "embedded")), "its first picture: {seen:?}");
 }
 
 /// An edited raw that was never rendered (edited by a preset at import, synced before it was ever
@@ -182,12 +189,13 @@ fn an_edited_raw_never_rendered_shows_a_draft_of_its_edit_at_once() {
     let mut seen = Vec::new();
     // (its draft, or its grid thumbnail when that is made first on a busy machine: the loupe draws a
     // thumbnail only when it shows the edit, never the camera JPEG)
-    let edit_shown = |h: &Headless| matches!(h.app.loupe_shown, Some((PhotoId(2), "draft" | "thumb")));
-    // (at once on the processor; a first GPU render can take its device set-up time)
-    assert!(frames(&mut h, T, &mut seen, edit_shown), "{seen:?}");
+    // (at once on the processor; a first GPU render can take its device set-up time: wait for its
+    // first picture, whichever comes, then say which it was)
+    assert!(frames(&mut h, T, &mut seen, |h| h.app.loupe_shown.is_some_and(|(p, s)| p == PhotoId(2) && s != "none")), "{seen:?}");
+    assert!(matches!(h.app.loupe_shown, Some((PhotoId(2), "draft" | "thumb"))), "its first picture: {seen:?}");
     assert!(!seen.iter().any(|(_, s)| *s == "embedded"), "the camera JPEG: {seen:?}");
     // the filmstrip cells too: drafts, no camera JPEG
-    let film = frames(&mut h, Duration::from_secs(2), &mut seen, |h| (1..=6).all(|id| h.app.renderer.thumb(PhotoId(id)).is_some()));
+    let film = frames(&mut h, T, &mut seen, |h| (1..=6).all(|id| h.app.renderer.thumb(PhotoId(id)).is_some()));
     assert!(film, "filmstrip cells empty");
     for id in 1..=6 {
         if let Some(t) = h.app.renderer.thumb(PhotoId(id)) {
