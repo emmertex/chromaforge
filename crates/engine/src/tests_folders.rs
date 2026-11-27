@@ -925,6 +925,7 @@ fn a_date_folder_named_with_other_letter_case_is_renamed_and_its_photos_follow()
     let shouted = dir.0.join("LIB").join("Originals").join("2026-10-16");
     if !shouted.is_dir() {
         lcc_testkit::skip!(System, "this volume tells letter case apart");
+        return;
     }
     let r = s.execute("folder.rename", &json!({"path": shouted.to_string_lossy(), "name": "Beach"})).unwrap();
     let moved = lib.join("Originals").join("Beach");
