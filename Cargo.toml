@@ -103,6 +103,7 @@ getrandom = "0.3"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; CLAUDE.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+rustfft = "6"
 winapi-util = "0.1" # lcc-catalog reads a file's volume serial number and file index with it on Windows
 proptest = "1"
 bytemuck = { version = "1", features = ["derive"] }
