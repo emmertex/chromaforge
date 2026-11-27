@@ -3,8 +3,7 @@
 //!
 //! Both come from Microsoft's own builds on PyPI (`onnxruntime`, `onnxruntime-ep-webgpu`; MIT, Dawn inside the
 //! plug-in BSD-3-Clause, DXC on Windows NCSA): each wheel is pinned by URL and SHA-256, downloaded once into
-//! `target/onnxruntime/`, and only the listed files are taken out of it (never the Python modules, never the preview
-//! D3D12 Agility SDK the Windows plug-in wheel carries). The licence texts go next to the libraries.
+//! `target/onnxruntime/`, and only the listed files are taken out of it (never the Python modules). The licence texts go next to the libraries.
 //!
 //! A platform with no pinned build (riscv64, FreeBSD) prints a note and succeeds: the app then runs its pure-Rust
 //! runners, as it does whenever the library is missing.
@@ -15,8 +14,10 @@ use std::process::Command;
 
 /// The pinned ONNX Runtime version (keep in step with `lcc-onnxrt`'s `ort` API level, at least 1.24).
 const ORT_VERSION: &str = "1.32.0";
-/// The pinned WebGPU plug-in version (needs ONNX Runtime 1.24.4 or later).
-const WEBGPU_VERSION: &str = "0.6.0";
+/// The pinned WebGPU plug-in version (needs ONNX Runtime 1.24.4 or later). Not 0.6.0: its Windows build needs the
+/// preview D3D12 Agility SDK, and without it ONNX Runtime ends the process while it builds a session (a fast-fail,
+/// out of `catch_unwind`'s reach); with it, DXC fails to compile Dawn's shaders. 0.5.0 runs on D3D12 as it is.
+const WEBGPU_VERSION: &str = "0.5.0";
 
 /// One wheel and the files taken from it: (member in the wheel, file name written).
 struct Wheel {
@@ -46,8 +47,8 @@ const PLATFORMS: &[Platform] = &[
             ],
         },
         webgpu: Wheel {
-            url: "https://files.pythonhosted.org/packages/0e/12/25312b2220bdf969a6cdc937e0faad9d6456cadbd602e88bced36f1011af/onnxruntime_ep_webgpu-0.6.0-py3-none-win_amd64.whl",
-            sha256: "00853e242f74f4b9072e1620bce9222547c2f988265eb674b5749680c8d62fb9",
+            url: "https://files.pythonhosted.org/packages/7e/36/9935a5b7851099da3da81d9e04f3021bcc61a5a1039e6c098cf08e5c6607/onnxruntime_ep_webgpu-0.5.0-py3-none-win_amd64.whl",
+            sha256: "713b94e7b4ce5979a356e19b926ecba2c0d4ba24f857ef4bbb11c75c37cc5b61",
             files: &[
                 ("onnxruntime_ep_webgpu/onnxruntime_providers_webgpu.dll", "onnxruntime_providers_webgpu.dll"),
                 ("onnxruntime_ep_webgpu/dxcompiler.dll", "dxcompiler.dll"),
@@ -65,8 +66,8 @@ const PLATFORMS: &[Platform] = &[
             ],
         },
         webgpu: Wheel {
-            url: "https://files.pythonhosted.org/packages/22/bf/4633c7635bdc690ac881ac6a7ae56975721753aad3742d2b5a750d77575f/onnxruntime_ep_webgpu-0.6.0-py3-none-win_arm64.whl",
-            sha256: "f7a32f04edd5cb9d2b43f60f64d6f186ac93f32029b066f243c04b6e4bac24a3",
+            url: "https://files.pythonhosted.org/packages/b1/f2/f62eb9fde3b790507da4e1c4a3f366ea8e69b3b424fe70e97c898dd8f9c2/onnxruntime_ep_webgpu-0.5.0-py3-none-win_arm64.whl",
+            sha256: "928b3849a52403b5ccee3264a721a104c0fa3ebebb1e725d486e9dc6611f848e",
             files: &[
                 ("onnxruntime_ep_webgpu/onnxruntime_providers_webgpu.dll", "onnxruntime_providers_webgpu.dll"),
                 ("onnxruntime_ep_webgpu/dxcompiler.dll", "dxcompiler.dll"),
@@ -81,8 +82,8 @@ const PLATFORMS: &[Platform] = &[
             files: &[("onnxruntime/capi/libonnxruntime.so.1.32.0", "libonnxruntime.so")],
         },
         webgpu: Wheel {
-            url: "https://files.pythonhosted.org/packages/98/57/656e7b4071d754674fc9f749bcd9dc0229efc685b084ca71932a34d7cad4/onnxruntime_ep_webgpu-0.6.0-py3-none-manylinux_2_28_x86_64.whl",
-            sha256: "791d991f2779ae23cdd273d4689413e798080cfa4b736012ec53da8cd14a7c79",
+            url: "https://files.pythonhosted.org/packages/e2/1d/ac0ccbe8bd6435b6e1946fea964790ffa3d73ee2513775e90958fd6b860e/onnxruntime_ep_webgpu-0.5.0-py3-none-manylinux_2_28_x86_64.whl",
+            sha256: "b6baa3e223d9a679023388b1179e5597b6bc0d282ba72f2afe38d46ef37deeb4",
             files: &[("onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.so", "libonnxruntime_providers_webgpu.so")],
         },
     },
@@ -94,8 +95,8 @@ const PLATFORMS: &[Platform] = &[
             files: &[("onnxruntime/capi/libonnxruntime.so.1.32.0", "libonnxruntime.so")],
         },
         webgpu: Wheel {
-            url: "https://files.pythonhosted.org/packages/0b/03/9386f307447c5805774f8a870bd1eb0e853db0848a3213d419e17f6f113c/onnxruntime_ep_webgpu-0.6.0-py3-none-manylinux_2_28_aarch64.whl",
-            sha256: "974d8d2cdc280bdb962ef19a306e5bd98ed17bfdfd40c8f540010fb48283740a",
+            url: "https://files.pythonhosted.org/packages/93/ca/71f305dc822d62ef33d7f3862ba7058a0099086112d9ab679d8252e7b77d/onnxruntime_ep_webgpu-0.5.0-py3-none-manylinux_2_28_aarch64.whl",
+            sha256: "d39e0769f8b2ff7a4b04a492ef882510474d52cf722408d393569b36558b2829",
             files: &[("onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.so", "libonnxruntime_providers_webgpu.so")],
         },
     },
@@ -107,8 +108,8 @@ const PLATFORMS: &[Platform] = &[
             files: &[("onnxruntime/capi/libonnxruntime.1.32.0.dylib", "libonnxruntime.dylib")],
         },
         webgpu: Wheel {
-            url: "https://files.pythonhosted.org/packages/b7/36/87398c782af00f7f49efbff0b2e17f650b22788939e9b440a3e576ff73db/onnxruntime_ep_webgpu-0.6.0-py3-none-macosx_14_0_universal2.whl",
-            sha256: "a4cb7f57f74dcebf6b420413dbc6c7624fa8153ff546dbff2a21109935274cc5",
+            url: "https://files.pythonhosted.org/packages/2c/c3/e047d38981e7d6f198f92b488e2c9cd12e45c73017ec851996ea69778922/onnxruntime_ep_webgpu-0.5.0-py3-none-macosx_14_0_universal2.whl",
+            sha256: "c9a757c7afaf114fde86993420810ff616e2d3046d42ae419bb0c8b9ebcf57fb",
             files: &[("onnxruntime_ep_webgpu/libonnxruntime_providers_webgpu.dylib", "libonnxruntime_providers_webgpu.dylib")],
         },
     },

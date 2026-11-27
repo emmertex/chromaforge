@@ -29,14 +29,15 @@ impl OrtRunner {
         let channels = manifest.domain.in_channels();
         let out_side = manifest.domain.scale().checked_mul(tile).ok_or_else(|| Error::Load("the tile is too large".into()))?;
         let out_len = out_side.checked_mul(out_side).and_then(|n| n.checked_mul(3)).ok_or_else(|| Error::Load("the tile is too large".into()))?;
-        let session = Session::load(path, want).map_err(|e| Error::Load(e.to_string()))?;
+        // the tile size is fixed: say so, so ONNX Runtime plans every tensor at its real size
+        let session = Session::load_for_shape(path, want, &[1, channels, tile, tile]).map_err(|e| Error::Load(e.to_string()))?;
         if session.inputs().len() != 1 || session.outputs().len() != 1 {
             return Err(Error::Load("the model does not have one input and one output".into()));
         }
         Ok(OrtRunner { session, channels, tile, out_len })
     }
 
-    /// "ONNX Runtime 1.32.0 (WebGPU)".
+    /// "ONNX Runtime (WebGPU)" ([`Session::describe`]).
     pub fn describe(&self) -> String {
         self.session.describe()
     }
@@ -105,14 +106,62 @@ mod tests {
         };
         let cpu = crate::runtime::CpuRunner::load(&path, &m).unwrap();
         let x = crate::runtime::check_tile(64);
-        let (a, b) = (ort.run(&x).unwrap(), cpu.run(&x).unwrap());
-        assert_eq!(a.len(), b.len());
-        let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-12);
-        let worst = a.iter().zip(&b).fold(0f32, |m, (p, q)| m.max((p - q).abs())) / scale;
-        assert!(worst < 1e-4, "ONNX Runtime and the CPU runner differ by {worst}");
+        let w = worst(&ort.run(&x).unwrap(), &cpu.run(&x).unwrap());
+        assert!(w < 1e-4, "ONNX Runtime and the CPU runner differ by {w}");
         // a tile of the wrong size is an error
         assert!(ort.run(&x[..10]).is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The largest difference between `a` and `b`, relative to `b`'s largest value.
+    fn worst(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-12);
+        a.iter().zip(b).fold(0f32, |m, (p, q)| m.max((p - q).abs())) / scale
+    }
+
+    #[test]
+    fn agrees_with_the_cpu_runner_on_the_graphics_card() {
+        let path = model("unet-gpu", &crate::synthetic::unet_onnx(64, 5, 1, 7));
+        let m = manifest(64);
+        let ort = match OrtRunner::load(&path, &m, Want::Gpu) {
+            Ok(r) => r,
+            Err(e) => {
+                lcc_testkit::skip!(Gpu, "no ONNX Runtime graphics-card provider: {e}");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        assert!(ort.on_gpu(), "{}", ort.describe());
+        let cpu = crate::runtime::CpuRunner::load(&path, &m).unwrap();
+        let x = crate::runtime::check_tile(64);
+        let w = worst(&ort.run(&x).unwrap(), &cpu.run(&x).unwrap());
+        assert!(w < 1e-3, "{} and the CPU runner differ by {w}", ort.describe());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The real `realesr-general-x4v3.onnx` export at `LC_SR_MODEL` (its output's dimensions are named after the
+    /// input's), on ONNX Runtime's CPU and graphics-card providers, against the CPU runner.
+    #[test]
+    #[ignore = "needs LC_SR_MODEL: the realesr-general-x4v3 ONNX export, and a graphics card"]
+    fn the_real_upscaler_agrees_with_the_cpu_runner() {
+        let model = std::env::var_os("LC_SR_MODEL").expect("set LC_SR_MODEL");
+        let path = Path::new(&model);
+        let m = DenoiserManifest { domain: Domain::RgbToRgb4x, ..manifest(64) };
+        let cpu = crate::runtime::CpuRunner::load(path, &m).unwrap();
+        let (x, _) = crate::runtime::test_tile_for(Domain::RgbToRgb4x, 64);
+        let t = std::time::Instant::now();
+        let b = cpu.run(&x).unwrap();
+        let cpu_ms = t.elapsed().as_secs_f64() * 1e3;
+        for want in [Want::Cpu { threads: 0 }, Want::Gpu] {
+            let ort = OrtRunner::load(path, &m, want).unwrap();
+            let t = std::time::Instant::now();
+            let a = ort.run(&x).unwrap();
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            let w = worst(&a, &b);
+            println!("{}: worst {w:.2e}, first tile {ms:.0} ms (CPU runner {cpu_ms:.0} ms)", ort.describe());
+            assert!(w < 1e-3, "{} and the CPU runner differ by {w}", ort.describe());
+        }
     }
 
     #[test]

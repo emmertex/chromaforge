@@ -27,12 +27,12 @@ usually much faster than our own kernels (issue #491). This page describes how i
   there is one, else the card for editing), then our wgpu kernels (`lcc_gpu::nn`). Either way the check tile is run
   on the card and on the CPU and must agree (`GPU_AGREE`), and the card is used only while it is faster
   (`card_is_faster`) and keeps getting tiles right; a wrong tile runs on the CPU. Settings ▸ AI Denoise shows the
-  result as the adapter, e.g. "ONNX Runtime 1.32.0 (WebGPU)".
+  result as the adapter, e.g. "ONNX Runtime (WebGPU)" (with the version when the library's build info names it; Microsoft's PyPI builds don't).
 
 ## Where the library comes from
 
 `cargo xtask onnxruntime fetch --dest DIR [--platform P]` takes Microsoft's own PyPI builds of `onnxruntime` 1.32.0
-and `onnxruntime-ep-webgpu` 0.6.0, pinned by URL and SHA-256 (`xtask/src/onnxruntime.rs`), and unpacks only the
+and `onnxruntime-ep-webgpu` 0.5.0, pinned by URL and SHA-256 (`xtask/src/onnxruntime.rs`), and unpacks only the
 libraries and their licence files. The packaging scripts call it:
 
 | Package | Where | Platforms |
@@ -41,9 +41,15 @@ libraries and their licence files. The packaging scripts call it:
 | Linux AppImage, deb, rpm, tar.gz, Flatpak | `usr/lib/<binary>/` (`/app/lib/<binary>/` in the Flatpak) | x86-64, aarch64 (riscv64: none) |
 | macOS DMG | `Contents/Frameworks/`, signed with the app's identity | Apple silicon (Intel Macs run without) |
 
-Not shipped: Microsoft's closed-source `DirectML.dll` (decided 2026-11-27: the open WebGPU plug-in instead) and
-the preview DirectX 12 Agility SDK the Windows plug-in wheel carries. A library that has DirectML built in is still
-used when someone supplies one.
+Not shipped: Microsoft's closed-source `DirectML.dll` (decided 2026-11-27: the open WebGPU plug-in instead). A
+library that has DirectML built in is still used when someone supplies one.
+
+The plug-in stays on 0.5.0 (tested 2026-11-27 on Windows 11, RTX 4090): the 0.6.0 Windows build needs the preview
+DirectX 12 Agility SDK. Without it, ONNX Runtime ends the process while it builds a WebGPU session (a fast-fail that
+`catch_unwind` can't catch); with it, DXC fails to compile Dawn's shaders even with Developer Mode on. Before moving
+the pin, run the GPU test on a Windows machine with a graphics card: `cargo xtask onnxruntime fetch --dest target/ort`,
+then `<PREFIX>_ONNXRUNTIME=<absolute path>/target/ort cargo test -p lcc-onnxrt --features lcc-onnxrt/ort` (it must
+report `the_gpu_is_tried_and_says_why_not ... ok`, not skip it or end the test process).
 
 At run time the library is looked for in this order: `<PREFIX>_ONNXRUNTIME` (a file or a folder; `off` switches ONNX
 Runtime off), beside the executable, its `lib/`, `../lib/<binary>/`, `../lib/`, `../Frameworks/`, then (not on

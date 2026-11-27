@@ -122,6 +122,8 @@ fn version_comes_from_the_build_info() {
     }
     assert_eq!(imp::parse_version("ORT Build Info: git-branch=rel-1.32.0, git-commit-id=abc").as_deref(), Some("1.32.0"));
     assert_eq!(imp::parse_version("garbage"), None);
+    // Microsoft's PyPI 1.32.0 build names no branch
+    assert_eq!(imp::parse_version("ORT Build Info: git-branch=HEAD, git-commit-id=fab30a4, build type=Release"), None);
     assert_eq!(imp::parse_version("rel-"), None);
 }
 
@@ -174,7 +176,10 @@ fn a_model_runs_on_the_cpu() {
     let y = s.run_one(Tensor::new(vec![2, 3], vec![1.0, -1.0, 0.5, -0.5, 3.0, 0.0]).unwrap()).unwrap();
     assert_eq!(y.shape, vec![2, 3]);
     assert_eq!(y.data, vec![2.0, 0.0, 1.0, 0.0, 6.0, 0.0]);
-    assert!(s.describe().contains(&rt.version));
+    assert!(s.describe().starts_with("ONNX Runtime"));
+    if let Some(v) = &rt.version {
+        assert!(s.describe().contains(v.as_str()));
+    }
 }
 
 #[test]
@@ -220,4 +225,28 @@ fn sessions_run_from_many_threads() {
         .collect();
     let got: Vec<f32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     assert_eq!(got, vec![0.0, 2.0, 4.0, 6.0]);
+}
+
+#[test]
+fn a_fixed_input_shape_names_its_free_dimensions() {
+    let Some(_) = library() else { return };
+    let model = proto::relu_double(2);
+    for want in [Want::Cpu { threads: 1 }, Want::Gpu] {
+        let s = match Session::from_bytes_for_shape(&model, want, &[2, 3]) {
+            Ok(s) => s,
+            Err(e) if matches!(want, Want::Gpu) => {
+                lcc_testkit::skip!(Gpu, "no ONNX Runtime GPU provider here ({e})");
+                continue;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        let y = s.run_one(Tensor::new(vec![2, 3], vec![1.0, -1.0, 0.5, -0.5, 3.0, 0.0]).unwrap()).unwrap();
+        assert_eq!(y.data, vec![2.0, 0.0, 1.0, 0.0, 6.0, 0.0], "{}", s.describe());
+    }
+    // a shape of the wrong rank, or one beyond any tensor, is refused at load
+    assert!(Session::from_bytes_for_shape(&model, Want::Cpu { threads: 1 }, &[2, 3, 4]).is_err());
+    assert!(Session::from_bytes_for_shape(&model, Want::Cpu { threads: 1 }, &[1; 64]).is_err());
+    // an empty shape fixes nothing
+    let s = Session::from_bytes_for_shape(&model, Want::Cpu { threads: 1 }, &[]).unwrap();
+    assert_eq!(s.run_one(Tensor::new(vec![1, 1], vec![1.0]).unwrap()).unwrap().data, vec![2.0]);
 }

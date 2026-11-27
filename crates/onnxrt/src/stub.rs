@@ -18,7 +18,7 @@ pub(crate) struct Session;
 
 type LoadedSession = (Session, Provider, Vec<String>, Vec<String>);
 
-pub(crate) fn load(_: &Runtime, _: &[u8], _: Want) -> Result<LoadedSession, Error> {
+pub(crate) fn load(_: &Runtime, _: &[u8], _: Want, _: &[usize]) -> Result<LoadedSession, Error> {
     Err(why())
 }
 

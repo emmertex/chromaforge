@@ -75,7 +75,12 @@ fn load_runtime() -> Result<Loaded, Error> {
                 Err(why) => (None, Some(why)),
             };
             let runtime = Runtime { version: version(), library, providers: providers(&env), webgpu, webgpu_missing };
-            log::info!("ONNX Runtime {} from {} ({})", runtime.version, runtime.library.display(), provider_list(&runtime.providers));
+            log::info!(
+                "ONNX Runtime {} from {} ({})",
+                runtime.version.as_deref().unwrap_or("(version not stated)"),
+                runtime.library.display(),
+                provider_list(&runtime.providers)
+            );
             Ok(Loaded { runtime, env })
         });
     }
@@ -92,10 +97,11 @@ fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) }
 }
 
-/// "1.32.0", from the build-info string ("ORT Build Info: git-branch=rel-1.32.0, …").
-fn version() -> String {
+/// "1.32.0", from the build-info string when it has one ("ORT Build Info: git-branch=rel-1.32.0, …"; Microsoft's
+/// PyPI builds say `git-branch=HEAD`).
+fn version() -> Option<String> {
     let info = catch_unwind(ort::info).unwrap_or("");
-    parse_version(info).unwrap_or_else(|| "1.x".into())
+    parse_version(info)
 }
 
 pub(crate) fn parse_version(info: &str) -> Option<String> {
@@ -158,8 +164,10 @@ pub(crate) struct Session(Mutex<OrtSession>);
 
 type LoadedSession = (Session, Provider, Vec<String>, Vec<String>);
 
-pub(crate) fn load(rt: &Runtime, bytes: &[u8], want: Want) -> Result<LoadedSession, Error> {
+pub(crate) fn load(rt: &Runtime, bytes: &[u8], want: Want, shape: &[usize]) -> Result<LoadedSession, Error> {
     let env = env()?;
+    let fixed = if shape.is_empty() { Vec::new() } else { guarded("reading the model", || fixed_dimensions(env, bytes, shape))? };
+    let session = |p, threads| session(env, bytes, p, threads, &fixed);
     match want {
         Want::Gpu => {
             let mut why = Vec::new();
@@ -168,7 +176,7 @@ pub(crate) fn load(rt: &Runtime, bytes: &[u8], want: Want) -> Result<LoadedSessi
                     why.push(format!("{} is not in this ONNX Runtime", p.label()));
                     continue;
                 }
-                match guarded("loading the model", || session(env, bytes, p, 0)) {
+                match guarded("loading the model", || session(p, 0)) {
                     Ok(s) => return Ok(s),
                     Err(e) => why.push(format!("{}: {e}", p.label())),
                 }
@@ -178,13 +186,64 @@ pub(crate) fn load(rt: &Runtime, bytes: &[u8], want: Want) -> Result<LoadedSessi
             }
             Err(Error::Load(why.join("; ")))
         }
-        Want::Cpu { threads } => guarded("loading the model", || session(env, bytes, Provider::Cpu, threads)),
+        Want::Cpu { threads } => guarded("loading the model", || session(Provider::Cpu, threads)),
     }
 }
 
-fn session(env: &ort::environment::Environment, bytes: &[u8], provider: Provider, threads: usize) -> Result<LoadedSession, Error> {
+/// The first input's named free dimensions and the sizes `shape` gives them. A name that two different sizes would
+/// claim is left free; a size the model fixes itself must match.
+fn fixed_dimensions(env: &ort::environment::Environment, bytes: &[u8], shape: &[usize]) -> Result<Vec<(String, i64)>, Error> {
+    let load = |e: ort::Error<_>| Error::Load(e.to_string());
+    let probe = OrtSession::builder(env)
+        .map_err(|e| Error::Load(e.to_string()))?
+        .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Disable)
+        .map_err(load)?
+        .commit_from_memory(bytes)
+        .map_err(|e| Error::Load(e.to_string()))?;
+    let Some(first) = probe.inputs().first() else { return Err(Error::Load("the model has no inputs".into())) };
+    let ValueType::Tensor { shape: dims, dimension_symbols, .. } = first.dtype() else {
+        return Err(Error::Load(format!("`{}` is not a tensor", first.name())));
+    };
+    if dims.len() != shape.len() {
+        return Err(Error::Load(format!("`{}` has {} dimensions, the caller gives {}", first.name(), dims.len(), shape.len())));
+    }
+    let mut fixed: Vec<(String, i64)> = Vec::new();
+    let mut clash: Vec<&str> = Vec::new();
+    for ((&d, name), &want) in dims.iter().zip(dimension_symbols.iter()).zip(shape) {
+        let want = i64::try_from(want).map_err(|_| Error::Load(format!("an input dimension of {want}")))?;
+        if d >= 0 {
+            if d != want {
+                return Err(Error::Load(format!("`{}` is {:?}, the caller gives {shape:?}", first.name(), &dims[..])));
+            }
+            continue;
+        }
+        if name.is_empty() || clash.contains(&name.as_str()) {
+            continue;
+        }
+        match fixed.iter().position(|(n, _)| n == name) {
+            Some(i) if fixed.get(i).is_some_and(|(_, v)| *v != want) => {
+                fixed.remove(i);
+                clash.push(name);
+            }
+            Some(_) => {}
+            None => fixed.push((name.clone(), want)),
+        }
+    }
+    Ok(fixed)
+}
+
+fn session(
+    env: &ort::environment::Environment,
+    bytes: &[u8],
+    provider: Provider,
+    threads: usize,
+    fixed: &[(String, i64)],
+) -> Result<LoadedSession, Error> {
     let load = |e: ort::Error<_>| Error::Load(e.to_string());
     let mut b = OrtSession::builder(env).map_err(|e| Error::Load(e.to_string()))?;
+    for (name, size) in fixed {
+        b = b.with_dimension_override(name, *size).map_err(load)?;
+    }
     b = match provider {
         // the plug-in goes through the device API; it takes one device (Dawn picks the adapter: the high-performance one)
         Provider::WebGpu => b.with_devices(webgpu_devices(env).take(1), None).map_err(load)?,

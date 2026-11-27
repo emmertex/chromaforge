@@ -123,8 +123,9 @@ pub enum Want {
 /// The loaded runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Runtime {
-    /// ONNX Runtime's version ("1.32.0").
-    pub version: String,
+    /// ONNX Runtime's version ("1.32.0"), when its build says it: Microsoft's release builds name no branch
+    /// (`git-branch=HEAD`), and the version call needs `unsafe`.
+    pub version: Option<String>,
     /// The library file it was loaded from.
     pub library: PathBuf,
     /// Providers this build of the library was compiled with, or registered as plug-ins, of those the app uses.
@@ -164,7 +165,9 @@ pub fn status() -> std::collections::BTreeMap<&'static str, String> {
         }
         Some(Ok(rt)) => {
             m.insert("state", "ready".into());
-            m.insert("version", rt.version.clone());
+            if let Some(v) = &rt.version {
+                m.insert("version", v.clone());
+            }
             m.insert("library", rt.library.display().to_string());
             m.insert("providers", rt.providers.iter().map(|p| p.id()).collect::<Vec<_>>().join(","));
             if let Some(p) = &rt.webgpu {
@@ -235,17 +238,35 @@ impl std::fmt::Debug for Session {
 impl Session {
     /// Load the model file at `path` for `want`.
     pub fn load(path: &Path, want: Want) -> Result<Session, Error> {
+        Session::load_for_shape(path, want, &[])
+    }
+
+    /// Load the model file at `path` for `want`, for a first input that is always `shape` (empty: any shape).
+    ///
+    /// The model's named free dimensions on that input are fixed to `shape`'s sizes. Some exports name an output's
+    /// dimensions after the input's even when the output is larger (Real-ESRGAN's `realesr-general-x4v3` says its
+    /// 4× output is `height × width`); ONNX Runtime's WebGPU provider then plans the output into the input's buffer
+    /// and fails. Fixed sizes let it work the real sizes out.
+    pub fn load_for_shape(path: &Path, want: Want, shape: &[usize]) -> Result<Session, Error> {
         let bytes = read_model(path)?;
-        Session::from_bytes(&bytes, want)
+        Session::from_bytes_for_shape(&bytes, want, shape)
     }
 
     /// Load a model from its bytes.
     pub fn from_bytes(bytes: &[u8], want: Want) -> Result<Session, Error> {
+        Session::from_bytes_for_shape(bytes, want, &[])
+    }
+
+    /// Load a model from its bytes, for a first input that is always `shape` ([`Session::load_for_shape`]).
+    pub fn from_bytes_for_shape(bytes: &[u8], want: Want, shape: &[usize]) -> Result<Session, Error> {
         if bytes.is_empty() {
             return Err(Error::Load("the model file is empty".into()));
         }
+        if shape.len() > MAX_RANK {
+            return Err(Error::Load(format!("an input shape with {} dimensions", shape.len())));
+        }
         let rt = runtime()?;
-        let (inner, provider, inputs, outputs) = imp::load(rt, bytes, want)?;
+        let (inner, provider, inputs, outputs) = imp::load(rt, bytes, want, shape)?;
         Ok(Session { inner, provider, inputs, outputs })
     }
 
@@ -264,11 +285,11 @@ impl Session {
         &self.outputs
     }
 
-    /// "ONNX Runtime 1.32.0 (DirectML)".
+    /// "ONNX Runtime (WebGPU)", with the version when the library says it ("ONNX Runtime 1.32.0 (WebGPU)").
     pub fn describe(&self) -> String {
-        match runtime() {
-            Ok(rt) => format!("ONNX Runtime {} ({})", rt.version, self.provider.label()),
-            Err(_) => format!("ONNX Runtime ({})", self.provider.label()),
+        match runtime().ok().and_then(|rt| rt.version.as_deref()) {
+            Some(v) => format!("ONNX Runtime {v} ({})", self.provider.label()),
+            None => format!("ONNX Runtime ({})", self.provider.label()),
         }
     }
 
