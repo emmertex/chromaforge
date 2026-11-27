@@ -783,7 +783,14 @@ impl<'a> Run<'a> {
                 continue;
             }
             self.drain_probes(job, Duration::ZERO);
-            self.drain_transfers(job, SLICE);
+            if !self.drain_transfers(job, SLICE) && self.transfers.as_ref().is_some_and(Stream::left_behind) {
+                // stopped, and the pool too (a supervisor panic): no rule watches the copies still
+                // running, so they are left behind as a cancel leaves them (outcome unknown)
+                let left: Vec<usize> = self.transfer_index.keys().copied().collect();
+                for index in left {
+                    self.on_transfer(job, index, JobOutcome::Cancelled);
+                }
+            }
         }
         // stopped: what is planned goes over as it stands (cut short), or is taken back
         while let Some(b) = self.planned.pop_front() {

@@ -398,6 +398,15 @@ impl<T: Send + 'static> Stream<T> {
         }
     }
 
+    /// Whether a caller still waiting for this stream's outcomes stops waiting: the stream was
+    /// cancelled ([`Stream::cancel`]) and the pool it uses has stopped (a supervisor panic), so no
+    /// rule watches its jobs still running any more, and a job hung on a dead volume would keep
+    /// the caller waiting for ever, Cancel or not. The caller takes the outcomes still missing as
+    /// [`JobOutcome::Cancelled`] (left behind). The one escape every waiting loop uses.
+    pub(crate) fn left_behind(&self) -> bool {
+        self.cancel.load(Ordering::Acquire) && self.pool_stopped()
+    }
+
     /// The next outcome, waiting up to `wait`. A job no worker could take runs here meanwhile.
     pub(crate) fn recv_timeout(&mut self, wait: Duration) -> Option<(usize, JobOutcome<T>, Option<JobMetrics>)> {
         let start = std::time::Instant::now();
@@ -500,7 +509,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         }
         // the pool stopped with jobs of this call running: nothing watches them now, so cancel
         // leaves them behind at once
-        if forwarded && stream.pool_stopped() {
+        if stream.left_behind() {
             for o in outcomes.iter_mut().filter(|o| o.is_none()) {
                 *o = Some(JobOutcome::Cancelled);
             }

@@ -258,7 +258,17 @@ impl OriginalsReader {
             }
             let a = &mut self.ahead;
             let Some(s) = a.stream.as_mut() else { break };
-            let Some((i, o, _)) = s.recv_timeout(a.ctx.tick) else { continue };
+            let Some((i, o, _)) = s.recv_timeout(a.ctx.tick) else {
+                if s.left_behind() {
+                    // cancelled, and the pool stopped: the reads still running are left behind
+                    for (_, k) in a.by_index.drain().filter(|(_, k)| wanted.contains(k)) {
+                        let r = crate::import::probe_outcome(crate::io_sched::JobOutcome::Cancelled, &k.1, "not probed");
+                        a.reads.insert(k, Ahead1::Arrived(Box::new(r.map_err(crate::import::ProbeError::into_message))));
+                    }
+                    break;
+                }
+                continue;
+            };
             let counted = o.counts_as_done();
             let Some(k) = a.by_index.remove(&i) else { continue };
             let r = crate::import::probe_outcome(o, &k.1, "not probed").map_err(crate::import::ProbeError::into_message);
@@ -719,6 +729,54 @@ mod tests {
         first.store(true, SeqCst);
         let r = reader.read(vec![u(3, "/b/3.NEF".into())], &[], &other, &|_| {});
         assert!(r[0].1.is_ok(), "the first flag no longer stops this reader");
+    }
+
+    /// After the pool's supervisor stopped (a panic) no rule watches a read hung on a dead drive:
+    /// a cancel still ends the batch (the hung file not read), instead of waiting for ever.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancel_ends_a_batch_whose_read_hangs_after_the_pool_stopped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (gate, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        let (g, st) = (gate.clone(), started.clone());
+        let probe: FileProbe = Arc::new(move |path: &str| {
+            st.fetch_add(1, SeqCst);
+            let start = std::time::Instant::now();
+            while path.contains("hung") && !g.load(SeqCst) && start.elapsed() < std::time::Duration::from_secs(60) {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            Ok(ProbeInfo { format: "NEF".into(), content_hash: Some(format!("hash-{path}")), ..Default::default() })
+        });
+        let ctx = context();
+        let mut reader = OriginalsReader::in_context(probe, ctx.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let u = |i: u64, p: &str| Unread { id: PhotoId(i), path: p.into() };
+        let c = cancel.clone();
+        let h = std::thread::spawn(move || reader.read(vec![u(1, "/a/hung.NEF"), u(2, "/b/2.NEF")], &[], &c, &|_| {}));
+        let start = std::time::Instant::now();
+        while started.load(SeqCst) < 2 {
+            assert!(start.elapsed() < std::time::Duration::from_secs(20), "the reads to start");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        // (the other volume's read delivered)
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        ctx.panic_supervisor.store(true, SeqCst);
+        let start = std::time::Instant::now();
+        while ctx.pool_up() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(20), "the supervisor to stop");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        cancel.store(true, SeqCst);
+        let start = std::time::Instant::now();
+        while !h.is_finished() && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let finished = h.is_finished();
+        gate.store(true, SeqCst);
+        assert!(finished, "the batch never returned after the cancel");
+        let r = h.join().unwrap();
+        assert_eq!(r[0].1.as_ref().err().map(String::as_str), Some("cancelled"), "the hung read is left behind");
+        assert!(r[1].1.is_ok(), "the other volume's read was done");
     }
 
     #[test]

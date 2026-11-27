@@ -721,3 +721,50 @@ fn a_cancel_stops_reading_ahead_while_the_run_is_busy() {
     assert!(early + late < 48, "reads fed ahead never started ({early} + {late})");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// After the pool's supervisor stopped (a panic) no rule watches a copy hung on its destination:
+/// a Cancel still ends the import, the hung copies left behind (outcome unknown, in their
+/// places), instead of waiting for them for ever.
+#[test]
+fn cancel_ends_an_import_whose_copies_hang_after_the_pool_stopped() {
+    let root = temp_root("pool-stopped");
+    let files: Vec<String> = cards_of(&root, 3).into_iter().filter(|f| f.contains("/a/")).collect();
+    let ctx = context(&root);
+    let dest = root.join("dest");
+    hold_copies_into(&dest, Hold::Wait(Arc::new((Mutex::new(false), Condvar::new()))));
+    // (no reads: every job the pool runs is a copy)
+    let mut s = Session::new().with_fs();
+    s.media.file_probe = None;
+    let mut job = ImportJob::new(&mut s, options(&root, ImportMode::Copy)).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (c, x) = (ctx.clone(), cancel.clone());
+    let h = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        job.prepare_streamed(&c, files, &x, small(), &mut |p| {
+            out.push(p);
+            true
+        });
+        out
+    });
+    // the three copies under way, held
+    wait_until(|| ctx.pending.load(Ordering::SeqCst) == 3, "the copies to start");
+    std::thread::sleep(Duration::from_millis(100));
+    ctx.panic_supervisor.store(true, Ordering::SeqCst);
+    wait_until(|| !ctx.pool_up(), "the supervisor to stop");
+    cancel.store(true, Ordering::SeqCst);
+    let start = std::time::Instant::now();
+    while !h.is_finished() && start.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let finished = h.is_finished();
+    release_copies_into(&dest);
+    assert!(finished, "the import never returned after Cancel");
+    let batches = h.join().unwrap();
+    let r = root.to_string_lossy().into_owned();
+    let items: Vec<String> = batches.iter().flat_map(|b| &b.items).map(|it| describe(it, &r)).collect();
+    assert_eq!(items.len(), 3, "{items:?}");
+    // (a copy still queued when the supervisor stopped is "scheduler stopped")
+    assert!(items.iter().all(|i| i.starts_with("interrupted OutcomeUnknown") || i.starts_with("interrupted SchedulerStopped")), "{items:?}");
+    assert!(items.iter().any(|i| i.starts_with("interrupted OutcomeUnknown")), "{items:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
