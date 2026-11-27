@@ -4054,5 +4054,8 @@
   "© Year Name": "© År Namn",
   "‹ Library": "‹ Bibliotek",
   "↑ This device has changes still to send": "↑ Den här enheten har ändringar kvar att skicka",
-  "↓ Another device has changes still to fetch": "↓ En annan enhet har ändringar kvar att hämta"
+  "↓ Another device has changes still to fetch": "↓ En annan enhet har ändringar kvar att hämta",
+  "Whole Photo": "Hela fotot",
+  "Missing mask": "Saknad mask",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Använd filtret bara där en av fotots masker finns, blandat efter dess täckning"
 }

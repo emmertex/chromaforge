@@ -3986,5 +3986,8 @@
   "‹ Library": "‹ Pustaka",
   "↑ This device has changes still to send": "↑ Perangkat ini masih punya perubahan untuk dikirim",
   "↓ Another device has changes still to fetch": "↓ Perangkat lain masih punya perubahan untuk diambil",
-  "★ Favorites": "★ Favorit"
+  "★ Favorites": "★ Favorit",
+  "Whole Photo": "Seluruh foto",
+  "Missing mask": "Masker hilang",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Terapkan filter hanya di tempat salah satu masker foto berada, dicampur menurut cakupannya"
 }

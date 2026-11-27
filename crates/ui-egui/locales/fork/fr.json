@@ -3641,5 +3641,8 @@
   "‹ Library": "‹ Bibliothèque",
   "↑ This device has changes still to send": "↑ Cet appareil a encore des modifications à envoyer",
   "↓ Another device has changes still to fetch": "↓ Un autre appareil a encore des modifications à récupérer",
-  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation."
+  "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-glisser pour redresser, ⇧G Upright guidé, une grille pendant la transformation.",
+  "Whole Photo": "Photo entière",
+  "Missing mask": "Masque manquant",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "N'appliquer le filtre que là où se trouve l'un des masques de la photo, fondu selon sa couverture"
 }

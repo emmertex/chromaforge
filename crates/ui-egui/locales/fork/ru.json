@@ -4007,5 +4007,8 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）"
+  "繁體中文（台灣）": "繁體中文（台灣）",
+  "Whole Photo": "Всё фото",
+  "Missing mask": "Маска отсутствует",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Применять фильтр только там, где находится одна из масок фото, смешивая по её покрытию"
 }

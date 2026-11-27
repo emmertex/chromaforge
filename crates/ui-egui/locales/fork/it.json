@@ -3761,5 +3761,8 @@
   "‹ Library": "‹ Libreria",
   "↑ This device has changes still to send": "↑ Questo dispositivo ha ancora modifiche da inviare",
   "↓ Another device has changes still to fetch": "↓ Un altro dispositivo ha ancora modifiche da scaricare",
-  "★ Favorites": "★ Preferiti"
+  "★ Favorites": "★ Preferiti",
+  "Whole Photo": "Foto intera",
+  "Missing mask": "Maschera mancante",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Applica il filtro solo dove si trova una delle maschere della foto, sfumato secondo la sua copertura"
 }

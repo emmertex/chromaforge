@@ -3993,5 +3993,8 @@
   "↑ This device has changes still to send": "↑ Tällä laitteella on vielä lähetettäviä muutoksia",
   "↓ Another device has changes still to fetch": "↓ Toisella laitteella on vielä haettavia muutoksia",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）"
+  "繁體中文（台灣）": "繁體中文（台灣）",
+  "Whole Photo": "Koko kuva",
+  "Missing mask": "Puuttuva maski",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Käytä suodinta vain siellä, missä jokin kuvan maskeista on, sen peittävyyden mukaan sekoitettuna"
 }

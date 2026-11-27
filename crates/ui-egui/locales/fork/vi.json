@@ -4248,5 +4248,8 @@
   "‹ Library": "‹ Thư viện",
   "↑ This device has changes still to send": "↑ Thiết bị này còn thay đổi cần gửi",
   "↓ Another device has changes still to fetch": "↓ Một thiết bị khác còn thay đổi cần tải về",
-  "★ Favorites": "★ Yêu thích"
+  "★ Favorites": "★ Yêu thích",
+  "Whole Photo": "Toàn bộ ảnh",
+  "Missing mask": "Thiếu mặt nạ",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Chỉ áp dụng bộ lọc ở nơi có một trong các mặt nạ của ảnh, pha trộn theo độ phủ của nó"
 }

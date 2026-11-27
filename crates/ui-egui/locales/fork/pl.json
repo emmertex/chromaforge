@@ -4031,5 +4031,8 @@
   "‹ Library": "‹ Biblioteka",
   "↑ This device has changes still to send": "↑ To urządzenie ma jeszcze zmiany do wysłania",
   "↓ Another device has changes still to fetch": "↓ Inne urządzenie ma jeszcze zmiany do pobrania",
-  "★ Favorites": "★ Ulubione"
+  "★ Favorites": "★ Ulubione",
+  "Whole Photo": "Całe zdjęcie",
+  "Missing mask": "Brakująca maska",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Zastosuj filtr tylko tam, gdzie jest jedna z masek zdjęcia, zmieszany według jej pokrycia"
 }

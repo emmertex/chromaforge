@@ -4192,5 +4192,8 @@
   "‹ Library": "‹ ბიბლიოთეკა",
   "↑ This device has changes still to send": "↑ ამ მოწყობილობას ჯერ კიდევ აქვს გასაგზავნი ცვლილებები",
   "↓ Another device has changes still to fetch": "↓ სხვა მოწყობილობას ჯერ კიდევ აქვს ჩამოსატვირთი ცვლილებები",
-  "★ Favorites": "★ რჩეულები"
+  "★ Favorites": "★ რჩეულები",
+  "Whole Photo": "მთელი ფოტო",
+  "Missing mask": "ნიღაბი აკლია",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "ფილტრი გამოიყენე მხოლოდ იქ, სადაც ფოტოს ერთ-ერთი ნიღაბია, მისი დაფარვის მიხედვით შერეული"
 }

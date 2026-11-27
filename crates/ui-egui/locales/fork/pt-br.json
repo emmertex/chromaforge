@@ -4000,5 +4000,8 @@
   "↑ This device has changes still to send": "↑ Este dispositivo ainda tem alterações a enviar",
   "↓ Another device has changes still to fetch": "↓ Outro dispositivo ainda tem alterações a buscar",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastar para endireitar, ⇧G Upright guiado, uma grade ao transformar.",
-  "★ Favorites": "★ Favoritos"
+  "★ Favorites": "★ Favoritos",
+  "Whole Photo": "Foto inteira",
+  "Missing mask": "Máscara ausente",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Aplicar o filtro só onde está uma das máscaras da foto, misturado conforme sua cobertura"
 }

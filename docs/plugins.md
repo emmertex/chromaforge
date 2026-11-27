@@ -1223,6 +1223,13 @@ Each filter gets its resolved parameters plus `encoding`, `_analysis` (below) an
 | `nativeCanvasWidth`, `nativeCanvasHeight` | present alongside `draftScale`: the unscaled canvas size before draft downsampling |
 | `source` | present when known, on both `pc_filter` and `pc_analyze`: `{origin, bitsPerSample, float?}` (`origin`: `"untagged"`, `"container"`, `"iccMatrixTrc"`, `"iccCms"`, `"iccUnsupported"`, `"naive"`, `"raw"`, or `"demo"`; `bitsPerSample`: `8`, `12`, `14`, `16`, or `32`; `float`: `true` when the source file held floating-point samples, omitted when `false`) |
 
+**A mask (host only, no ABI change).** `develop.pluginFilter.set {uid, mask: {id, invert?}}` limits a Display
+entry to one of the photo's masks (`mask: null` for the whole frame again): the module runs as before, on the whole
+band, and the host blends its output with its input by the mask's coverage on the render's own grid (`invert`: where
+the mask is not). `pc_analyze` still measures the whole frame. A Source entry can't take one (it runs before the masks
+exist); an entry whose mask is gone (deleted, or a copy pasted onto a photo without it) runs on the whole frame with a
+warning. Sidecars store it as `lcpx:mask` (JSON text).
+
 Source results are cached: dragging other sliders doesn't re-run the filter; a draft while a filter's own
 parameter changes runs it on a reduced copy (at most 0.5 MP), the full render after it is exact.
 Renders with plug-in filters use the CPU pipeline. A filter that isn't installed or fails is

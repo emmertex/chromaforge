@@ -3923,5 +3923,8 @@
   "↑ This device has changes still to send": "↑ 此设备仍有更改待发送",
   "↓ Another device has changes still to fetch": "↓ 另一台设备仍有更改待获取",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
-  "★ Favorites": "★ 收藏"
+  "★ Favorites": "★ 收藏",
+  "Whole Photo": "整张照片",
+  "Missing mask": "蒙版缺失",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "仅在照片的某个蒙版所在处应用滤镜，按其覆盖程度混合"
 }

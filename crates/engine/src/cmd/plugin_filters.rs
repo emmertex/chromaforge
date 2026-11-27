@@ -76,6 +76,7 @@ pub(crate) fn to_xmp(f: &PluginFilter) -> lcc_meta::XmpPluginFilter {
         .into(),
         params: serde_json::to_string(&f.params).unwrap_or_default(),
         analysis: f.analysis.as_ref().and_then(|a| serde_json::to_string(a).ok()).unwrap_or_default(),
+        mask: f.mask.as_ref().and_then(|m| serde_json::to_string(m).ok()).unwrap_or_default(),
     }
 }
 
@@ -107,6 +108,8 @@ pub(crate) fn from_xmp(e: &lcc_meta::XmpPluginFilter, uid: u32) -> Option<Plugin
         enabled,
         stage: stage(&p, c).ok()?.unwrap_or_default(),
         analysis,
+        // (a mask that can't be read leaves the filter on the whole frame rather than losing it)
+        mask: (!e.mask.is_empty()).then(|| serde_json::from_str::<lcc_develop::FilterMask>(&e.mask).ok()).flatten(),
     })
 }
 
@@ -177,7 +180,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let l = label(&name);
     let remembering = remember_after.map(|(keys, now)| (plugin.clone(), keys, now));
-    d.plugin_filters.push(PluginFilter { uid, plugin, module_hash, name, params, enabled: true, stage, analysis: None });
+    d.plugin_filters.push(PluginFilter { uid, plugin, module_hash, name, params, enabled: true, stage, analysis: None, mask: None });
     s.set_develop(id, d, &l)?;
     if let Some((plugin, keys, now)) = remembering {
         crate::filter_plugins::remember(&plugin, &keys, &now);
@@ -224,9 +227,29 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(v.as_bool().ok_or_else(|| bad(c, "`enabled` must be a boolean"))?),
     };
     let (id, mut d) = active(s, c)?;
+    // the mask it is limited to (#1397): `{id, invert?}` of one of the photo's masks, or null for the whole frame
+    let mask = match p.get("mask") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => {
+            let m: lcc_develop::FilterMask =
+                serde_json::from_value(v.clone()).map_err(|e| bad(c, format!("`mask` must be {{id, invert?}} or null: {e}")))?;
+            if !d.masks.iter().any(|x| x.id == m.id) {
+                return Err(bad(c, format!("the photo has no mask {}", m.id)));
+            }
+            Some(Some(m))
+        }
+    };
     let i = position(&d, u, c)?;
     let f = d.plugin_filters.get_mut(i).ok_or_else(|| bad(c, "no such plug-in filter"))?;
     let mut l = label(&f.name);
+    if let Some(m) = mask {
+        if m.is_some() && f.stage == FilterStage::Source && st != Some(FilterStage::Display) {
+            return Err(bad(c, "a mask needs the Display stage: a Source filter runs before the masks"));
+        }
+        f.mask = m;
+        l = format!("{l} › Mask");
+    }
     let mut changed = Vec::new();
     if let Some(m) = patch {
         if let [(k, _)] = m.iter().collect::<Vec<_>>().as_slice() {
@@ -668,6 +691,7 @@ fn add_to(s: &mut Session, p: &Value) -> Result<Value> {
             enabled: true,
             stage,
             analysis: None,
+            mask: None,
         });
         ops.extend(s.develop_op(x, nd, &label(&name)));
     }
@@ -790,7 +814,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Change Plug-in Filter",
             [],
             None,
-            "{uid, params?: {key: value} (merged), enabled?: bool, stage?: source|display}",
+            "{uid, params?: {key: value} (merged), enabled?: bool, stage?: source|display, mask?: {id, invert?} | null (Display stage: limit it to one of the photo's masks)}",
             has_active,
             set
         ),

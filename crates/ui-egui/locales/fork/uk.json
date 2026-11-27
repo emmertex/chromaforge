@@ -3752,5 +3752,8 @@
   "‹ Library": "‹ Бібліотека",
   "↑ This device has changes still to send": "↑ Цей пристрій має ще не надіслані зміни",
   "↓ Another device has changes still to fetch": "↓ Інший пристрій має зміни для завантаження",
-  "★ Favorites": "★ Улюблені"
+  "★ Favorites": "★ Улюблені",
+  "Whole Photo": "Усе фото",
+  "Missing mask": "Маска відсутня",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Застосовувати фільтр лише там, де є одна з масок фото, змішуючи за її покриттям"
 }

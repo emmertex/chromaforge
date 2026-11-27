@@ -3754,5 +3754,8 @@
   "© Year Name": "© Rok Jméno",
   "‹ Library": "‹ Knihovna",
   "↑ This device has changes still to send": "↑ Toto zařízení má ještě změny k odeslání",
-  "↓ Another device has changes still to fetch": "↓ Jiné zařízení má ještě změny ke stažení"
+  "↓ Another device has changes still to fetch": "↓ Jiné zařízení má ještě změny ke stažení",
+  "Whole Photo": "Celá fotografie",
+  "Missing mask": "Chybějící maska",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Použít filtr jen tam, kde je jedna z masek fotografie, smíchaný podle jejího pokrytí"
 }

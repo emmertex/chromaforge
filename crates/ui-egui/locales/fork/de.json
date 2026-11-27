@@ -3642,5 +3642,8 @@
   "© Year Name": "© Jahr Name",
   "‹ Library": "‹ Bibliothek",
   "↑ This device has changes still to send": "↑ Dieses Gerät hat noch Änderungen zu senden",
-  "↓ Another device has changes still to fetch": "↓ Ein anderes Gerät hat noch Änderungen zum Abrufen"
+  "↓ Another device has changes still to fetch": "↓ Ein anderes Gerät hat noch Änderungen zum Abrufen",
+  "Whole Photo": "Ganzes Foto",
+  "Missing mask": "Fehlende Maske",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Den Filter nur dort anwenden, wo eine der Masken des Fotos liegt, nach ihrer Deckung überblendet"
 }
