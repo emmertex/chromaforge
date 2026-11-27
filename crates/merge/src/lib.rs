@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod output;
 pub mod pano;
 pub mod pixelshift;
+pub mod pixelshift_registered;
 pub mod ransac;
 pub mod refine;
 pub mod response;

@@ -50,7 +50,7 @@ fn jpeg(w: u16, h: u16) -> Vec<u8> {
 }
 
 fn provenance() -> Provenance {
-    Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![] }
+    Provenance { engine: 1, shot_count: 16, reference: 1, scale: 2, window: None, frames: vec![], registration: None }
 }
 
 fn written(merged: bool, preview: Option<DngPreview>) -> Vec<u8> {

@@ -281,6 +281,20 @@ functions and the CIE standard illuminants A, D50, D55, D65, D75 and E (CIE 015:
 published tables), and the published reference values (CIELAB D50) of the X-Rite ColorChecker 24 as made
 before November 2014. See assets/ATTRIBUTION.md.
 
+crates/merge/src/pixelshift_registered (lcc-merge) registers and reconstructs Pixel Shift series. It was written
+from published methods and from our own measurements, and no code of any other raw converter or pixel-shift tool was read,
+copied or ported: Lucas and Kanade, "An iterative image registration technique with an application to stereo vision"
+(IJCAI 1981) and Baker and Matthews, "Lucas-Kanade 20 years on" (IJCV 56(3), 2004); Kuglin and Hines, "The phase
+correlation image alignment method" (1975) and Guizar-Sicairos, Thurman and Fienup, "Efficient subpixel image
+registration algorithms" (Optics Letters 33(2), 2008); Takeda, Farsiu and Milanfar, "Kernel regression for image
+processing and reconstruction" (IEEE TIP 16(2), 2007) and Wronski et al., "Handheld multi-frame super-resolution" (ACM TOG
+38(4), 2019); Farsiu, Robinson, Elad and Milanfar (IEEE TIP 13(10), 2004) and Farsiu, Elad and Milanfar (IEEE TIP 15(1),
+2006); Gunturk, Altunbasak and Mersereau, "Color plane interpolation using alternating projections" (IEEE TIP 11(9),
+2002); Keys, "Cubic convolution interpolation for digital image processing" (1981); Cooley and Tukey (1965); Student
+(1908). They are listed in docs/pixel-shift.md. It uses the rustfft crate (https://github.com/ejmahler/RustFFT, Copyright
+Elliott Mahler and Joey Gouly), with primal-check, strength_reduce and transpose, each licensed under the MIT License
+or the Apache License 2.0, as unmodified Cargo dependencies.
+
 crates/raw/src/demosaic/rcd.rs translates Ratio Corrected Demosaicing (RCD v2.3) by Luis Sanz Rodríguez
 from RawTherapee's rtengine/rcd_demosaic.cc (https://github.com/Beep6581/RawTherapee), Copyright (c) 2017-2018
 Luis Sanz Rodríguez and the RawTherapee developers, licensed under the GNU General Public License version 3

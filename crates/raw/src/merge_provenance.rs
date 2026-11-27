@@ -29,6 +29,9 @@ pub fn ns() -> String {
 pub const SOFTWARE_SUFFIX: &str = "Pixel Shift Merge";
 /// Version of the merge engine that wrote the file (bumped when its output changes).
 pub const ENGINE: u32 = 1;
+/// The engine version of a registered merge (positions measured and the image reconstructed from them); the plain merge
+/// keeps [`ENGINE`].
+pub const ENGINE_REGISTERED: u32 = 2;
 
 /// One merged frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,8 +53,36 @@ pub struct Window {
     pub size: [usize; 2],
 }
 
+/// How the image was merged: by registration (the frames' positions measured on the data) or plainly (the camera's own
+/// pattern). Written in the same block, additively: a reader that does not know it ignores it.
+///
+/// ```xml
+/// lcps:Method="registered" lcps:GateVerdict="better" lcps:GainsApplied="true" lcps:Tiles="87"
+/// lcps:Models="0 0 0 0;0.78 0.05 1.2e-6 -3.1e-6;…"   (per frame: shift x, shift y, rotation, scale)
+/// lcps:Method="plain" lcps:Reason="noTexture" lcps:GainsApplied="false"
+/// lcps:MergedAt="2026-11-25T10:20:30.123Z"   (every merge of a series is its own file)
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Registration {
+    /// The image is the registered reconstruction (false: the plain merge).
+    pub registered: bool,
+    /// The hold-out test of the measured positions against the camera's own pattern: `better`, `equal` or `worse`.
+    pub verdict: Option<String>,
+    /// Why the plain merge was used, when it was used for a reason (a short code such as `noTexture`).
+    pub reason: Option<String>,
+    /// Per-frame brightness gains were applied.
+    pub gains: bool,
+    /// Tiles the positions rest on.
+    pub tiles: u32,
+    /// Each frame's shift (x, y in sensor sites), rotation (radians) and scale against frame 1; empty for a plain merge.
+    pub models: Vec<[f32; 4]>,
+    /// When the merge was made (UTC, ISO 8601 with milliseconds). It makes every merge of a series its own file: two
+    /// merges of the same series with the same method are never the same bytes.
+    pub made_at: Option<String>,
+}
+
 /// The provenance block.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Provenance {
     pub engine: u32,
     pub shot_count: u16,
@@ -59,6 +90,8 @@ pub struct Provenance {
     pub scale: u16,
     pub window: Option<Window>,
     pub frames: Vec<SourceFrame>,
+    /// How it was merged; `None` in a file from before registration existed.
+    pub registration: Option<Registration>,
 }
 
 fn escape(s: &str) -> String {
@@ -82,6 +115,27 @@ impl Provenance {
                 " lcps:SensorWidth=\"{}\" lcps:SensorHeight=\"{}\" lcps:WindowX=\"{}\" lcps:WindowY=\"{}\" lcps:WindowWidth=\"{}\" lcps:WindowHeight=\"{}\"",
                 w.sensor[0], w.sensor[1], w.origin[0], w.origin[1], w.size[0], w.size[1]
             );
+        }
+        if let Some(r) = &self.registration {
+            s += &format!(
+                " lcps:Method=\"{}\" lcps:GainsApplied=\"{}\" lcps:Tiles=\"{}\"",
+                if r.registered { "registered" } else { "plain" },
+                r.gains,
+                r.tiles
+            );
+            if let Some(v) = &r.verdict {
+                s += &format!(" lcps:GateVerdict=\"{}\"", escape(v));
+            }
+            if let Some(v) = &r.reason {
+                s += &format!(" lcps:Reason=\"{}\"", escape(v));
+            }
+            if let Some(t) = &r.made_at {
+                s += &format!(" lcps:MergedAt=\"{}\"", escape(t));
+            }
+            if !r.models.is_empty() {
+                let models: Vec<String> = r.models.iter().map(|m| m.iter().map(f32::to_string).collect::<Vec<_>>().join(" ")).collect();
+                s += &format!(" lcps:Models=\"{}\"", models.join(";"));
+            }
         }
         s += "><lcps:Frames><rdf:Seq>";
         for f in &self.frames {
@@ -144,6 +198,25 @@ impl Provenance {
             });
             rest = &rest[j..];
         }
+        // a file from before registration existed has no Method
+        let registration = attr("Method").map(|m| Registration {
+            registered: m == "registered",
+            verdict: attr("GateVerdict"),
+            reason: attr("Reason"),
+            gains: attr("GainsApplied").is_some_and(|g| g == "true"),
+            tiles: num("Tiles").and_then(|t| u32::try_from(t).ok()).unwrap_or(0),
+            made_at: attr("MergedAt"),
+            models: attr("Models")
+                .map(|t| {
+                    t.split(';')
+                        .filter_map(|m| {
+                            let v: Vec<f32> = m.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                            <[f32; 4]>::try_from(v).ok()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
         Some(Provenance {
             engine: num("Engine")? as u32,
             shot_count: u16::try_from(num("ShotCount")?).ok()?,
@@ -151,6 +224,7 @@ impl Provenance {
             scale: u16::try_from(num("Scale")?).ok()?,
             window,
             frames,
+            registration,
         })
     }
 }
@@ -193,7 +267,51 @@ mod tests {
                     counter: 900 + u32::from(i),
                 })
                 .collect(),
+            registration: None,
         }
+    }
+
+    #[test]
+    fn how_the_image_was_merged_is_written_additively_and_read_back() {
+        let packet = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>";
+        let registered = Registration {
+            registered: true,
+            verdict: Some("better".into()),
+            reason: None,
+            gains: true,
+            tiles: 87,
+            models: vec![[0.0, 0.0, 0.0, 0.0], [0.785_432, -0.051_7, 1.25e-6, -3.5e-6]],
+            made_at: Some("2030-01-02T03:04:05.678Z".into()),
+        };
+        let plain = Registration {
+            registered: false,
+            verdict: None,
+            reason: Some("no <texture> & \"such\"".into()),
+            gains: false,
+            tiles: 0,
+            models: vec![],
+            made_at: None,
+        };
+        for r in [registered, plain] {
+            let p = Provenance { registration: Some(r), ..sample() };
+            assert_eq!(Provenance::from_packet(&p.add_to_packet(packet)), Some(p));
+        }
+        // a block without the attributes (a file from before) reads as no registration, and the frames are as ever
+        let old = sample().add_to_packet(packet);
+        assert!(!old.contains("lcps:Method"));
+        assert_eq!(Provenance::from_packet(&old).unwrap().registration, None);
+        // a reader of the older kind ignores the new attributes: they are plain attributes of the same description
+        let new = Provenance {
+            registration: Some(Registration { registered: true, models: vec![[1.0, 2.0, 3.0, 4.0]], ..Default::default() }),
+            ..sample()
+        };
+        assert!(new.to_description().starts_with("<rdf:Description") && new.to_description().contains(" lcps:Models=\"1 2 3 4\""));
+        // 16 frames of models stay small
+        let sixteen =
+            Registration { registered: true, models: vec![[0.785_432_1, -0.051_734_5, 1.254_321e-6, -3.543_21e-6]; 16], ..Default::default() };
+        let text = Provenance { registration: Some(sixteen), ..sample() }.to_description();
+        let models = text.split("lcps:Models=\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or_default();
+        assert!(models.len() < 1000, "{}", models.len());
     }
 
     #[test]
