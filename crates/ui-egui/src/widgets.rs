@@ -327,8 +327,9 @@ const SCRUB_START: f32 = 3.0;
 const DRAG_START: f32 = 1.0;
 
 /// The radius of a slider's thumb: a small solid dot, as in DaVinci Resolve (issue #346: the
-/// larger ring crowded the panel).
-const THUMB_RING: f32 = 4.0;
+/// larger ring crowded the panel), a quarter larger than it was so it is easier to see and grab
+/// (issue #449).
+const THUMB_RING: f32 = 5.0;
 
 /// Size of a slider's name and value in a panel (issue #346: small enough that names fit).
 const LABEL_FONT: f32 = 10.5;
@@ -1095,6 +1096,9 @@ struct SliderGeometry {
     value: Rect,
 }
 
+/// The right margin of a panel's rows (the `right: 16` of their frames): a slider's value ends on it too.
+const PANEL_PAD_R: f32 = 16.0;
+
 /// How much taller a two-row slider is than a one-row one.
 const TWO_ROW_EXTRA: f32 = 14.0;
 
@@ -1119,7 +1123,8 @@ const MAX_LABEL_COL: f32 = 76.0;
 
 impl SliderGeometry {
     fn new(row: Rect, label_col: f32, k: f32) -> Self {
-        let (pad_l, pad_r, gap) = (12.0, 12.0, 8.0);
+        // the value ends on the panel's right margin, as the rows of buttons above the sliders do (issue #449)
+        let (pad_l, pad_r, gap) = (12.0, PANEL_PAD_R, 8.0);
         let label = Rect::from_min_size(pos2(row.left() + pad_l, row.top()), vec2(label_col, row.height()));
         let value =
             Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(label.right()), row.top()), pos2(row.right() - pad_r, row.bottom()));
@@ -1149,7 +1154,7 @@ impl SliderGeometry {
     /// Two rows: the name at the left and the value at the right of the top line, the track the
     /// width of both under them (its thumb at either end just inside the row's padding).
     fn two_rows(row: Rect, k: f32) -> Self {
-        let (pad_l, pad_r) = (12.0, 12.0);
+        let (pad_l, pad_r) = (12.0, PANEL_PAD_R);
         // the name and value sit close over their own track, with the gap above them, so each
         // slider reads as one unit and the rows stand apart (issue #346)
         let split = (row.bottom() - 14.0).max(row.top());

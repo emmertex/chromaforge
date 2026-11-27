@@ -68,3 +68,18 @@ fn a_long_profile_name_leaves_the_edit_panel_its_width() {
         assert!(r.right() <= width, "{id} {r:?} is cut off by the {width} pt panel");
     }
 }
+
+/// #449: the panel's rows share one right margin: a slider's value ends where the buttons above the sliders (HDR)
+/// end, at every panel width.
+#[test]
+fn slider_values_end_on_the_buttons_right_margin() {
+    for width in [crate::state::RIGHT_WIDTH.min, 360.0] {
+        let (_, widgets) = panel(width);
+        let rect = |id: &str| widgets.iter().find(|(w, _)| w == id).unwrap_or_else(|| panic!("{id} not drawn")).1;
+        let hdr = rect("button:hdr");
+        for id in ["sliderValue:light.exposure", "sliderValue:light.contrast", "sliderValue:color.saturation"] {
+            let v = rect(id);
+            assert!((v.right() - hdr.right()).abs() <= 1.0, "{width} pt: {id} ends at {} and HDR at {}", v.right(), hdr.right());
+        }
+    }
+}
