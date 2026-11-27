@@ -89,13 +89,12 @@ impl lcc_ui_egui::render::ScreenTextures for WindowTextures {
     fn show(&mut self, frame: &lcc_engine::media::ScreenFrame, id: Option<egui::TextureId>) -> Option<egui::TextureId> {
         let view = frame.texture.create_view(&Default::default());
         let mut r = self.renderer.write();
-        let filter = eframe::wgpu::FilterMode::Linear;
         Some(match id {
             Some(id) => {
-                r.update_egui_texture_from_wgpu_texture(&self.device, &view, filter, id);
+                r.update_egui_texture_from_wgpu_texture_with_sampler_options(&self.device, &view, hdr_display::photo_sampler(), id);
                 id
             }
-            None => r.register_native_texture(&self.device, &view, filter),
+            None => r.register_native_texture_with_sampler_options(&self.device, &view, hdr_display::photo_sampler()),
         })
     }
 
