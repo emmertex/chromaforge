@@ -214,19 +214,10 @@ impl OriginalsReader {
         a.by_index.retain(|_, k| keep.contains(k));
         let fresh: Vec<&Unread> = batch.iter().chain(next).filter(|u| !a.reads.contains_key(&key(u))).collect();
         if !fresh.is_empty() {
-            let probe = self.probe.clone();
-            let jobs = fresh
-                .iter()
-                .map(|u| {
-                    let (probe, path) = (probe.clone(), u.path.clone());
-                    crate::io_sched::IoJob::read(u.path.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> ProbeResult + Send>)
-                })
-                .collect();
+            let jobs = fresh.iter().map(|u| crate::import::probe_job(&self.probe, &u.path, None)).collect();
             let ctx = a.ctx.clone();
             a.linked = Some(cancel.clone());
-            let stream = a.stream.get_or_insert_with(|| {
-                crate::io_sched::pool::Stream::open(&ctx, crate::import::workers(usize::MAX), std::result::Result::is_ok).with_cancel(cancel.clone())
-            });
+            let stream = a.stream.get_or_insert_with(|| crate::import::probe_stream(&ctx, None, cancel));
             match stream.submit(jobs) {
                 Ok(r) => {
                     for (k, u) in fresh.iter().enumerate() {
@@ -235,10 +226,9 @@ impl OriginalsReader {
                         a.reads.insert(key(u), Ahead1::Fed);
                     }
                 }
-                // (from inside a file job: refused, as probe_all refuses it)
                 Err(e) => {
                     for u in fresh {
-                        a.reads.insert(key(u), Ahead1::Arrived(Box::new(Err(format!("{}: {e}", u.path)))));
+                        a.reads.insert(key(u), Ahead1::Arrived(Box::new(Err(crate::import::refused_probe(&u.path, e).into_message()))));
                     }
                 }
             }

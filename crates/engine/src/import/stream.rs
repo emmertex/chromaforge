@@ -30,7 +30,7 @@ use super::{
     How, ImportJob, Next, Planned, Prepared, PreparedItem, Sorted, Transfer, import_stems, probe_outcome, transfer_ok, transfer_outcome, workers,
 };
 use crate::io_sched::pool::Stream;
-use crate::io_sched::{IoContext, IoJob, JobOutcome};
+use crate::io_sched::{IoContext, JobOutcome};
 use crate::media::ProbeInfo;
 
 /// Batches planned ahead of the oldest one not yet handed over (its copies still under way).
@@ -188,8 +188,6 @@ struct Run<'a> {
     stop: Option<Stop>,
     /// Copy as DNG's reader of the copied file (the session's).
     file_bytes: Option<crate::merge::ByteReader>,
-    #[cfg(test)]
-    fault: crate::import_move::Fault,
 }
 
 impl ImportJob {
@@ -342,11 +340,6 @@ impl ImportJob {
     }
 }
 
-/// The format-only result a session without file access gives every file (as [`super::probe_all`]).
-fn unread_info(path: &str) -> ProbeInfo {
-    ProbeInfo { format: std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(), ..Default::default() }
-}
-
 impl<'a> Run<'a> {
     fn new(
         ctx: &'a Arc<IoContext>,
@@ -381,8 +374,6 @@ impl<'a> Run<'a> {
             hashes: HashMap::new(),
             stop: None,
             file_bytes,
-            #[cfg(test)]
-            fault: crate::import_move::injected_fault(),
         }
     }
 
@@ -434,7 +425,7 @@ impl<'a> Run<'a> {
 
     fn probe_stream(&mut self) -> &mut Stream<ProbeResult> {
         let (ctx, cancel, mounts) = (self.ctx, self.cancel, self.mounts());
-        self.probes.get_or_insert_with(|| Stream::with_mounts(ctx, workers(usize::MAX), Result::is_ok, mounts).with_cancel(cancel.clone()))
+        self.probes.get_or_insert_with(|| super::probe_stream(ctx, Some(mounts), cancel))
     }
 
     fn vol_of(&mut self, path: &str) -> usize {
@@ -486,13 +477,7 @@ impl<'a> Run<'a> {
         let mut jobs = Vec::with_capacity(ps.len());
         for p in &ps {
             let Some(path) = self.pos.get(p).map(|e| e.path.clone()) else { continue };
-            let (probe, read, cached) = (probe.clone(), path.clone(), self.cached.remove(p));
-            // (a cached probe that still holds comes back unread)
-            let run = move || match cached {
-                Some(info) if super::keep_import_probe(&read, &info) => Ok(info),
-                _ => probe(&read),
-            };
-            jobs.push(IoJob::read(path, Box::new(run) as Box<dyn FnOnce() -> ProbeResult + Send>));
+            jobs.push(super::probe_job(&probe, &path, self.cached.remove(p)));
         }
         if jobs.is_empty() {
             return;
@@ -507,8 +492,7 @@ impl<'a> Run<'a> {
                     e.read = Read::Fed(index);
                     self.probe_index.insert(index, p);
                 }
-                // (from inside a file job: refused, as probe_all refuses it)
-                Err(err) => e.read = Read::Arrived(Box::new(Err(format!("{}: {err}", e.path).into()))),
+                Err(err) => e.read = Read::Arrived(Box::new(Err(super::refused_probe(&e.path, *err)))),
             }
         }
     }
@@ -518,7 +502,7 @@ impl<'a> Run<'a> {
     fn need(&mut self, job: &ImportJob, p: usize, path: &str) {
         if job.probe.is_none() {
             // (no file access: a cached probe is used as it is, as `probe_all_cached` does)
-            let info = self.cached.remove(&p).unwrap_or_else(|| unread_info(path));
+            let info = self.cached.remove(&p).unwrap_or_else(|| super::unread_info(path));
             self.pos.insert(p, Pos { path: path.to_string(), vol: usize::MAX, read: Read::Arrived(Box::new(Ok(info))), holds: false });
             return;
         }
@@ -596,18 +580,8 @@ impl<'a> Run<'a> {
 
     fn submit_transfer(&mut self, tid: usize, t: Box<Transfer>) {
         let ctx = self.ctx;
-        #[cfg(test)]
-        let fault = self.fault;
-        let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
-        let file_bytes = self.file_bytes.clone();
-        let run = move || {
-            #[cfg(test)]
-            crate::import_move::inject(fault);
-            let path = t.path.clone();
-            // last-resort guard: a panic is this file's failure, not the import's
-            crate::guard::catch("import", || super::run_transfer(*t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
-        };
-        let job = IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> };
+        // (what its outcome needs is pending already)
+        let (job, _) = super::transfer_job(*t, self.file_bytes.clone());
         let (cancel, mounts) = (self.cancel, self.mounts());
         let stream =
             self.transfers.get_or_insert_with(|| Stream::with_mounts(ctx, workers(usize::MAX), transfer_ok, mounts).with_cancel(cancel.clone()));
@@ -617,7 +591,7 @@ impl<'a> Run<'a> {
             }
             Err(e) => {
                 let path = self.pending.get(&tid).map(|p| p.path.clone()).unwrap_or_default();
-                self.resolved(tid, Some(PreparedItem::Failed(path, format!("{e}; the original is kept"))));
+                self.resolved(tid, Some(super::refused_transfer(path, e)));
             }
         }
     }

@@ -922,15 +922,7 @@ pub(crate) fn probe_all_typed(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
     let Some(probe) = probe.cloned() else {
-        return paths
-            .iter()
-            .map(|p| {
-                Ok(ProbeInfo {
-                    format: Path::new(p).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(),
-                    ..Default::default()
-                })
-            })
-            .collect();
+        return paths.iter().map(|p| Ok(unread_info(p))).collect();
     };
     #[cfg(not(target_arch = "wasm32"))]
     let probed = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
@@ -949,6 +941,12 @@ pub(crate) fn probe_all_typed(
         })
         .collect();
     probed
+}
+
+/// What a session without file access knows of a file, which every import of it takes as its
+/// probe: its format, from its extension.
+pub(crate) fn unread_info(path: &str) -> ProbeInfo {
+    ProbeInfo { format: Path::new(path).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(), ..Default::default() }
 }
 
 /// Whether a probe cached from an earlier scan still holds for the file at a path (a file-system
@@ -1014,21 +1012,49 @@ pub(crate) fn probe_scheduled(
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
-    use crate::io_sched::IoJob;
-    let jobs = paths
-        .iter()
-        .map(|p| {
-            let (probe, path) = (probe.clone(), p.clone());
-            IoJob::read(p.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>)
-        })
-        .collect();
+    let jobs = paths.iter().map(|p| probe_job(probe, p, None)).collect();
     let report = match crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done) {
         Ok(r) => r,
-        // (several files from inside a file job: refused, never a wait for itself)
-        Err(e) => return paths.iter().map(|p| Err(ProbeError::from(format!("{p}: {e}")))).collect(),
+        Err(e) => return paths.iter().map(|p| Err(refused_probe(p, e))).collect(),
     };
     let unreached = if workers > 1 { "not probed" } else { "cancelled" };
     report.outcomes.into_iter().zip(paths).map(|(o, p)| probe_outcome(o, p, unreached)).collect()
+}
+
+/// The I/O job that reads file `path` with `probe` (its volume's queue decides when). A probe a
+/// preceding scan left (`cached`) is checked against the file's disk by the job itself, on that
+/// queue ([`keep_import_probe`]), and comes back unread while it still holds.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_job(probe: &crate::media::FileProbe, path: &str, cached: Option<ProbeInfo>) -> crate::io_sched::IoJob<Result<ProbeInfo, String>> {
+    let (probe, read) = (probe.clone(), path.to_string());
+    let run = move || match cached {
+        Some(info) if keep_import_probe(&read, &info) => Ok(info),
+        _ => probe(&read),
+    };
+    crate::io_sched::IoJob::read(path.to_string(), Box::new(run))
+}
+
+/// File `path`'s failure when the pool refused its read (several files submitted from inside a
+/// file job: refused, never a wait for itself).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn refused_probe(path: &str, e: crate::io_sched::pool::SubmitError) -> ProbeError {
+    ProbeError::from(format!("{path}: {e}"))
+}
+
+/// A stream of file reads (probes) linked to the caller's `cancel`, at today's thread count,
+/// keying paths with `mounts` (one list for all of a caller's streams) or a fresh list.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_stream(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    mounts: Option<std::sync::Arc<lcc_catalog::folders::Mounts>>,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> crate::io_sched::pool::Stream<Result<ProbeInfo, String>> {
+    use crate::io_sched::pool::Stream;
+    let stream = match mounts {
+        Some(m) => Stream::with_mounts(ctx, workers(usize::MAX), Result::is_ok, m),
+        None => Stream::open(ctx, workers(usize::MAX), Result::is_ok),
+    };
+    stream.with_cancel(cancel.clone())
 }
 
 /// A probe's outcome as the string today's loops gave (`unreached`: a file cancel left unreached),
@@ -2223,34 +2249,52 @@ fn transfers_scheduled(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
-    use crate::io_sched::IoJob;
-    // (the tests' injected faults hold for the workers too)
-    #[cfg(test)]
-    let fault = crate::import_move::injected_fault();
-    let mut about = Vec::with_capacity(transfers.len());
-    let jobs = transfers
-        .into_iter()
-        .map(|t| {
-            let moving = matches!(t.how, How::Place { .. });
-            about.push((t.path.clone(), t.dir.clone(), moving));
-            let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
-            let file_bytes = file_bytes.clone();
-            let run = move || {
-                #[cfg(test)]
-                crate::import_move::inject(fault);
-                let path = t.path.clone();
-                // last-resort guard: a panic is this file's failure, not the import's
-                crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
-            };
-            IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> }
-        })
-        .collect();
+    let (mut jobs, mut about) = (Vec::with_capacity(transfers.len()), Vec::with_capacity(transfers.len()));
+    for t in transfers {
+        let (job, a) = transfer_job(t, file_bytes.clone());
+        jobs.push(job);
+        about.push(a);
+    }
     let report = match crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done) {
         Ok(r) => r,
-        // (several copies from inside a file job: refused, never a wait for itself)
-        Err(e) => return about.into_iter().map(|(path, _, _)| Some(PreparedItem::Failed(path, format!("{e}; the original is kept")))).collect(),
+        Err(e) => return about.into_iter().map(|a| Some(refused_transfer(a.path, e))).collect(),
     };
-    report.outcomes.into_iter().zip(about).map(|(o, (path, dir, moving))| transfer_outcome(o, path, &dir, moving)).collect()
+    report.outcomes.into_iter().zip(about).map(|(o, a)| transfer_outcome(o, a.path, &a.dir, a.moving)).collect()
+}
+
+/// What a transfer's outcome needs to be told ([`transfer_outcome`]): its source, its
+/// destination folder, whether it moves the file.
+#[cfg(not(target_arch = "wasm32"))]
+struct TransferAbout {
+    path: String,
+    dir: PathBuf,
+    moving: bool,
+}
+
+/// The I/O job running transfer `t` (a copy or move from its source volume into `t.dir`'s), under
+/// the last-resort guard (a panic is this file's failure, not the import's), skippable when its
+/// last step is Copy as DNG; the tests' injected fault of the calling thread holds for the worker
+/// too. The one job the batch and the streamed import both run.
+#[cfg(not(target_arch = "wasm32"))]
+fn transfer_job(t: Transfer, file_bytes: Option<crate::merge::ByteReader>) -> (crate::io_sched::IoJob<PreparedItem>, TransferAbout) {
+    #[cfg(test)]
+    let fault = crate::import_move::injected_fault();
+    let about = TransferAbout { path: t.path.clone(), dir: t.dir.clone(), moving: matches!(t.how, How::Place { .. }) };
+    let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
+    let run = move || {
+        #[cfg(test)]
+        crate::import_move::inject(fault);
+        let path = t.path.clone();
+        crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
+    };
+    (crate::io_sched::IoJob { source, dest, skippable, run: Box::new(run) }, about)
+}
+
+/// Transfer `path`'s item when the pool refused it (several copies from inside a file job:
+/// refused, never a wait for itself).
+#[cfg(not(target_arch = "wasm32"))]
+fn refused_transfer(path: String, e: crate::io_sched::pool::SubmitError) -> PreparedItem {
+    PreparedItem::Failed(path, format!("{e}; the original is kept"))
 }
 
 /// A transfer's outcome as an item (`None`: not started), in the words the import report uses; a
