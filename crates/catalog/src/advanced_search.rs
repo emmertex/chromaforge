@@ -179,6 +179,12 @@ pub struct FileCategory {
     /// How [`FileCategory::keywords`] combine: `any` (a photo with at least one) or `all`
     /// (a photo with every one).
     pub keyword_op: MatchOp,
+    /// Photos without a keyword too (issue #1135): alone, only those; beside keywords, those or the keywords' photos.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untagged: bool,
+    /// File formats picked from the catalog's (`JPEG`, `CR3`, …), any of them; exact, case-insensitive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<String>,
 }
 
 impl FileCategory {
@@ -188,6 +194,8 @@ impl FileCategory {
             && self.folder.trim().is_empty()
             && self.album.is_none()
             && self.keywords.iter().all(|k| k.trim().is_empty())
+            && !self.untagged
+            && self.formats.iter().all(|f| f.trim().is_empty())
     }
 }
 
@@ -257,6 +265,18 @@ pub struct PhotographCategory {
     pub aperture: Range,
     /// Shutter speed ([`ShutterRange`]).
     pub shutter: ShutterRange,
+    /// Cameras picked from the catalog's, any of them; exact, case-insensitive (issue #1135).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<String>,
+    /// Lenses picked from the catalog's, any of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lenses: Vec<String>,
+    /// Photos with no camera recorded too: alone, only those; beside cameras, those or the cameras' photos.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_camera: bool,
+    /// Photos with no lens recorded too, as [`PhotographCategory::no_camera`] is for cameras.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_lens: bool,
 }
 
 impl PhotographCategory {
@@ -267,6 +287,10 @@ impl PhotographCategory {
             && self.iso.is_empty()
             && self.aperture.is_empty()
             && self.shutter.is_empty()
+            && self.cameras.iter().all(|c| c.trim().is_empty())
+            && self.lenses.iter().all(|l| l.trim().is_empty())
+            && !self.no_camera
+            && !self.no_lens
     }
 }
 
@@ -363,7 +387,7 @@ impl AdvancedSearch {
     /// whose ends are reversed, or an unsupported audio/video condition — is an actionable error
     /// naming the field, never an empty grid or a panic.
     pub fn to_filter(&self) -> Result<Filter, String> {
-        if self.groups.is_empty() && self.mode == SearchMatch::All {
+        if self.groups.is_empty() && self.mode == SearchMatch::All && !self.untagged_or_keywords() {
             return self.all_of_one_group();
         }
         if self.groups.len() > MAX_GROUPS {
@@ -409,8 +433,15 @@ impl AdvancedSearch {
                 out.push(field("album", "is", json!(album.0)));
             }
             let keywords = trimmed(&f.keywords).unwrap_or_default().into_iter().map(|k| field("keywords", "is", json!(k))).collect();
-            out.extend(list(f.keyword_op, keywords));
+            let keywords = list(f.keyword_op, keywords);
+            if f.untagged {
+                let none = field("keywords", "isEmpty", Value::Null);
+                out.extend(list(MatchOp::Any, keywords.into_iter().chain([none]).collect()));
+            } else {
+                out.extend(keywords);
+            }
         }
+        out.extend(self.pick_rules());
         out.extend(self.field_rules(false)?.into_iter().map(rule_of));
         if let Some(f) = &self.faces {
             if let Some(spec) = f.count.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
@@ -537,6 +568,38 @@ impl AdvancedSearch {
 
     /// [`Self::to_filter`] for a query of one group whose conditions must all match: the words, keywords, people,
     /// collection and face count go to their own filter fields, the rest to one rule set.
+    /// Whether "without keywords" is asked for beside picked keywords: one group's All can't say "these or none" by
+    /// the plain filter's keyword list, so the query goes the rule way.
+    fn untagged_or_keywords(&self) -> bool {
+        self.file.as_ref().is_some_and(|f| f.untagged && trimmed(&f.keywords).is_some())
+    }
+
+    /// The values picked from the catalog's lists (issue #1135): each list one condition, matched by any of its
+    /// values exactly (case-insensitively), or by an empty field when "without" is ticked beside it.
+    fn pick_rules(&self) -> Vec<Rule> {
+        let field = |field: &str, op: &str, value: Value| Rule::Field { field: field.to_string(), op: op.to_string(), value };
+        let any = |name: &str, values: &[String], none: bool| -> Option<Rule> {
+            let mut rules: Vec<Rule> = trimmed(values).unwrap_or_default().into_iter().map(|v| field(name, "is", json!(v))).collect();
+            if none {
+                rules.push(field(name, "isEmpty", Value::Null));
+            }
+            match rules.len() {
+                0 => None,
+                1 => rules.into_iter().next(),
+                _ => Some(Rule::Group { group: RuleSet { mode: Match::Any, rules } }),
+            }
+        };
+        let mut out = Vec::new();
+        if let Some(f) = &self.file {
+            out.extend(any("format", &f.formats, false));
+        }
+        if let Some(p) = &self.photograph {
+            out.extend(any("camera", &p.cameras, p.no_camera));
+            out.extend(any("lens", &p.lenses, p.no_lens));
+        }
+        out
+    }
+
     fn all_of_one_group(&self) -> Result<Filter, String> {
         let rules = self.field_rules(true)?;
         let mut filter = Filter { text: self.words.trim().to_string(), ..Filter::default() };
@@ -562,8 +625,16 @@ impl AdvancedSearch {
                 filter.person_op = f.people_op;
             }
         }
+        let mut rules: Vec<Rule> = rules.into_iter().map(rule_of).collect();
+        rules.extend(self.pick_rules());
+        if let Some(f) = &self.file
+            && f.untagged
+        {
+            // no keywords picked beside it (`to_filter` sends that case the other way): the photos without any
+            rules.push(Rule::Field { field: "keywords".into(), op: "isEmpty".into(), value: Value::Null });
+        }
         if !rules.is_empty() {
-            filter.rule_set = Some(RuleSet { mode: Match::All, rules: rules.into_iter().map(rule_of).collect() });
+            filter.rule_set = Some(RuleSet { mode: Match::All, rules });
         }
         Ok(filter)
     }
@@ -725,6 +796,7 @@ mod tests {
             iso: Range { min: Some(100.0), max: Some(800.0) },
             shutter: ShutterRange { min: Some("1/500".into()), max: None },
             lens: String::new(),
+            ..Default::default()
         });
         assert_eq!(matches(&c, &query), vec![PhotoId(1)], "f/1.8 ≥ 1.8, 1/250 s ≥ 1/500 s, ISO 400 in 100–800");
         query.photograph.as_mut().unwrap().shutter.min = Some("1/125".into());
@@ -889,6 +961,42 @@ mod tests {
         assert_eq!(json["groups"][0]["match"], "none");
         assert_eq!(serde_json::from_value::<AdvancedSearch>(json).unwrap(), query);
         assert!(serde_json::to_value(q()).unwrap().get("match").is_none(), "the default is left out");
+    }
+
+    /// Issue #1135 phase 2: values picked from the catalog's lists match exactly, any of them, and "without" adds the
+    /// photos with nothing recorded; alone it asks for only those.
+    #[test]
+    fn picked_values_match_any_of_them_and_without_adds_the_empty_ones() {
+        let c = catalog();
+        let pick = |p: PhotographCategory| AdvancedSearch { photograph: Some(p), ..q() };
+        let cam = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // exact, case-insensitive, any of the list
+        assert_eq!(matches(&c, &pick(PhotographCategory { cameras: cam(&["canon eos r6", "Nikon Z8"]), ..Default::default() })), vec![PhotoId(1)]);
+        assert!(matches(&c, &pick(PhotographCategory { cameras: cam(&["Canon"]), ..Default::default() })).is_empty(), "a pick is whole");
+        // without a camera: alone only the clip; beside a camera, either
+        assert_eq!(matches(&c, &pick(PhotographCategory { no_camera: true, ..Default::default() })), vec![PhotoId(2)]);
+        let both = PhotographCategory { cameras: cam(&["Canon EOS R6"]), no_camera: true, ..Default::default() };
+        assert_eq!(matches(&c, &pick(both)), vec![PhotoId(1), PhotoId(2)]);
+        assert_eq!(matches(&c, &pick(PhotographCategory { lenses: cam(&["RF 85mm F1.2"]), ..Default::default() })), vec![PhotoId(1)]);
+        assert_eq!(matches(&c, &pick(PhotographCategory { no_lens: true, ..Default::default() })), vec![PhotoId(2)]);
+        // formats
+        let formats = AdvancedSearch { file: Some(FileCategory { formats: cam(&["mp4"]), ..Default::default() }), ..q() };
+        assert_eq!(matches(&c, &formats), vec![PhotoId(2)]);
+        // not tagged: alone, the clip; beside a keyword, the keyword's photo too, in one group or several
+        let untagged = |keywords: &[&str]| FileCategory { keywords: cam(keywords), untagged: true, ..Default::default() };
+        assert_eq!(matches(&c, &AdvancedSearch { file: Some(untagged(&[])), ..q() }), vec![PhotoId(2)]);
+        assert_eq!(matches(&c, &AdvancedSearch { file: Some(untagged(&["italy"])), ..q() }), vec![PhotoId(1), PhotoId(2)]);
+        let mut grouped = AdvancedSearch { file: Some(untagged(&[])), ..q() };
+        grouped.groups.push(pick(PhotographCategory { no_lens: true, ..Default::default() }));
+        assert_eq!(matches(&c, &grouped), vec![PhotoId(2)]);
+        // a group's None turns the picks round: not this camera
+        let none = AdvancedSearch { mode: SearchMatch::None, ..pick(PhotographCategory { cameras: cam(&["Canon EOS R6"]), ..Default::default() }) };
+        assert_eq!(matches(&c, &none), vec![PhotoId(2)]);
+        // they count as conditions, and travel as JSON
+        assert!(!pick(PhotographCategory { no_lens: true, ..Default::default() }).is_empty());
+        let json = serde_json::to_value(pick(PhotographCategory { cameras: cam(&["A"]), no_camera: true, ..Default::default() })).unwrap();
+        assert_eq!((json["photograph"]["cameras"][0].clone(), json["photograph"]["noCamera"].clone()), (json!("A"), json!(true)));
+        assert!(serde_json::to_value(q()).unwrap().get("photograph").is_none());
     }
 
     #[test]

@@ -348,6 +348,7 @@
   "{what} merge added, but not registered: {reason}": "{what}-sammanfogning tillagd, men inte registrerad: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "{} valda",
   "{} faces wait under 1 person": "{} ansikten väntar under 1 person",
   "{} faces wait under {} people": "{} ansikten väntar under {} personer",
   "{} fixed in this photo": "{} åtgärdade i detta foto",

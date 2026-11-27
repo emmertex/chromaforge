@@ -328,6 +328,7 @@
   "{what} merge added, but not registered: {reason}": "Unione {what} aggiunta, ma non registrata: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "{} scelti",
   "{} faces wait under 1 person": "{} volti in attesa sotto 1 persona",
   "{} faces wait under {} people": "{} volti in attesa sotto {} persone",
   "{} fixed in this photo": "{} corrette in questa foto",
