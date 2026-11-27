@@ -1092,6 +1092,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (yl > 1e-9) {
         d = c * o / yl;
     }
+    // a base curve with a channel share: the table also on each channel in linear Rec.709, blended in
+    // (`ToneMap::colour`; keep the matrices in step with `lcc_pipeline::tone::TO_709` and `FROM_709`)
+    let share = pf(F_TONE_SHARE);
+    if (share > 0.0) {
+        let p709 = vec3<f32>(
+            dot(vec3<f32>(1.660491, -0.587641, -0.072850), c),
+            dot(vec3<f32>(-0.124550, 1.132900, -0.008349), c),
+            dot(vec3<f32>(-0.018151, -0.100579, 1.118730), c),
+        );
+        let t709 = vec3<f32>(tone_apply(max(p709.x, 0.0)), tone_apply(max(p709.y, 0.0)), tone_apply(max(p709.z, 0.0)));
+        let q = vec3<f32>(
+            dot(vec3<f32>(0.627404, 0.329283, 0.043313), t709),
+            dot(vec3<f32>(0.069097, 0.919540, 0.011362), t709),
+            dot(vec3<f32>(0.016391, 0.088013, 0.895595), t709),
+        );
+        d = d + (q - d) * share;
+        o = max(lum2020(d), 0.0);
+    }
     let k = chroma_scale(o);
     if (k != 1.0) {
         d = vec3<f32>(o) + (d - vec3<f32>(o)) * k;

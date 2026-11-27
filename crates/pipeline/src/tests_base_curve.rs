@@ -19,6 +19,17 @@ fn install(id: &str, doc: serde_json::Value) {
     base_curve::install_library(vec![(id.to_string(), c, base_curve::hash_bytes(&bytes))]);
 }
 
+fn install_all(items: &[(&str, serde_json::Value)]) {
+    let list = items
+        .iter()
+        .map(|(id, doc)| {
+            let bytes = doc.to_string().into_bytes();
+            (id.to_string(), base_curve::parse(&bytes).expect("a valid synthetic curve"), base_curve::hash_bytes(&bytes))
+        })
+        .collect();
+    base_curve::install_library(list);
+}
+
 fn curve_doc(points: serde_json::Value) -> serde_json::Value {
     json!({
         "format": "base-curve", "version": 1,
@@ -352,4 +363,169 @@ fn a_source_without_the_probe_keeps_the_as_shot_scale_and_the_default_render_is_
     let plain = base_tone(&DevelopSettings::default(), &raw_info(), 1.0);
     let probed = base_tone(&DevelopSettings::default(), &SourceInfo { green_probe: Some([0.1, 0.9, 0.2]), ..raw_info() }, 1.0);
     assert_eq!(plain.lut(), probed.lut());
+}
+
+fn share_doc(share: Option<serde_json::Value>) -> serde_json::Value {
+    let mut d = default_doc();
+    d["version"] = json!(2);
+    if let Some(s) = share {
+        d["channel_share"] = s;
+    }
+    d
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    lcc_color::luminance_2020(c)
+}
+
+/// Working-space (Rec.2020) colours: grey, tinted, saturated, and outside Rec.709 (negative there).
+fn sample_colours() -> Vec<[f32; 3]> {
+    let mut v = vec![];
+    for k in [0.0005f32, 0.01, 0.05, 0.18, 0.5, 1.0, 3.0] {
+        for base in [[1.0, 1.0, 1.0], [1.0, 0.6, 0.3], [0.2, 1.0, 0.4], [0.3, 0.5, 1.0], [1.0, 0.1, 0.02], [0.02, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            v.push(base.map(|b| b * k));
+        }
+    }
+    v
+}
+
+#[test]
+fn a_curve_without_the_field_or_with_share_zero_is_the_film_path_bit_for_bit() {
+    let _g = lock();
+    let ids = [
+        ("base:V1", curve_doc(json!([[0, 0], [0.05, 0.12], [0.2, 0.45], [0.5, 0.8], [0.8, 0.95], [1, 1]]))),
+        ("base:V2", share_doc(None)),
+        ("base:V2z", share_doc(Some(json!(0)))),
+    ];
+    for (id, doc) in &ids {
+        install(id, doc.clone());
+        let t = base_tone(&settings(id), &raw_info(), 1.0);
+        assert_eq!(t.channel_share(), 0.0, "{id}");
+        for c in sample_colours() {
+            let y = lum(c);
+            // the luminance path as it was before the share existed
+            let o = t.apply(y);
+            let d = if y > 1e-9 { c.map(|v| v * o / y) } else { [0.0; 3] };
+            let (o2, d2) = t.colour(c, y);
+            assert_eq!(o.to_bits(), o2.to_bits(), "{id} {c:?}");
+            for i in 0..3 {
+                assert_eq!(d[i].to_bits(), d2[i].to_bits(), "{id} {c:?}");
+            }
+        }
+    }
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn the_share_is_read_from_the_file_and_the_table_is_the_same() {
+    let _g = lock();
+    install_all(&[("base:Z", share_doc(Some(json!(0)))), ("base:H", share_doc(Some(json!(0.5))))]);
+    let (a, b) = (base_tone(&settings("base:Z"), &raw_info(), 1.0), base_tone(&settings("base:H"), &raw_info(), 1.0));
+    assert_eq!((a.channel_share(), b.channel_share()), (0.0, 0.5));
+    assert_eq!(a.lut(), b.lut());
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn grey_is_the_same_with_any_share() {
+    let _g = lock();
+    install_all(&[("base:Z", share_doc(Some(json!(0)))), ("base:H", share_doc(Some(json!(0.5)))), ("base:F", share_doc(Some(json!(1))))]);
+    let tones = ["base:Z", "base:H", "base:F"].map(|id| base_tone(&settings(id), &raw_info(), 1.0));
+    for i in 0..60 {
+        let k = 1e-4 * 1.2f32.powi(i * 2);
+        let c = [k; 3];
+        let (o0, d0) = tones[0].colour(c, lum(c));
+        for t in &tones[1..] {
+            let (o, d) = t.colour(c, lum(c));
+            assert!((o - o0).abs() <= 2e-5 * o0.max(1e-3), "{k}: {o} against {o0}");
+            for ch in 0..3 {
+                assert!((d[ch] - d0[ch]).abs() <= 2e-5 * o0.max(1e-3), "{k} channel {ch}: {} against {}", d[ch], d0[ch]);
+            }
+        }
+    }
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn the_blend_is_linear_in_the_share_and_a_saturated_colour_changes() {
+    let _g = lock();
+    install_all(&[
+        ("base:Z", share_doc(Some(json!(0.0)))),
+        ("base:Q", share_doc(Some(json!(0.25)))),
+        ("base:H", share_doc(Some(json!(0.5)))),
+        ("base:F", share_doc(Some(json!(1.0)))),
+    ]);
+    let t = |id: &str| base_tone(&settings(id), &raw_info(), 1.0);
+    let (z, q, h, f) = (t("base:Z"), t("base:Q"), t("base:H"), t("base:F"));
+    let c = [0.4, 0.15, 0.02];
+    let y = lum(c);
+    let (_, d0) = z.colour(c, y);
+    let (_, d1) = f.colour(c, y);
+    let moved = (0..3).map(|i| (d1[i] - d0[i]).abs()).fold(0.0, f32::max);
+    assert!(moved > 0.01, "a saturated colour moves: {moved}");
+    for (tone, share) in [(&q, 0.25f32), (&h, 0.5)] {
+        let (_, d) = tone.colour(c, y);
+        for i in 0..3 {
+            let want = d0[i] + (d1[i] - d0[i]) * share;
+            assert!((d[i] - want).abs() < 1e-6, "share {share} channel {i}: {} against {want}", d[i]);
+        }
+    }
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn colours_outside_rec709_stay_finite_continuous_and_monotone_in_brightness() {
+    let _g = lock();
+    install("base:H", share_doc(Some(json!(0.5))));
+    let t = base_tone(&settings("base:H"), &raw_info(), 1.0);
+    // strongly out of gamut: a saturated green and a saturated red of Rec.2020, and a blue of it
+    for base in [[0.0f32, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.02, 0.0]] {
+        let mut prev = (0.0f32, [0.0f32; 3]);
+        for i in 0..400 {
+            let k = 1e-4 * 1.04f32.powi(i);
+            let c = base.map(|b| b * k);
+            let (o, d) = t.colour(c, lum(c));
+            assert!(o.is_finite() && d.iter().all(|v| v.is_finite()), "{base:?} {k}");
+            assert!(o >= prev.0 - 1e-5, "{base:?} {k}: luminance {o} after {}", prev.0);
+            // a 4 % step of brightness moves the output only smoothly
+            for ch in 0..3 {
+                assert!((d[ch] - prev.1[ch]).abs() < 0.2, "{base:?} {k} channel {ch}");
+            }
+            prev = (o, d);
+        }
+    }
+    // a Rec.709 channel crossing zero: no jump at the crossing
+    let from709 = crate::tone::FROM_709;
+    let col = |p: [f32; 3]| [0, 1, 2].map(|i| from709[i][0] * p[0] + from709[i][1] * p[1] + from709[i][2] * p[2]);
+    let mut prev: Option<[f32; 3]> = None;
+    for i in -50..=50 {
+        let p = [0.3, 0.4, i as f32 * 0.0004];
+        let c = col(p);
+        let (_, d) = t.colour(c, lum(c));
+        if let Some(q) = prev {
+            for ch in 0..3 {
+                assert!((d[ch] - q[ch]).abs() < 2e-3, "step {i} channel {ch}: {} after {}", d[ch], q[ch]);
+            }
+        }
+        prev = Some(d);
+    }
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn an_hdr_table_with_a_share_stays_finite_and_keeps_grey() {
+    let _g = lock();
+    install_all(&[("base:H", share_doc(Some(json!(0.5)))), ("base:Z", share_doc(Some(json!(0))))]);
+    let (h, z) = (base_tone(&settings("base:H"), &raw_info(), 4.0), base_tone(&settings("base:Z"), &raw_info(), 4.0));
+    for c in sample_colours() {
+        let (o, d) = h.colour(c, lum(c));
+        assert!(o.is_finite() && d.iter().all(|v| v.is_finite()), "{c:?}");
+    }
+    for k in [0.01f32, 0.18, 1.0, 4.0, 20.0] {
+        let (o, d) = h.colour([k; 3], k);
+        let (o0, d0) = z.colour([k; 3], k);
+        assert!((o - o0).abs() < 1e-4 * o0.max(1.0), "{k}");
+        assert!((d[1] - d0[1]).abs() < 1e-4 * o0.max(1.0), "{k}");
+    }
+    base_curve::install_library(vec![]);
 }

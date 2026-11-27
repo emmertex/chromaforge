@@ -50,9 +50,15 @@ steps; a version 1 file may not use them.
 | `input` | How the scene value `v` becomes the first x: `x = gain · v / white`. `v` is the photo's scene-linear luminance relative to the sensor's white (see below). `encoding`: `linear`. `gain`, `white`: numbers above 0 (default 1). A `gain` below 1 is headroom: the sensor's white sits at x = `gain`, and x = 1 is reached only above it. |
 | `output` | What the last step returns: `display-linear` (a linear value, 1 = SDR white). |
 | `extension` | What happens above x = 1: `clamp` (hold the last value, default), `linear` (continue with the last segment's slope), `rolloff` (close the gap to 1 exponentially at the last segment's slope). |
+| `channel_share` | Optional, version 2, 0 to 1 (default 0). How much of the curve acts on each colour channel on its own: the render blends the luminance result (colour follows by ratio, today's behaviour) with the result of running the curve on each channel in linear Rec.709, `share` of the way towards the per-channel result. 0 leaves rendering exactly as without the field. See "Channel share". |
 | `curves` | 1 to 8 named curves (letters, digits, `-` and `_`, up to 32 characters). Each has `interpolation` (`linear`, `monotone-cubic`, or from version 2 `natural-cubic-spline`) and 2 to 256 `points` `[x, y]`: x strictly increasing from 0 to 1, y non-decreasing within 0 to 1. |
 | `apply` | 1 to 8 steps run in order; each step's output is the next step's x. |
 | `notes` | Free-form; ignored. Unknown fields anywhere are ignored. |
+
+Channel share:
+- With `channel_share` s above 0 the tone table (the whole `apply` list, applied to a luminance-like value) is also evaluated on each of the three channels of the colour in linear Rec.709. The final colour is `(1 - s) · ratio result + s · per-channel result`, both in the working space, before the hue-preserving clip that keeps highlights in range.
+- Grey is unchanged for any s (equal channels give the same result both ways). Negative Rec.709 channels (colours outside that gamut) enter the per-channel evaluation as 0; the luminance part keeps them.
+- A per-channel curve raises saturation in the midtones and rolls saturated highlights towards white; the share sets how much of that a curve wants.
 
 Interpolations:
 - `linear`: straight lines between the points.

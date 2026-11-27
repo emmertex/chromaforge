@@ -115,6 +115,86 @@ fn base_curve_matches() {
     lcc_develop::base_curve::install_library(vec![]);
 }
 
+// A base curve with a `channel_share` (a synthetic one): the blend of the luminance and the per-channel Rec.709 results on the GPU
+// matches the CPU, SDR and HDR, neutral and edited, with a green probe and a white balance that is not the as-shot one,
+// with the RGB Contrast mode on, and on colours far outside Rec.709.
+#[test]
+fn base_curve_channel_share_matches() {
+    if !gpu() {
+        return;
+    }
+    let doc = br#"{
+        "format": "base-curve", "version": 2, "channel_share": 0.5,
+        "input": { "encoding": "linear", "gain": 1.0, "white": 1.0 },
+        "curves": { "a": { "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.04, 0.1], [0.2, 0.45], [0.5, 0.82], [0.8, 0.96], [1, 1]] } },
+        "apply": [ { "op": "curve", "curve": "a", "on": "luminance" } ]
+    }"#;
+    let curve = lcc_develop::base_curve::parse(doc).expect("a valid synthetic curve");
+    lcc_develop::base_curve::install_library(vec![("base:SyntheticShare".into(), curve, lcc_develop::base_curve::hash_bytes(doc))]);
+    let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
+    let info = SourceInfo {
+        raw: true,
+        camera_tone: Some(tone),
+        white_scale: Some(1.2),
+        green_probe: Some([0.3, 0.9, 0.1]),
+        as_shot_temp: 5200.0,
+        as_shot_tint: 4.0,
+        ..Default::default()
+    };
+    let src = scene(2, 320, 240);
+    {
+        let zero = String::from_utf8_lossy(doc).replace("\"channel_share\": 0.5", "\"channel_share\": 0").into_bytes();
+        let c0 = lcc_develop::base_curve::parse(&zero).unwrap();
+        lcc_develop::base_curve::install_library(vec![("base:SyntheticZero".into(), c0, lcc_develop::base_curve::hash_bytes(&zero))]);
+        let mut z = DevelopSettings::default();
+        z.profile.base_curve = "base:SyntheticZero".into();
+        check("channel share zero", &src, &info, &z, &RenderRequest::fit(320, 240));
+        let c = lcc_develop::base_curve::parse(doc).unwrap();
+        lcc_develop::base_curve::install_library(vec![("base:SyntheticShare".into(), c, lcc_develop::base_curve::hash_bytes(doc))]);
+    }
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    check("channel share neutral", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.exposure = 1.0;
+    s.light.contrast = 40.0;
+    s.light.whites = 20.0;
+    s.light.blacks = -15.0;
+    check("channel share edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("channel share hdr", &src, &info, &s, 320, 240);
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    s.wb.mode = WbMode::Custom;
+    s.wb.temp = 4300.0;
+    s.wb.tint = 10.0;
+    s.wb.scale = lcc_develop::WbScale::Kelvin;
+    check("channel share, other white", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.contrast_mode = lcc_develop::ContrastMode::Rgb;
+    s.light.contrast = 35.0;
+    s.light.blacks = -10.0;
+    check("channel share, RGB contrast", &src, &info, &s, &RenderRequest::fit(320, 240));
+    // saturated colours, most of them outside Rec.709: the primaries of the working space and mixes, over a brightness ramp
+    let (w, h) = (96usize, 64usize);
+    let base =
+        [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.3, 0.0], [0.0, 0.8, 0.3], [0.5, 0.0, 0.8], [1.0, 1.0, 0.0], [0.7, 0.7, 0.7]];
+    let mut data = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let k = 0.002 * 1.08f32.powi((y * 100 / h) as i32);
+            data.push(base[x * base.len() / w].map(|v| v * k));
+        }
+    }
+    let gamut = Arc::new(Rgb32f { width: w, height: h, data });
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    check("channel share out of gamut", &gamut, &info, &s, &RenderRequest::fit(w, h));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("channel share out of gamut hdr", &gamut, &info, &s, w, h);
+    lcc_develop::base_curve::install_library(vec![]);
+}
+
 fn scene(i: usize, w: usize, h: usize) -> Arc<Rgb32f> {
     Arc::new(lcc_scenes::demo_library()[i].render(w, h))
 }

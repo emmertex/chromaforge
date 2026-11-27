@@ -190,10 +190,16 @@ pub const ROLLOFF_KNEE: f32 = 0.5;
 /// Scene EV over grey where [`ToneMap::hdr`] starts lifting highlights above the SDR curve.
 const HDR_FROM_EV: f32 = 1.5;
 
+/// Linear Rec.2020 to linear Rec.709 and back (BT.2087), for the per-channel share of a base curve.
+pub const TO_709: [[f32; 3]; 3] = [[1.660491, -0.587641, -0.072850], [-0.124550, 1.132900, -0.008349], [-0.018151, -0.100579, 1.118730]];
+pub const FROM_709: [[f32; 3]; 3] = [[0.627404, 0.329283, 0.043313], [0.069097, 0.919540, 0.011362], [0.016391, 0.088013, 0.895595]];
+
 #[derive(Clone, Debug)]
 pub struct ToneMap {
     lut: Vec<f32>,
     chroma: [f32; CHROMA_N],
+    /// How much of the colour follows the curve channel by channel (`BaseCurve::channel_share`); 0 for every table but a base curve with the field.
+    share: f32,
 }
 
 impl ToneMap {
@@ -228,7 +234,7 @@ impl ToneMap {
                 if peak > 1.0 { (o + (peak - 1.0) * smooth(HDR_FROM_EV, top, ev)).clamp(0.0, peak) } else { o }
             })
             .collect();
-        ToneMap { lut, chroma }
+        ToneMap { lut, chroma, share: 0.0 }
     }
     /// Contrast, Whites and Blacks (−100..100) acting on a display-linear value `y` in 0..=1, as they act under a base
     /// curve: the perceptual-domain S-curve and the Whites/Blacks response of [`ToneMap::display_hdr`], but without its
@@ -281,7 +287,9 @@ impl ToneMap {
                 if peak > 1.0 { (o + (peak - 1.0) * smooth(HDR_FROM_EV, top, ev)).clamp(0.0, peak) } else { o }
             })
             .collect();
-        ToneMap { lut: monotone(lut), chroma: NO_CHROMA }
+        let share = curve.channel_share;
+        let share = if share.is_finite() { share.clamp(0.0, 1.0) as f32 } else { 0.0 };
+        ToneMap { lut: monotone(lut), chroma: NO_CHROMA, share }
     }
 
     /// `contrast`, `whites`, `blacks` in −100..100 (Lightroom slider units).
@@ -346,7 +354,7 @@ impl ToneMap {
                 o.clamp(0.0, peak)
             })
             .collect();
-        ToneMap { lut, chroma: NO_CHROMA }
+        ToneMap { lut, chroma: NO_CHROMA, share: 0.0 }
     }
 
     /// Tone map for display-referred sources: identity at neutral settings.
@@ -392,7 +400,7 @@ impl ToneMap {
                 o.clamp(0.0, peak)
             })
             .collect();
-        ToneMap { lut: monotone(lut), chroma: NO_CHROMA }
+        ToneMap { lut: monotone(lut), chroma: NO_CHROMA, share: 0.0 }
     }
 
     /// Fits an HDR tone map reaching `peak` into SDR (own design, issue #69). Display values up to
@@ -440,6 +448,43 @@ impl ToneMap {
         let t = f - i as f32;
         let (a, b) = (self.chroma.get(i).copied().unwrap_or(1.0), self.chroma.get(i + 1).copied().unwrap_or(1.0));
         if a == b { a } else { a + (b - a) * t }
+    }
+
+    /// The share of the colour that follows the table channel by channel (see [`ToneMap::colour`]); 0 unless a base
+    /// curve file sets `channel_share`.
+    pub fn channel_share(&self) -> f32 {
+        self.share
+    }
+
+    /// The tone map of a scene colour `c` (working space, linear Rec.2020) whose luminance is `yl`: the display
+    /// luminance and the display colour. With no channel share this is the table on the luminance, the colour following
+    /// by ratio. With a share `s` the colour is `(1 - s) ·` that `+ s ·` the table run on each channel of the colour in
+    /// linear Rec.709 (negative channels as 0, then back to the working space), so saturated mid-tones gain and
+    /// bright saturated colours roll towards white as a curve applied per channel does; grey is the same both ways. The
+    /// luminance returned is then that of the blended colour.
+    #[inline]
+    pub fn colour(&self, c: [f32; 3], yl: f32) -> (f32, [f32; 3]) {
+        let o = self.apply(yl);
+        let ratio = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
+        if self.share <= 0.0 {
+            return (o, ratio);
+        }
+        let m = &TO_709;
+        let p = [
+            m[0][0] * c[0] + m[0][1] * c[1] + m[0][2] * c[2],
+            m[1][0] * c[0] + m[1][1] * c[1] + m[1][2] * c[2],
+            m[2][0] * c[0] + m[2][1] * c[1] + m[2][2] * c[2],
+        ];
+        let t = [self.apply(p[0].max(0.0)), self.apply(p[1].max(0.0)), self.apply(p[2].max(0.0))];
+        let f = &FROM_709;
+        let q = [
+            f[0][0] * t[0] + f[0][1] * t[1] + f[0][2] * t[2],
+            f[1][0] * t[0] + f[1][1] * t[1] + f[1][2] * t[2],
+            f[2][0] * t[0] + f[2][1] * t[1] + f[2][2] * t[2],
+        ];
+        let s = self.share;
+        let d = [ratio[0] + (q[0] - ratio[0]) * s, ratio[1] + (q[1] - ratio[1]) * s, ratio[2] + (q[2] - ratio[2]) * s];
+        (lcc_color::luminance_2020(d).max(0.0), d)
     }
 
     /// Scene luminance → display-linear luminance.

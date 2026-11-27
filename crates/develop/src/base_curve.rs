@@ -166,6 +166,8 @@ struct RawFile {
     output: RawOutput,
     #[serde(default)]
     extension: Extension,
+    #[serde(default)]
+    channel_share: f64,
     curves: BTreeMap<String, RawCurve>,
     apply: Vec<RawStep>,
 }
@@ -257,6 +259,9 @@ pub struct BaseCurve {
     pub camera: String,
     pub input: Input,
     pub extension: Extension,
+    /// How much of the curve acts on each colour channel on its own instead of on luminance, 0..=1 (0: luminance only, the
+    /// default). See `docs/base-curve-format.md`.
+    pub channel_share: f64,
     pub curves: BTreeMap<String, Curve>,
     pub apply: Vec<Step>,
 }
@@ -484,9 +489,23 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
             }
         }
     }
+    if !(f.channel_share.is_finite() && (0.0..=1.0).contains(&f.channel_share)) {
+        return Err("channel_share must be within 0 to 1".into());
+    }
+    if f.channel_share != 0.0 && f.version < 2 {
+        return Err("channel_share needs format version 2".into());
+    }
     let name: String = f.name.chars().filter(|c| !c.is_control()).take(120).collect();
     let camera: String = f.camera.chars().filter(|c| !c.is_control()).take(80).collect();
-    Ok(BaseCurve { name, camera, input: Input { gain: f.input.gain, white: f.input.white }, extension: f.extension, curves, apply })
+    Ok(BaseCurve {
+        name,
+        camera,
+        input: Input { gain: f.input.gain, white: f.input.white },
+        extension: f.extension,
+        channel_share: f.channel_share,
+        curves,
+        apply,
+    })
 }
 
 /// FNV-1a over a curve file's bytes: the content hash that goes into the settings hash.
@@ -827,6 +846,25 @@ mod tests {
         bad(json!({ "op": "decode", "gamma": 2.0, "knee": 1.0 }));
         bad(json!({ "op": "decode", "kind": "x", "gamma": 2.0 }));
         bad(json!({ "op": "encode" }));
+    }
+
+    #[test]
+    fn channel_share_is_optional_validated_and_needs_version_2() {
+        let with = |version: u32, share: serde_json::Value| {
+            let mut d = doc();
+            d["version"] = json!(version);
+            d["channel_share"] = share;
+            parse(d.to_string().as_bytes())
+        };
+        assert_eq!(parse(doc().to_string().as_bytes()).unwrap().channel_share, 0.0);
+        assert_eq!(with(2, json!(0.5)).unwrap().channel_share, 0.5);
+        assert_eq!(with(2, json!(0)).unwrap().channel_share, 0.0);
+        assert_eq!(with(2, json!(1)).unwrap().channel_share, 1.0);
+        assert_eq!(with(1, json!(0)).unwrap().channel_share, 0.0);
+        for bad in [json!(-0.1), json!(1.0001), json!(2), json!("half")] {
+            assert!(with(2, bad.clone()).is_err(), "{bad}");
+        }
+        assert!(with(1, json!(0.5)).is_err(), "version 1 has no channel share");
     }
 
     #[test]
