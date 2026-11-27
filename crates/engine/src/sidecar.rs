@@ -2259,6 +2259,7 @@ mod tests {
             enabled: false,
             stage,
             analysis: Some(serde_json::json!({"base": [0.1, 0.2, 0.3]})),
+            mask: Some(lcc_develop::FilterMask { id: 7, invert: true }),
         }
     }
 

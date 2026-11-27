@@ -75,6 +75,9 @@ pub struct Stack {
     /// `prefixes[k]`: the key of the stack's first `k` filters (`prefixes[len] == key`), so a
     /// native run can start from what an earlier stack with those first filters made.
     prefixes: Vec<u64>,
+    /// Per entry, the coverage its output is blended by (#1397): `None` for an entry on the whole frame, the reason
+    /// for one whose mask could not be had (it then runs on the whole frame). Set by [`Self::set_masks`].
+    masks: Vec<Option<Result<Arc<lcc_raster::Plane>, String>>>,
 }
 
 impl Stack {
@@ -96,7 +99,7 @@ impl Stack {
             .map(|(f, r)| {
                 let build = r.as_ref().map(|x| x.module_hash().to_string()).unwrap_or_default();
                 let analysis = f.analysis.as_ref().map(Value::to_string).unwrap_or_default();
-                (f.plugin.clone(), build, Value::Object(f.params.clone()).to_string(), analysis)
+                (f.plugin.clone(), build, Value::Object(f.params.clone()).to_string(), analysis, f.mask)
             })
             .collect();
         // the stack runs on the source with its film dust filled in: a change there is a new input
@@ -107,12 +110,33 @@ impl Stack {
             .map(|ir| (ir.width, ir.height, s.film_dust.sensitivity.to_bits(), s.film_dust.expand.to_bits()));
         let prefixes: Vec<u64> = (0..=descs.len()).map(|k| crate::hash_of((descs.get(..k).unwrap_or_default().to_vec(), film))).collect();
         let key = prefixes.last().copied().unwrap_or_default();
-        Stack { entries, key, prefixes }
+        let masks =
+            entries.iter().map(|(f, _)| f.mask.map(|_| Err("masks apply only after the develop adjustments (Display stage)".to_string()))).collect();
+        Stack { entries, key, prefixes, masks }
     }
 
     /// No filters.
     pub fn empty() -> Stack {
-        Stack { entries: Vec::new(), key: 0, prefixes: vec![0] }
+        Stack { entries: Vec::new(), key: 0, prefixes: vec![0], masks: Vec::new() }
+    }
+
+    /// Gives each entry with a [`PluginFilter::mask`] its coverage: `plane` of the entry's mask, the size of the image
+    /// the stack will run on, or why there is none.
+    pub fn set_masks(&mut self, mut plane: impl FnMut(&lcc_develop::FilterMask) -> Result<lcc_raster::Plane, String>) {
+        self.masks = self
+            .entries
+            .iter()
+            .map(|(f, _)| {
+                f.mask.as_ref().map(|m| {
+                    plane(m).map(|mut p| {
+                        if m.invert {
+                            p.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+                        }
+                        Arc::new(p)
+                    })
+                })
+            })
+            .collect();
     }
 
     /// Number of filters.
@@ -197,10 +221,27 @@ impl Stack {
                 warnings.push(format!("{}skipped: image too large", warning_prefix(f)));
                 continue;
             };
+            // a masked entry: its input, to blend its output with by the mask's coverage (#1397)
+            let mask = match self.masks.get(i).cloned().flatten() {
+                Some(Ok(p)) if p.width == w && p.height == h => Some(p),
+                Some(Ok(_)) => {
+                    warnings.push(format!("{}its mask doesn't fit the picture: applied to the whole frame", warning_prefix(f)));
+                    None
+                }
+                Some(Err(e)) => {
+                    warnings.push(format!("{}{e}: applied to the whole frame", warning_prefix(f)));
+                    None
+                }
+                None => None,
+            };
+            let before = mask.as_ref().map(|_| img.to_vec());
             let params = filter_params(f, encoding);
             let r = crate::timed(&format!("plug-in {}", f.plugin), || {
                 filter.apply_rgb_until(img.as_flattened_mut(), w32, h32, frame.clone(), &params, &[&cancel, give_way])
             });
+            if let (Some(m), Some(before), Ok(())) = (&mask, &before, &r) {
+                blend_by(img, before, &m.data);
+            }
             match r {
                 Err(lcc_filters::Error::Cancelled) if gave_way() => {
                     ran.gave_way = true;
@@ -215,6 +256,16 @@ impl Stack {
             }
         }
         ran
+    }
+}
+
+/// `out` (a filter's output) blended with its input `before` by `alpha` per pixel: 1 keeps the output, 0 the input.
+fn blend_by(out: &mut [[f32; 3]], before: &[[f32; 3]], alpha: &[f32]) {
+    for ((o, b), a) in out.iter_mut().zip(before).zip(alpha) {
+        let a = if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
+        for (oc, bc) in o.iter_mut().zip(b) {
+            *oc = *bc + (*oc - *bc) * a;
+        }
     }
 }
 

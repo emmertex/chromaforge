@@ -216,5 +216,6 @@ scale in `BaselineExposure`; raw sources keep their DNG colour tags (camera RGB)
 ## Pixel Shift
 
 *Photo ▸ Photo Merge ▸ Pixel Shift* (`merge.pixelShift`, `<cli> merge pixel-shift`) merges the frames of a Nikon pixel-shift
-series on the raw mosaics into `<name>-PixelShift.dng`, stacked on its frames; `merge.deleteSources` deletes the frames other than
-frame 01 afterwards. See [pixel-shift.md](pixel-shift.md).
+series on the raw mosaics into `<name>-PixelShift.dng`, stacked on its frames, registered by default (`method=registered|plain`; *Pixel
+Shift, Plain Merge*, `<cli> merge pixel-shift --plain`); `merge.deleteSources` deletes the frames other than frame 01
+afterwards. See [pixel-shift.md](pixel-shift.md).
