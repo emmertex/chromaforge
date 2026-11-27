@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Tests that install curves hold this: the library is process-wide.
-fn lock() -> MutexGuard<'static, ()> {
+pub(crate) fn lock() -> MutexGuard<'static, ()> {
     static L: Mutex<()> = Mutex::new(());
     L.lock().unwrap_or_else(PoisonError::into_inner)
 }

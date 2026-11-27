@@ -1026,6 +1026,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 d = if fp.hue_clip { keep_hue(d, grey, o, peak) } else { grey };
             }
 
+            // --- a base curve's post-tone colour map (OkLab chroma gain and hue shift; the same in finish.wgsl)
+            if let Some(cm) = tone.colour_map() {
+                d = cm.apply(d);
+            }
+
             // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)
             if let Some(p) = &ops.primaries {
                 d = p.apply(d);

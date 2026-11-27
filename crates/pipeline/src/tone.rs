@@ -200,6 +200,9 @@ pub struct ToneMap {
     chroma: [f32; CHROMA_N],
     /// How much of the colour follows the curve channel by channel (`BaseCurve::channel_share`); 0 for every table but a base curve with the field.
     share: f32,
+    /// The base curve file's post-tone colour map, when it has one that changes something (`finish` applies it after the tone
+    /// stage; see [`crate::colour_map`]).
+    colour_map: Option<std::sync::Arc<crate::colour_map::ColourMapK>>,
 }
 
 impl ToneMap {
@@ -234,7 +237,7 @@ impl ToneMap {
                 if peak > 1.0 { (o + (peak - 1.0) * smooth(HDR_FROM_EV, top, ev)).clamp(0.0, peak) } else { o }
             })
             .collect();
-        ToneMap { lut, chroma, share: 0.0 }
+        ToneMap { lut, chroma, share: 0.0, colour_map: None }
     }
     /// Contrast, Whites and Blacks (−100..100) acting on a display-linear value `y` in 0..=1, as they act under a base
     /// curve: the perceptual-domain S-curve and the Whites/Blacks response of [`ToneMap::display_hdr`], but without its
@@ -289,7 +292,12 @@ impl ToneMap {
             .collect();
         let share = curve.channel_share;
         let share = if share.is_finite() { share.clamp(0.0, 1.0) as f32 } else { 0.0 };
-        ToneMap { lut: monotone(lut), chroma: NO_CHROMA, share }
+        ToneMap {
+            lut: monotone(lut),
+            chroma: NO_CHROMA,
+            share,
+            colour_map: curve.colour_map.as_ref().and_then(crate::colour_map::ColourMapK::new).map(std::sync::Arc::new),
+        }
     }
 
     /// `contrast`, `whites`, `blacks` in −100..100 (Lightroom slider units).
@@ -354,7 +362,7 @@ impl ToneMap {
                 o.clamp(0.0, peak)
             })
             .collect();
-        ToneMap { lut, chroma: NO_CHROMA, share: 0.0 }
+        ToneMap { lut, chroma: NO_CHROMA, share: 0.0, colour_map: None }
     }
 
     /// Tone map for display-referred sources: identity at neutral settings.
@@ -400,7 +408,7 @@ impl ToneMap {
                 o.clamp(0.0, peak)
             })
             .collect();
-        ToneMap { lut: monotone(lut), chroma: NO_CHROMA, share: 0.0 }
+        ToneMap { lut: monotone(lut), chroma: NO_CHROMA, share: 0.0, colour_map: None }
     }
 
     /// Fits an HDR tone map reaching `peak` into SDR (own design, issue #69). Display values up to
@@ -454,6 +462,11 @@ impl ToneMap {
     /// curve file sets `channel_share`.
     pub fn channel_share(&self) -> f32 {
         self.share
+    }
+
+    /// The post-tone colour map of the base curve, if any.
+    pub fn colour_map(&self) -> Option<&crate::colour_map::ColourMapK> {
+        self.colour_map.as_deref()
     }
 
     /// The tone map of a scene colour `c` (working space, linear Rec.2020) whose luminance is `yl`: the display

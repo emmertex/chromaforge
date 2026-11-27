@@ -28,6 +28,7 @@ pub mod auto_mask;
 pub mod blemish;
 pub mod brightness;
 pub mod colorops;
+pub mod colour_map;
 pub mod cull;
 pub mod curve;
 pub mod depth_model;
@@ -1566,6 +1567,8 @@ fn an_exact_box_past_the_pixel_ceiling_is_shrunk() {
 mod tests;
 #[cfg(test)]
 mod tests_base_curve;
+#[cfg(test)]
+mod tests_colour_map;
 #[cfg(test)]
 mod tests_cpu_only_cost;
 #[cfg(test)]
