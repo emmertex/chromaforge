@@ -184,7 +184,8 @@ struct Run<'a> {
 impl ImportJob {
     /// [`ImportJob::prepare_files`] over every file of an import, batch by batch, handing each
     /// batch to `emit` in file order (`false`: nobody takes them any more; what is not yet handed
-    /// over is taken back, [`Prepared::rollback`]). The batches and their items are what one
+    /// over is taken back, [`Prepared::rollback`]; so is it after a panic in planning). The
+    /// batches and their items are what one
     /// [`ImportJob::prepare_files`] call per [`super::batch_size`] files would give; the reads and
     /// copies of several volumes run at once meanwhile (I/O spec §5.6). Stops before the next file
     /// once `cancel` is set: the batches with items are still handed over (the last ones cut short).
@@ -632,17 +633,22 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn on_transfer(&mut self, job: &mut ImportJob, index: usize, outcome: JobOutcome<PreparedItem>) {
+    /// A transfer's outcome; `job` counts it and notes a ready copy's content (none: the run is
+    /// being taken back, [`Run::drop`]).
+    fn on_transfer(&mut self, job: Option<&mut ImportJob>, index: usize, outcome: JobOutcome<PreparedItem>) {
         let Some(tid) = self.transfer_index.remove(&index) else { return };
-        if outcome.counts_as_done() {
-            job.done.fetch_add(1, Relaxed);
-        }
+        let counts = outcome.counts_as_done();
         let item = match self.pending.get(&tid) {
             Some(p) => transfer_outcome(outcome, p.path.clone(), &p.dir, p.moving),
             None => None,
         };
-        if let Some(it) = &item {
-            job.note_transfer(it);
+        if let Some(job) = job {
+            if counts {
+                job.done.fetch_add(1, Relaxed);
+            }
+            if let Some(it) = &item {
+                job.note_transfer(it);
+            }
         }
         self.resolved(tid, item);
     }
@@ -657,9 +663,9 @@ impl<'a> Run<'a> {
         if !got && let Some(w) = wait {
             match w {
                 Wait::Probes if self.probes.is_some() => self.drain_probes(job, SLICE),
-                Wait::Transfers if self.transfers.is_some() => self.drain_transfers(job, SLICE),
+                Wait::Transfers if self.transfers.is_some() => self.drain_transfers(Some(job), SLICE),
                 // (nothing can come on a stream never opened: look at the other one)
-                Wait::Probes => self.drain_transfers(job, SLICE),
+                Wait::Probes => self.drain_transfers(Some(job), SLICE),
                 Wait::Transfers => self.drain_probes(job, SLICE),
             };
         }
@@ -671,7 +677,7 @@ impl<'a> Run<'a> {
 
     fn drain(&mut self, job: &mut ImportJob) -> bool {
         let a = self.drain_probes(job, Duration::ZERO);
-        let b = self.drain_transfers(job, Duration::ZERO);
+        let b = self.drain_transfers(Some(job), Duration::ZERO);
         a || b
     }
 
@@ -688,12 +694,12 @@ impl<'a> Run<'a> {
         got
     }
 
-    fn drain_transfers(&mut self, job: &mut ImportJob, wait: Duration) -> bool {
+    fn drain_transfers(&mut self, mut job: Option<&mut ImportJob>, wait: Duration) -> bool {
         let mut got = false;
         let mut w = wait;
         while let Some(s) = self.transfers.as_mut() {
             let Some((i, o, _)) = s.recv_timeout(w) else { break };
-            self.on_transfer(job, i, o);
+            self.on_transfer(job.as_deref_mut(), i, o);
             got = true;
             w = Duration::ZERO;
         }
@@ -748,48 +754,54 @@ impl<'a> Run<'a> {
         }
     }
 
+    /// Transfers still held behind an earlier one of their family never start.
+    fn drop_held(&mut self) {
+        let held: Vec<usize> = self.held.drain().flat_map(|(_, q)| q.into_iter().map(|(t, _)| t)).collect();
+        for t in held {
+            self.resolved(t, None);
+        }
+    }
+
+    /// Whether every transfer has its outcome; else wait a little for the next ones. A stopped
+    /// run whose pool stopped too (a supervisor panic) leaves the copies still running behind, as
+    /// a cancel leaves them (outcome unknown): no rule watches them any more.
+    fn transfers_done(&mut self, mut job: Option<&mut ImportJob>) -> bool {
+        if self.transfer_index.is_empty() {
+            // (nothing more can come: a transfer still held has no earlier one under way)
+            if self.held.is_empty() {
+                return true;
+            }
+            self.drop_held();
+            return false;
+        }
+        if !self.drain_transfers(job.as_deref_mut(), SLICE) && self.transfers.as_ref().is_some_and(Stream::left_behind) {
+            let left: Vec<usize> = self.transfer_index.keys().copied().collect();
+            for index in left {
+                self.on_transfer(job.as_deref_mut(), index, JobOutcome::Cancelled);
+            }
+        }
+        false
+    }
+
     /// Wait for every transfer's outcome (and every read under way), then hand over what remains,
     /// in order; after a refusal, take it back instead.
     fn finish(&mut self, job: &mut ImportJob, emit: Emit<'_>) {
         if self.stop.is_some() {
-            // transfers still held behind their family never start
-            let held: Vec<usize> = self.held.drain().flat_map(|(_, q)| q.into_iter().map(|(t, _)| t)).collect();
-            for t in held {
-                self.resolved(t, None);
-            }
+            self.drop_held();
         }
         // (reads ahead that nobody needs any more are not waited for: the stream, dropped, cancels
         // them, and the pool sees to the ones under way)
         loop {
             if self.stop.is_none() && self.cancel.load(Relaxed) {
                 self.halt(Stop::Cancel);
-                let held: Vec<usize> = self.held.drain().flat_map(|(_, q)| q.into_iter().map(|(t, _)| t)).collect();
-                for t in held {
-                    self.resolved(t, None);
-                }
+                self.drop_held();
             }
             if self.stop.is_none() {
                 self.emit_ready(emit);
             }
-            if self.transfer_index.is_empty() {
-                // (nothing more can come: a transfer still held has no earlier one under way)
-                let held: Vec<usize> = self.held.drain().flat_map(|(_, q)| q.into_iter().map(|(t, _)| t)).collect();
-                if held.is_empty() {
-                    break;
-                }
-                for t in held {
-                    self.resolved(t, None);
-                }
-                continue;
-            }
             self.drain_probes(job, Duration::ZERO);
-            if !self.drain_transfers(job, SLICE) && self.transfers.as_ref().is_some_and(Stream::left_behind) {
-                // stopped, and the pool too (a supervisor panic): no rule watches the copies still
-                // running, so they are left behind as a cancel leaves them (outcome unknown)
-                let left: Vec<usize> = self.transfer_index.keys().copied().collect();
-                for index in left {
-                    self.on_transfer(job, index, JobOutcome::Cancelled);
-                }
+            if self.transfers_done(Some(job)) {
+                break;
             }
         }
         // stopped: what is planned goes over as it stands (cut short), or is taken back
@@ -807,5 +819,26 @@ impl<'a> Run<'a> {
         if let Some(s) = self.transfers.as_mut() {
             s.close();
         }
+    }
+}
+
+impl Drop for Run<'_> {
+    /// A run left before [`Run::finish`] handed everything over (a panic in planning, which the
+    /// caller's guard logs) is taken back as a refused one is: the copies under way are waited
+    /// for (no further one starts; a cancel's rules leave a hung one behind), then what the
+    /// batches planned and not handed over placed is removed ([`Prepared::rollback`]: a Move's
+    /// files), the batch being planned's copies included. After `finish` nothing is left.
+    fn drop(&mut self) {
+        if self.planned.is_empty() && self.transfer_index.is_empty() && self.outcomes.is_empty() {
+            return;
+        }
+        self.halt(Stop::Refused);
+        self.drop_held();
+        while self.transfers.is_some() && !self.transfers_done(None) {}
+        while let Some(b) = self.planned.pop_front() {
+            self.assemble(b).rollback();
+        }
+        let rest = Prepared { items: self.outcomes.drain().filter_map(|(_, it)| it).collect(), ..Prepared::default() };
+        rest.rollback();
     }
 }

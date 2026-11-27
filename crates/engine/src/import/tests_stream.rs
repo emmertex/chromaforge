@@ -768,3 +768,41 @@ fn cancel_ends_an_import_whose_copies_hang_after_the_pool_stopped() {
     assert!(items.iter().any(|i| i.starts_with("interrupted OutcomeUnknown")), "{items:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A panic while the run holds planned batches (here: in the caller's hand-over) takes back what
+/// they placed, as a refused batch does: a Move leaves nothing in the destination outside the
+/// library. The first file's move is held until the two batches after it are placed; handing the
+/// first batch over then panics (the caller took that one back itself).
+#[test]
+fn a_panic_takes_back_the_batches_planned_and_not_handed_over() {
+    let root = temp_root("panic");
+    let files: Vec<String> = cards_of(&root, 12).into_iter().filter(|f| f.contains("/a/")).collect();
+    let ctx = context(&root);
+    let mut s = Session::new().with_fs();
+    let mut opts = options(&root, ImportMode::Move);
+    opts.organize = Organize::Template("{name}".into());
+    let mut job = ImportJob::new(&mut s, opts).unwrap();
+    let dest = root.join("dest");
+    let first = dest.join("a000");
+    hold_copies_into(&first, Hold::Wait(Arc::new((Mutex::new(false), Condvar::new()))));
+    let (d, f) = (dest.clone(), first.clone());
+    let releaser = std::thread::spawn(move || {
+        // the first batch's three other files and the two batches after it
+        wait_until(|| walk(&d).iter().filter(|p| !p.starts_with(&f)).count() >= 11, "batches 2 and 3 placed");
+        release_copies_into(&f);
+    });
+    crate::import_move::inject(crate::import_move::Fault::NoLink);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        job.prepare_streamed(&ctx, files.clone(), &cancel, small(), &mut |p| {
+            p.rollback();
+            panic!("a fault while handing a batch over");
+        });
+    }));
+    crate::import_move::inject(crate::import_move::Fault::None);
+    releaser.join().unwrap();
+    assert!(panicked.is_err());
+    assert_eq!(walk(&dest), Vec::<PathBuf>::new(), "nothing placed is left in the destination");
+    assert!(files.iter().all(|f| Path::new(f).exists()), "sources untouched");
+    let _ = std::fs::remove_dir_all(&root);
+}

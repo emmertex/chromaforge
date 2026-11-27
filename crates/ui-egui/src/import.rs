@@ -569,7 +569,8 @@ impl ImportRun {
                     }
                 })
             });
-            // (a panic is logged; the batches readied so far are added)
+            // (a panic is logged; the batches handed over are added, the ones planned after them
+            // taken back as a refused batch is)
             drop(streamed);
             ctx.request_repaint();
         };
