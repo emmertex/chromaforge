@@ -2002,6 +2002,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             json!({"soloSections": app.ui.single_panel})
         }),
         "view.filterBar" => {
+            // Develop's loupe has its own bar above the photo (#1317): the photo stays
+            if app.ui.develop_filter_shown_here() {
+                app.ui.develop_filter_bar = !app.ui.develop_filter_bar;
+                return Ok(json!({"filterBar": app.ui.develop_filter_bar}));
+            }
             app.ui.filter_bar = !app.ui.filter_bar;
             if app.ui.filter_bar && !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
                 app.ui.view = app.ui.grid_style;
