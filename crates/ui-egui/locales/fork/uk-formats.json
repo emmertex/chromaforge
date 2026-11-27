@@ -244,6 +244,7 @@
   "{indexed} indexed": "Проіндексовано: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Проіндексовано: {indexed}, залишилося: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} з {n}",
   "{label} (camera default)": "{label} (типовий для камери)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: середній ΔE {mean:.2}, найбільший {max:.2} ({n} патчів)",
   "{module} Shortcuts": "Скорочення: {module}",
