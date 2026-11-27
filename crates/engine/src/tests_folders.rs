@@ -909,6 +909,35 @@ fn a_date_folder_inside_the_library_can_be_renamed_but_the_librarys_own_folders_
     assert!(lib.join("Originals").is_dir());
 }
 
+/// On a volume that ignores letter case (Windows, macOS), the library's folder named with other
+/// letter case (`LIB/Originals/day` for `lib/Originals/day`) is the same folder: a rename through
+/// that spelling relinks the photos stored under the library's own spelling, instead of moving the
+/// folder on disk and leaving them pointing at the old one (upstream #4816).
+#[test]
+fn a_date_folder_named_with_other_letter_case_is_renamed_and_its_photos_follow() {
+    let dir = Scratch::new("in-library-case");
+    let lib = dir.0.join("lib");
+    let mut s = Session::new();
+    s.open_library(&lib, false).unwrap();
+    let day = lib.join("Originals").join("2026-10-16");
+    std::fs::create_dir_all(&day).unwrap();
+    let a = add_file(&mut s, &day.join("a.jpg").to_string_lossy(), "A");
+    let shouted = dir.0.join("LIB").join("Originals").join("2026-10-16");
+    if !shouted.is_dir() {
+        lcc_testkit::skip!(System, "this volume tells letter case apart");
+        return;
+    }
+    let r = s.execute("folder.rename", &json!({"path": shouted.to_string_lossy(), "name": "Beach"})).unwrap();
+    let moved = lib.join("Originals").join("Beach");
+    assert_eq!(r["relinked"], 1, "the photo inside is relinked: {r}");
+    assert_eq!(r["path"], moved.to_string_lossy().as_ref(), "the result names the library's own spelling");
+    assert!(moved.join("a.jpg").is_file());
+    assert_eq!(file_of(&s, a), moved.join("a.jpg").to_string_lossy(), "the catalog follows the photo");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(day.is_dir(), "undo names it back");
+    assert_eq!(file_of(&s, a), day.join("a.jpg").to_string_lossy());
+}
+
 #[cfg(unix)]
 #[test]
 fn the_library_folder_is_protected_however_its_path_is_spelled() {
