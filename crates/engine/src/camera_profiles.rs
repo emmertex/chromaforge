@@ -187,9 +187,14 @@ pub fn get(model: &str) -> Option<Arc<CameraProfile>> {
     profile
 }
 
-/// Changes when the profiles folder's contents change (per process): part of the render cache
-/// keys, so thumbnails rendered before a profile existed are not reused after.
+/// Changes when the profiles folder's contents change (per process), and when a camera's raw decoder does
+/// ([`crate::raw_decoder::key`]): part of the render cache keys, so thumbnails rendered before a profile existed, or
+/// by the other decoder, are not reused after.
 pub fn cache_key() -> u64 {
+    profiles_key().wrapping_add(crate::raw_decoder::key().wrapping_mul(0x9E37_79B9_7F4A_7C15))
+}
+
+fn profiles_key() -> u64 {
     let slot = cache_key_slot();
     if let Some(key) = *slot.lock().unwrap_or_else(PoisonError::into_inner) {
         return key;

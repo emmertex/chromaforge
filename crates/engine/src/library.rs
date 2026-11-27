@@ -462,6 +462,9 @@ struct PrefsFile {
     import: crate::import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; issue #723).
     camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder chosen per camera (absent = Auto, see [`crate::raw_decoder`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    raw_decoders: std::collections::BTreeMap<String, crate::raw_decoder::Decoder>,
     /// Thumbnail disk cache budget (MB, 0 = default).
     cache_mb: u32,
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
@@ -938,6 +941,8 @@ impl Session {
         self.camera_profile_defaults = prefs.camera_profile_defaults;
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.raw_decoders = prefs.raw_decoders;
+        crate::raw_decoder::install_choices(&self.raw_decoders);
         self.cache_mb = prefs.cache_mb;
         self.prep.opened_library();
         // the lens database is read off this thread now, not by the first photo that needs it
@@ -1055,6 +1060,7 @@ impl Session {
         let own_store = store_with_library || self.app_store.is_none();
         let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
         let upgraded = upgrade_notice(&report);
+        let torn = torn_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -1069,7 +1075,7 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(torn).chain(settings.warnings).collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
@@ -1173,6 +1179,7 @@ impl Session {
                 log::info!("library: queued changes written to disk");
             }
             lib.retry_at = None;
+            self.logged_ops = self.logged_ops.wrapping_add(self.pending_log.len() as u64);
             self.pending_log.clear();
             lib.last_error = None;
         }
@@ -1443,6 +1450,7 @@ impl Session {
             keyword_shortcuts: self.keyword_shortcut.clone(),
             import: self.import_defaults.clone(),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
+            raw_decoders: self.raw_decoders.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
             prep_unfinished: self.prep.unfinished,
@@ -1765,6 +1773,23 @@ fn upgrade_notice(report: &LoadReport) -> Option<String> {
     ))
 }
 
+/// What a library that lost the end of its catalog log must tell the user (issue #1359): the app stopped (a crash,
+/// a power cut, the app killed) while it was writing its last change, so that change was dropped when the library
+/// opened. Only a large one is worth a word: a small torn record is a moment's edit, a large one an import or a paste
+/// to many photos, which the user must do again.
+fn torn_notice(report: &LoadReport) -> Option<String> {
+    const WORTH_TELLING: u64 = 1 << 20;
+    (report.torn_bytes >= WORTH_TELLING).then(|| {
+        let mb = report.torn_bytes as f64 / 1_000_000.0;
+        let size = if mb >= 1000.0 { format!("{:.1} GB", mb / 1000.0) } else { format!("{mb:.0} MB") };
+        format!(
+            "The app stopped while it was saving the library's last change ({size}), so that change was not saved. If you \
+             were importing photos or changing many at once at the time, those photos are not in the library or not \
+             changed: import them, or make the change, again."
+        )
+    })
+}
+
 fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
     lock.filter(|l| !l.held()).map(|_| {
         "This library could not be locked (its catalog.lock file can't be locked where it is stored, e.g. on some network \
@@ -1777,6 +1802,49 @@ fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
 #[cfg(test)]
 mod resolve_tests {
     use super::*;
+
+    /// Issue #1359: a command that saves its own changes while it runs (an import, batch by batch) still counts as
+    /// having changed something, so the end of the command waits for the log as any other does: its record is on
+    /// disk when it reports success.
+    #[test]
+    fn a_command_that_saved_as_it_ran_is_on_disk_when_it_returns() {
+        let dir = std::env::temp_dir().join(format!("lc-saved-as-it-ran-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::new().with_fs();
+        s.open_library(&dir, false).unwrap();
+        let before = s.logged_ops;
+        s.execute_fn("test.import", |s| {
+            let p = lcc_catalog::Photo::new(
+                lcc_catalog::PhotoId(77),
+                lcc_catalog::Source::File { path: "/x/a.jpg".into() },
+                "a.jpg",
+                "JPEG",
+                6,
+                4,
+                "2026-01-01",
+            );
+            s.apply_system(lcc_catalog::Op::AddPhoto { photo: Box::new(p) })?;
+            s.persist()?;
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert!(s.logged_ops > before);
+        let log = std::fs::read_to_string(dir.join(lcc_catalog::journal::LOG)).unwrap_or_default();
+        assert!(log.contains("a.jpg"), "the record is on disk: {log}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #1359: a large torn record (an import cut short) is said in plain words; a small one is not.
+    #[test]
+    fn a_large_dropped_record_is_said_in_plain_words() {
+        let r = |torn_bytes| LoadReport { torn_bytes, ..Default::default() };
+        assert!(torn_notice(&r(0)).is_none());
+        assert!(torn_notice(&r(4096)).is_none());
+        let big = torn_notice(&r(6_442_450_941)).unwrap();
+        assert!(big.contains("6.4 GB") && big.contains("import them"), "{big}");
+        assert!(torn_notice(&r(49_000_000)).unwrap().contains("49 MB"));
+    }
 
     /// `--library <dir>/catalog.snap` failed with the OS's "File exists" (creating a folder over
     /// the file); it opens the library that file belongs to.

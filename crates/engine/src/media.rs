@@ -212,6 +212,9 @@ pub struct LoadOptions {
     pub pixel_fix: bool,
     /// How the raw's clipped highlights are rebuilt (`sensor.highlightMode`).
     pub highlight: lcc_raw::highlight::Mode,
+    /// Which raw decoder reads each camera ([`crate::raw_decoder::key`] when the options were made): a raw decoded
+    /// before the person chose another decoder for some camera is decoded again.
+    pub decoders: u64,
     /// The file being decoded, set by the filesystem loaders: names the camera body when the raw has
     /// no serial number (`crate::sensor_maps::body_key`). Not a setting: [`DecodedSource::serves`]
     /// ignores it.
@@ -227,6 +230,7 @@ impl Default for LoadOptions {
             camera_look: true,
             pixel_fix: true,
             highlight: Default::default(),
+            decoders: crate::raw_decoder::key(),
             path: None,
         }
     }
@@ -241,6 +245,7 @@ impl LoadOptions {
             camera_look: s.keeps_camera_look(),
             pixel_fix: s.sensor.fixes_pixels(),
             highlight: lcc_raw::highlight::Mode::from_control(s.sensor.highlight_mode),
+            decoders: crate::raw_decoder::key(),
             path: None,
         }
     }
@@ -314,6 +319,18 @@ impl Twin {
     }
 }
 
+/// Whether a photo recorded `pw` × `ph` decodes as `w` × `h` turned a quarter: the decode's shape is the record's
+/// swapped (within 3 %) and clearly not the record's own (more than 10 % off). Nearly square shapes never count.
+pub(crate) fn upright_size_swapped(pw: u32, ph: u32, w: usize, h: usize) -> bool {
+    if pw == 0 || ph == 0 || w == 0 || h == 0 {
+        return false;
+    }
+    let record = f64::from(pw) / f64::from(ph);
+    let decoded = w as f64 / h as f64;
+    let near = |a: f64, b: f64, tol: f64| (a / b - 1.0).abs() <= tol;
+    (record - 1.0).abs() > 0.1 && near(decoded, 1.0 / record, 0.03) && !near(decoded, record, 0.1)
+}
+
 /// Pixels and the source interpretation learned while decoding; they must be cached together.
 #[derive(Clone)]
 pub struct DecodedSource {
@@ -350,7 +367,8 @@ impl DecodedSource {
                 && (self.options.colour == options.colour || !info.is_some_and(|i| i.colorimetric))
                 && ((self.options.camera == options.camera && self.options.camera_look == options.camera_look) || !info.is_some_and(|i| i.raw))
                 && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw))
-                && (self.options.highlight == options.highlight || !info.is_some_and(|i| i.raw)))
+                && (self.options.highlight == options.highlight || !info.is_some_and(|i| i.raw))
+                && (self.options.decoders == options.decoders || !info.is_some_and(|i| i.raw)))
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -3072,6 +3090,9 @@ impl crate::Session {
                 self.learn_as_shot_wb(r.photo, info);
                 self.learn_file_lens(r.photo, info);
             }
+            if !src.from_proxy {
+                self.learn_upright_size(r.photo, src.image.width, src.image.height);
+            }
             self.media.insert_source(r.photo, r.level, src.clone());
         }
     }
@@ -3114,6 +3135,30 @@ impl crate::Session {
         }
         if let Err(e) = self.apply_system(Op::SetAsShotWb { id, wb: Some(read) }) {
             log::warn!("photo {}: as-shot white balance not recorded: {e}", id.0);
+        }
+    }
+
+    /// Turn a photo's recorded size upright when a decode of its file (`w` × `h`, before the photo's own rotation) shows
+    /// it the other way round: a record a Lightroom catalog gave the stored (sensor) size, or the size turned by
+    /// Lightroom's whole orientation rather than the file's (issue #1357). The Crop tool lays the photo out from the
+    /// recorded size, so such a photo showed stretched to the wrong shape there. Only a clear swap counts: the decode's
+    /// shape is the record's turned (within 3 %), not the record's own. Bookkeeping, not an undo step.
+    fn learn_upright_size(&mut self, id: PhotoId, w: usize, h: usize) {
+        let Some(p) = self.catalog.photo(id) else { return };
+        if !upright_size_swapped(p.width, p.height, w, h) {
+            return;
+        }
+        let op = Op::SetContent {
+            id,
+            width: p.height,
+            height: p.width,
+            file_size: p.file_size,
+            content_hash: p.content_hash.clone(),
+            preview_only: p.preview_only.clone(),
+            preview_checked: p.preview_checked.clone(),
+        };
+        if let Err(e) = self.apply_system(op) {
+            log::warn!("photo {}: upright size not recorded: {e}", id.0);
         }
     }
 
@@ -3615,6 +3660,30 @@ mod thumbnail_hash_tests {
         set(&mut s, true);
         render(&mut s);
         assert_eq!(*asked.lock().unwrap(), [false, true, false, false]);
+    }
+    /// Issue #1357: a record whose size is the file's turned a quarter (a Lightroom catalog's stored size) is set
+    /// upright by the first decode, so the Crop tool lays the photo out in its real shape; a decode of the record's
+    /// own shape, or of an unrelated shape, changes nothing.
+    #[test]
+    fn a_decode_turns_a_sideways_record_upright() {
+        assert!(upright_size_swapped(6720, 4480, 1707, 2560));
+        assert!(!upright_size_swapped(6720, 4480, 2560, 1707), "already upright");
+        assert!(!upright_size_swapped(4000, 4000, 2000, 2000), "square");
+        assert!(!upright_size_swapped(6000, 4000, 2000, 2000), "another shape");
+        assert!(!upright_size_swapped(0, 4000, 2000, 3000));
+        assert!(!upright_size_swapped(6000, 4000, 0, 0));
+        let mut s = session();
+        s.media.file_loader = Some(Arc::new(|_, _, _| Ok((Rgb32f::new(20, 30), SourceInfo::default()))));
+        let before = s.catalog.photo(PhotoId(1)).unwrap().clone();
+        let r = s.thumb_job(PhotoId(1), 256).unwrap().run();
+        s.accept(&r);
+        let p = s.catalog.photo(PhotoId(1)).unwrap();
+        assert_eq!((p.width, p.height), (4000, 6000));
+        assert_eq!((&p.content_hash, p.file_size), (&before.content_hash, before.file_size), "the rest of the record stays");
+        // a decode of the record's shape leaves it
+        let r = s.thumb_job(PhotoId(1), 256).unwrap().run();
+        s.accept(&r);
+        assert_eq!(s.catalog.photo(PhotoId(1)).map(|p| (p.width, p.height)), Some((4000, 6000)));
     }
     #[test]
     fn source_from_before_content_reload_is_not_accepted() {
