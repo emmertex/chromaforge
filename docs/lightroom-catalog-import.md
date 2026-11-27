@@ -143,11 +143,26 @@ behind; the folder is synced once the archive is saved.
 `Interop/lightroom-index.json` records imported identities (read and written up to 1 GiB, about 45 bytes a photo, so a re-import of a large catalog finds what it made before). Source catalogs and originals are
 never overwritten.
 
+Photos whose originals have an XMP sidecar get their metadata status from comparing it with the
+catalog once the catalog's values are applied: a sidecar that Read Metadata from File would change
+nothing from (keyword order aside) starts in step; one that says something else (a keyword, rating,
+copyright or edit the catalog doesn't have) starts as a conflict, so the badge and the Metadata
+Status filter show it, automatic reading leaves it alone, and the result counts them
+(`sidecarsDisagree`, with a warning). The catalog's values are what is imported either way; Read
+Metadata from File takes the sidecar's, Save Metadata to File writes the catalog's (issue #1312).
+Before, every imported photo read "changed in the catalog".
+
 Native import reads MAIN database pages on demand; no whole-file size cutoff or MAIN-file read
 allocation is used. Committed WAL validation is streamed into a compact page index; WAL remains
 capped at 1 GiB and 4,000,000 frames. MAIN is structurally bounded to 16,777,216 pages (up to
 1 TiB logical size with 64 KiB pages); each table B-tree walk is bounded to 4,000,000 visited
-pages. A record is capped at 64 MiB and XMP packets at 16 MiB. A record past the cap, or one that
+pages. A record of up to 64 MiB is always read; a larger one is read when it fits the catalog file
+and an eighth of the computer's memory (a quarter of what is free), so a professional catalog's
+95 MB cached XMP record is read instead of left out. An XMP packet is decoded up to 32 times its
+compressed size within the same memory bound; one still past 16 MiB once decoded has its
+`crs:Table_<id>` colour lookup tables dropped (nothing the import reads, and nearly all of such a
+packet; a warning names the image, and only the recovery archive lacks them), and is left out only
+if it is past 16 MiB even without them. A record past these bounds, or one that
 is malformed, is left out on its own and counted in a warning naming the table ("N records could not
 be read and were left out"); the rest of the table imports. Text that is not valid UTF-8 is read with
 replacement characters and counted in a warning. The in-tree, read-only Rust SQLite

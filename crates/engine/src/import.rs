@@ -130,6 +130,9 @@ pub struct ImportOptions {
     /// A preset's own camera profile replaces the body's (`presetProfile`). Off (the default): a raw
     /// keeps its camera profile through the preset stack (OneSlips, LR-IMP-PROFILE).
     pub preset_profile: bool,
+    /// Keep what each new photo's sidecar said, as it was merged ([`ImportReport::sidecars_read`]): a Lightroom
+    /// catalog import puts the catalog's values over it and then compares the two (issue #1312). Off by default.
+    pub keep_sidecars: bool,
     /// A batch-edit recipe: develop control id / value pairs (e.g. `light.exposure` → 0.5),
     /// applied to every imported photo *after* its XMP sidecar, camera default and import preset,
     /// as one more History step (`Import adjustments`). Only the named controls change; the recipe
@@ -294,6 +297,9 @@ pub struct ImportReport {
     /// The camera profile each imported raw got, by profile: `{id ("" = the camera's default): {name, photos, bodies}}`.
     #[serde(rename = "cameraProfiles", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub camera_profiles: std::collections::BTreeMap<String, crate::profile_bodies::ProfileCount>,
+    /// [`ImportOptions::keep_sidecars`]: each new photo's sidecar (or embedded XMP) as it was merged into it.
+    #[serde(skip)]
+    pub sidecars_read: Vec<(PhotoId, crate::sidecar::SidecarData)>,
 }
 
 /// A structured diagnostic from foreign XMP develop settings.
@@ -2185,6 +2191,11 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 // the Before view's default (`Photo::before_base`)
                 p.import_state = (*p.develop != p.import_defaults()).then(|| p.develop.clone());
                 report.imported.push(id.0);
+                if opts.keep_sidecars
+                    && let Some(sc) = sidecar
+                {
+                    report.sidecars_read.push((id, sc));
+                }
                 p.local = opts.local;
                 if opts.local {
                     // the state as browsed: a later change keeps the record from being forgotten

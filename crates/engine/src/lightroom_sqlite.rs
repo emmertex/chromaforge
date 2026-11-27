@@ -18,10 +18,28 @@ const MAX_ROWS: usize = 1_000_000;
 const MAX_CELLS: usize = 4_000_000;
 pub(crate) const MAX_WAL_BYTES: u64 = 1 << 30;
 const MAX_VISITED_BTREE_PAGES: usize = MAX_CELLS;
+/// Records up to this size are always read, on any machine: the fixed bound every catalog had before the bound was
+/// derived from the file and the machine (issue #1312). A larger record is read when [`record_payload_limit`] admits it.
 const MAX_PAYLOAD: usize = 64 * 1024 * 1024;
+/// The memory one record may take when the platform doesn't say how much it has.
+const PAYLOAD_MEMORY_UNKNOWN: u64 = 1 << 30;
 const MAX_TABLE_PAYLOAD: usize = 256 * 1024 * 1024;
 const MAX_OVERFLOW_PAGES: usize = 1_048_576;
 const MAX_BTREE_DEPTH: usize = 64;
+
+/// The largest record payload a database of `database_bytes` reads (issue #1312): a record can't be larger than the
+/// file it is stored in, so a hostile file can't claim more than its size admits; it is held whole while it is decoded,
+/// so no more than an eighth of the machine's memory (`total_memory`) or a quarter of what is free now
+/// (`free_memory`); never less than [`MAX_PAYLOAD`]. A professional catalog's cached XMP of about 95 MB (most of it
+/// colour lookup tables) is read on any machine with the memory to hold it, instead of being left out.
+pub(crate) fn record_payload_limit(database_bytes: u64, total_memory: Option<u64>, free_memory: Option<u64>) -> usize {
+    let from_memory = match (total_memory.map(|m| m / 8), free_memory.map(|m| m / 4)) {
+        (Some(total), Some(free)) => total.min(free),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => PAYLOAD_MEMORY_UNKNOWN,
+    };
+    usize::try_from(database_bytes.min(from_memory)).unwrap_or(usize::MAX).max(MAX_PAYLOAD)
+}
 
 /// Values supported by SQLite table records.
 #[derive(Clone, Debug, PartialEq)]
@@ -592,7 +610,7 @@ impl Database {
     }
 
     /// Stream a table B-tree's rows to `sink` in rowid order, decoding up to `ncols` values per record. Only one
-    /// record (bounded by `MAX_PAYLOAD`) is held at a time, so a table of any size costs what `sink` keeps; pages are
+    /// record (bounded by [`record_payload_limit`]) is held at a time, so a table of any size costs what `sink` keeps; pages are
     /// read from the file one at a time. An error from `sink` (or cancellation) stops the walk and is returned.
     pub(crate) fn for_each_row_with_cancel(
         &self,
@@ -662,7 +680,7 @@ impl Database {
         cancel: &std::sync::atomic::AtomicBool,
         lossy: &mut usize,
     ) -> Result<Vec<Value>, String> {
-        if payload_len > MAX_PAYLOAD {
+        if !self.payload_fits(payload_len) {
             return Err("SQLite record payload is too large".into());
         }
         let payload = self.payload(page, at, payload_len, cancel)?;
@@ -755,7 +773,7 @@ impl Database {
                     let payload_len = usize_from_u64(read_varint(content, &mut at)?, "payload length")?;
                     let rowid = i64::from_be_bytes(read_varint(content, &mut at)?.to_be_bytes());
                     // An oversized record is never read, so it is not charged; every record read is, before reading.
-                    if payload_len <= MAX_PAYLOAD {
+                    if self.payload_fits(payload_len) {
                         state.payload_total = state.payload_total.checked_add(payload_len).ok_or("SQLite table payload total overflow")?;
                         if state.payload_total > state.payload_budget {
                             return Err("SQLite table payload exceeds bounded import size".into());
@@ -815,6 +833,17 @@ impl Database {
             0x02 | 0x0a => Err("SQLite index B-trees are unsupported".into()),
             other => Err(format!("unsupported SQLite B-tree page type 0x{other:02x}")),
         }
+    }
+
+    /// Whether a record of `payload_len` bytes is read: up to [`MAX_PAYLOAD`] always; past it, what
+    /// [`record_payload_limit`] admits for this file on this machine (only asked then: it looks at the memory).
+    fn payload_fits(&self, payload_len: usize) -> bool {
+        if payload_len <= MAX_PAYLOAD {
+            return true;
+        }
+        let database_bytes = u64::from(self.page_count).saturating_mul(u64::try_from(self.page_size).unwrap_or(u64::MAX));
+        let total = crate::memory::total_ram().and_then(|m| u64::try_from(m).ok());
+        payload_len <= record_payload_limit(database_bytes, total, lcc_sysmem::available())
     }
 
     fn payload(&self, page: &[u8], cell_at: usize, payload_len: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<Vec<u8>, String> {
@@ -1527,7 +1556,7 @@ mod tests {
         assert_eq!(SCHEMA_PAGE_READS_TEST.load(Ordering::Relaxed), 1, "schema traversal must not read either child page");
     }
 
-    fn varint(mut value: u64) -> Vec<u8> {
+    pub(super) fn varint(mut value: u64) -> Vec<u8> {
         let mut out = vec![u8::try_from(value & 0x7f).unwrap_or(0)];
         value >>= 7;
         while value != 0 {
@@ -2537,6 +2566,101 @@ mod tests {
         assert_eq!(db.for_each_kept_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).map(|s| s.skipped), Ok(3));
         assert!(db.for_each_row_with_cancel(2, 1, &AtomicBool::new(true), &mut |_| Ok(())).is_err());
         assert!(WalkStats::default().notes("T").is_empty(), "a clean walk adds no warning");
+    }
+}
+
+#[cfg(test)]
+mod payload_limit_tests {
+    use super::tests::varint;
+    use super::*;
+
+    /// Issue #1312: the record bound follows the file and the machine, never below the old 64 MiB.
+    #[test]
+    fn the_record_bound_follows_the_file_and_the_memory() {
+        const GIB: u64 = 1 << 30;
+        // a small file can't hold a record larger than itself, but the old bound always stands
+        assert_eq!(record_payload_limit(1 << 20, Some(128 * GIB), Some(64 * GIB)), MAX_PAYLOAD);
+        // a 4 GiB catalog on a 128 GiB machine: an eighth of the memory, a quarter of what is free
+        assert_eq!(record_payload_limit(4 * GIB, Some(128 * GIB), Some(64 * GIB)), usize::try_from(4 * GIB).unwrap());
+        assert_eq!(record_payload_limit(40 * GIB, Some(128 * GIB), Some(64 * GIB)), usize::try_from(16 * GIB).unwrap());
+        assert_eq!(record_payload_limit(40 * GIB, Some(128 * GIB), Some(2 * GIB)), usize::try_from(GIB / 2).unwrap());
+        // a small machine still reads what every machine read before
+        assert_eq!(record_payload_limit(40 * GIB, Some(GIB / 4), None), MAX_PAYLOAD);
+        assert_eq!(record_payload_limit(40 * GIB, None, None), usize::try_from(PAYLOAD_MEMORY_UNKNOWN).unwrap());
+        assert_eq!(record_payload_limit(u64::MAX, Some(u64::MAX), Some(u64::MAX)), usize::try_from(u64::MAX / 8).unwrap_or(usize::MAX));
+    }
+
+    /// A record past the old 64 MiB bound (a professional catalog's cached XMP reached about 95 MB) is read whole on a
+    /// machine with the memory for it, instead of being left out (issue #1312).
+    #[test]
+    fn a_record_past_64_mib_is_read_when_the_file_and_memory_admit_it() {
+        const PAGE: usize = 65_536;
+        let blob_len = MAX_PAYLOAD + 3 * PAGE + 17;
+        let free = lcc_sysmem::available().unwrap_or(0);
+        if free < 8 * blob_len as u64 {
+            lcc_testkit::skip!(System, "too little free memory to hold a 64 MiB record a few times over");
+            return;
+        }
+        // one blob column: header [header size, serial type of a blob of blob_len bytes]
+        let mut payload = Vec::new();
+        let serial = varint(blob_len as u64 * 2 + 12);
+        payload.push(u8::try_from(1 + serial.len()).unwrap());
+        payload.extend(&serial);
+        let header = payload.len();
+        payload.extend((0..blob_len).map(|i| (i % 251) as u8));
+        let usable = PAGE;
+        let (max_local, min_local) = (usable - 35, (usable - 12) * 32 / 255 - 23);
+        let candidate = min_local + (payload.len() - min_local) % (usable - 4);
+        let local = if candidate > max_local { min_local } else { candidate };
+        let overflow_pages = (payload.len() - local).div_ceil(usable - 4);
+        let page_count = 2 + overflow_pages;
+        let mut main = vec![0u8; PAGE * page_count];
+        let mut cell = varint(payload.len() as u64);
+        cell.extend(varint(1));
+        let cell_at = PAGE - (cell.len() + local + 4);
+        {
+            let leaf = &mut main[PAGE..2 * PAGE];
+            leaf[0] = 0x0d;
+            leaf[3..5].copy_from_slice(&1u16.to_be_bytes());
+            leaf[8..10].copy_from_slice(&u16::try_from(cell_at).unwrap().to_be_bytes());
+            let body = cell_at + cell.len();
+            leaf[cell_at..body].copy_from_slice(&cell);
+            leaf[body..body + local].copy_from_slice(&payload[..local]);
+            leaf[body + local..body + local + 4].copy_from_slice(&3u32.to_be_bytes());
+        }
+        let mut rest = &payload[local..];
+        for i in 0..overflow_pages {
+            let page = &mut main[PAGE * (2 + i)..PAGE * (3 + i)];
+            let next = if i + 1 < overflow_pages { u32::try_from(4 + i).unwrap() } else { 0 };
+            page[..4].copy_from_slice(&next.to_be_bytes());
+            let take = rest.len().min(usable - 4);
+            page[4..4 + take].copy_from_slice(&rest[..take]);
+            rest = &rest[take..];
+        }
+        let db = Database {
+            main: MainPages::Bytes(main),
+            wal: None,
+            page_size: PAGE,
+            reserved: 0,
+            encoding: TextEncoding::Utf8,
+            page_count: u32::try_from(page_count).unwrap(),
+            tables: Vec::new(),
+            rowid_aliases: HashMap::new(),
+        };
+        let never_cancel = AtomicBool::new(false);
+        let mut got = Vec::new();
+        let stats = db
+            .for_each_row_with_cancel(2, 1, &never_cancel, &mut |r| {
+                got.push(r.values);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stats.skipped, 0, "{stats:?}");
+        assert_eq!(got.len(), 1);
+        match got.first().and_then(|values| values.first()) {
+            Some(Value::Blob(bytes)) => assert!(bytes.len() == blob_len && bytes[..] == payload[header..], "the record is read whole"),
+            other => panic!("expected the blob, got {:?}", other.map(|_| "another value")),
+        }
     }
 }
 

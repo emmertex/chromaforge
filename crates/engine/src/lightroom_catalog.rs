@@ -492,9 +492,10 @@ impl Reader {
         self.xmp_table_within(cancel, MAX_XMP_PACKET)
     }
 
-    /// [`Self::xmp_table`] with each packet held to `max_packet` decoded bytes: a packet past it is left off
-    /// its row and named in the warnings; the bound is per image, so the size of the catalog alone never
-    /// drops a packet (upstream #3674).
+    /// [`Self::xmp_table`] with each packet held to `max_packet` decoded bytes: a compressed packet may decode past
+    /// it ([`xmp_inflate_limit`]), and one past it keeps everything but its colour lookup tables
+    /// ([`within_packet_bound`]); only one past it even without them is left off its row, named in the warnings.
+    /// The bound is per image, so the size of the catalog alone never drops a packet (upstream #3674).
     fn xmp_table_within(&self, cancel: &AtomicBool, max_packet: usize) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
@@ -509,25 +510,30 @@ impl Reader {
                 if column != "xmp" {
                     continue;
                 }
-                // the declared size (the decode checks it) against what is left, before inflating
+                // the declared size (the decode checks it) against what this blob may expand to, before inflating
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
-                let over = |n: usize| n > max_packet;
-                let decoded = if over(declared) { Ok(None) } else { decode_compressed(&bytes, "XMP").map(Some) };
+                let limit = if declared <= max_packet { max_packet } else { xmp_inflate_limit_here(bytes.len(), max_packet) };
+                let decoded = if declared > limit { Ok(None) } else { decode_compressed_within(&bytes, "XMP", limit).map(Some) };
                 match decoded {
-                    Ok(Some(packet)) if !over(packet.len()) => {
-                        r.insert(column.to_string(), Value::String(packet));
+                    Ok(Some(packet)) => {
+                        if let Some(packet) = within_packet_bound(image, packet, max_packet, &mut warnings) {
+                            r.insert(column.to_string(), Value::String(packet));
+                        }
                     }
-                    Ok(_) => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
+                    Ok(None) => warnings.push(format!(
+                        "image {image}: the XMP packet ({} MiB) is larger than this catalog and this computer's memory admit; it is left out",
+                        declared >> 20
+                    )),
                     Err(error) => warnings.push(format!("image {image}: {error}")),
                 }
             }
             // a text packet is held to the same bound as a decoded one
-            if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
-                && !blobs_had_xmp
-                && len > max_packet
+            if !blobs_had_xmp
+                && r.get("xmp").and_then(Value::as_str).is_some_and(|text| text.len() > max_packet)
+                && let Some(Value::String(packet)) = r.remove("xmp")
+                && let Some(packet) = within_packet_bound(image, packet, max_packet, &mut warnings)
             {
-                r.remove("xmp");
-                warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20));
+                r.insert("xmp".into(), Value::String(packet));
             }
             out.insert(image, r);
             Ok(())
@@ -741,10 +747,21 @@ fn compressed_len(bytes: &[u8]) -> Option<usize> {
 /// Classic 13): the decoded length as 4 big-endian bytes, then a zlib stream, at most 16 MiB decoded. Errors name it
 /// `what`.
 fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
+    decode_compressed_within(bytes, what, 16 << 20)
+}
+
+/// [`decode_compressed`] to at most `limit` decoded bytes.
+fn decode_compressed_within(bytes: &[u8], what: &str, limit: usize) -> Result<String, String> {
     if bytes.len() < 4 {
         return Err(format!("truncated {what} header"));
     }
-    let size = compressed_len(bytes).ok_or_else(|| format!("{what} longer than 16 MiB"))?;
+    let size = bytes
+        .get(..4)
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+        .map(u32::from_be_bytes)
+        .and_then(|size| usize::try_from(size).ok())
+        .filter(|size| *size <= limit)
+        .ok_or_else(|| format!("{what} longer than {} MiB", limit >> 20))?;
     // inflated no further than its declared length: a stream that goes on is invalid, at no more cost than a valid one
     let decoded = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(bytes.get(4..).ok_or_else(|| format!("truncated {what}"))?, size)
         .map_err(|_| format!("invalid compressed {what}"))?;
@@ -752,6 +769,106 @@ fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
         return Err(format!("{what} length mismatch"));
     }
     String::from_utf8(decoded).map_err(|e| format!("{what} not UTF-8: {e}"))
+}
+
+/// How many times its compressed size an XMP packet may expand to. Lightroom's packets compress about 10:1, and the
+/// large ones, which are mostly base-85 colour tables, far less; a hostile blob can't claim more than this.
+const XMP_EXPANSION: u64 = 32;
+
+/// The longest packet a compressed XMP blob of `compressed` bytes may decode to (issue #1312): no more than
+/// [`XMP_EXPANSION`] times its size, an eighth of the machine's memory (`total_memory`) or a quarter of what is free
+/// (`free_memory`), and never less than `floor` (the per-packet bound every catalog had before).
+pub(crate) fn xmp_inflate_limit(compressed: usize, floor: usize, total_memory: Option<u64>, free_memory: Option<u64>) -> usize {
+    let from_blob = u64::try_from(compressed).unwrap_or(u64::MAX).saturating_mul(XMP_EXPANSION);
+    let from_memory = match (total_memory.map(|m| m / 8), free_memory.map(|m| m / 4)) {
+        (Some(total), Some(free)) => total.min(free),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => SETTINGS_MEMORY_UNKNOWN,
+    };
+    // (the header holds the length in 32 bits)
+    usize::try_from(from_blob.min(from_memory).min(u64::from(u32::MAX))).unwrap_or(usize::MAX).max(floor)
+}
+
+/// [`xmp_inflate_limit`] on this machine (only asked for a packet past `floor`: it looks at the memory).
+fn xmp_inflate_limit_here(compressed: usize, floor: usize) -> usize {
+    let total = crate::memory::total_ram().and_then(|m| u64::try_from(m).ok());
+    xmp_inflate_limit(compressed, floor, total, lcc_sysmem::available())
+}
+
+/// A decoded packet held for its image: as it is when it fits `max_packet`; past it, without its `crs:Table_<id>`
+/// colour lookup tables ([`strip_colour_tables`]: nothing the import reads, and nearly all of a large packet), which
+/// a warning names; `None` (with a warning) when even that is past it. Every field the import takes from the packet
+/// is the same either way, so a catalog imports the same whatever the size of its packets (issue #1312).
+fn within_packet_bound(image: i64, packet: String, max_packet: usize, warnings: &mut Vec<String>) -> Option<String> {
+    if packet.len() <= max_packet {
+        return Some(packet);
+    }
+    let full = packet.len();
+    let stripped = strip_colour_tables(&packet);
+    drop(packet);
+    if stripped.len() <= max_packet {
+        warnings.push(format!(
+            "image {image}: the XMP packet is {} MiB, nearly all of it colour lookup tables (crs:Table_…); they are left out of \
+             the source archive (the import doesn't use them), everything else in the packet is imported",
+            full >> 20
+        ));
+        return Some(stripped);
+    }
+    warnings.push(format!(
+        "image {image}: the XMP packet is {} MiB even without its colour lookup tables (over {} MiB); it is left out",
+        stripped.len() >> 20,
+        max_packet >> 20
+    ));
+    None
+}
+
+/// `packet` without its `crs:Table_<id>` values, in attribute form (` crs:Table_ABC="…"`) or element form
+/// (`<crs:Table_ABC>…</crs:Table_ABC>`): the colour lookup tables of the looks and profiles a photo used, which
+/// [`crate::xmp_look`] reads from preset files but nothing reads from a catalog's cached packet. One pass; text it
+/// can't make sense of (an unclosed value) is kept as it is.
+pub(crate) fn strip_colour_tables(packet: &str) -> String {
+    const NAME: &str = "crs:Table_";
+    let mut out = String::with_capacity(packet.len().min(1 << 20));
+    let mut rest = packet;
+    while let Some(at) = rest.find(NAME) {
+        let (before, from) = rest.split_at(at);
+        let after_name = from.get(NAME.len()..).unwrap_or("");
+        let id_len = after_name.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after_name.len());
+        let id = after_name.get(..id_len).unwrap_or("");
+        let tail = after_name.get(id_len..).unwrap_or("");
+        // attribute form: whitespace, name, `="` (or `='`), value, the same quote
+        let quoted = match tail.get(..2) {
+            Some("=\"") => Some('"'),
+            Some("='") => Some('\''),
+            _ => None,
+        };
+        if before.ends_with(|c: char| c.is_ascii_whitespace())
+            && let Some(quote) = quoted
+            && let Some(value) = tail.get(2..)
+            && let Some(end) = value.find(quote)
+        {
+            out.push_str(before.trim_end_matches(|c: char| c.is_ascii_whitespace()));
+            rest = value.get(end + 1..).unwrap_or("");
+            continue;
+        }
+        // element form: `<` name `>` value `</` name `>`
+        if let Some(open) = before.strip_suffix('<')
+            && let Some(value) = tail.strip_prefix('>')
+        {
+            let close = format!("</{NAME}{id}>");
+            if let Some(end) = value.find(&close) {
+                out.push_str(open);
+                rest = value.get(end + close.len()..).unwrap_or("");
+                continue;
+            }
+        }
+        // not a table value: keep it and look on
+        let keep = at + NAME.len();
+        out.push_str(rest.get(..keep).unwrap_or(rest));
+        rest = rest.get(keep..).unwrap_or("");
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -1584,7 +1701,8 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
         .collect();
     let missing_sources: HashSet<String> =
         data.photos.iter().filter(|p| number(&p.image, "masterImage") == 0).filter(|p| !p.original_is_file()).map(|p| key(&p.path)).collect();
-    let files = crate::import::import(s, &paths, crate::import::ImportMode::Add)?;
+    let opts = crate::import::ImportOptions { mode: crate::import::ImportMode::Add, keep_sidecars: true, ..Default::default() };
+    let files = crate::import::import_with(s, &paths, &opts)?;
     let applied =
         apply_prepared(s, data, ApplyPrepared { update_existing, files, index: &mut index, archive_path, missing_sources: &missing_sources, undo0 })?;
     if let Some(path) = index_path {
@@ -1638,7 +1756,8 @@ fn first_of_each_collection<'a>(data: &'a CatalogImport, warnings: &mut Vec<Stri
 /// Turn the read catalog into library records in one undo step and return the import report
 /// (added, missing, failed, warnings and skipped images).
 pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, context: ApplyPrepared<'_>) -> crate::Result<AppliedImport> {
-    let ApplyPrepared { update_existing, files, index, archive_path, missing_sources, undo0 } = context;
+    let ApplyPrepared { update_existing, mut files, index, archive_path, missing_sources, undo0 } = context;
+    let sidecars_read = std::mem::take(&mut files.sidecars_read);
     // nothing but a file type the app reads becomes a record, whichever route got here (#2135)
     refuse_non_media(&mut data);
     validate(&data).map_err(error)?;
@@ -2209,8 +2328,20 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         s.commit(step, Op::Batch { ops })?;
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
+    // The file step stamped each photo as its file and sidecar gave it; the catalog's values are over that now.
+    // Compare them: in step where they agree, a conflict where the sidecar says something else (Lightroom's "metadata
+    // was changed externally"), never "changed in the catalog" for every photo (issue #1312).
+    let disagree = s.stamp_against_sidecars(sidecars_read);
+    if disagree > 0 {
+        let (whose, say, marked) = if disagree == 1 { ("photo's XMP sidecar", "says", "it is") } else { ("photos' XMP sidecars", "say", "they are") };
+        warnings.push(format!(
+            "{disagree} {whose} {say} something other than the catalog (changed by another app?): the catalog's values were \
+             imported and {marked} marked with a metadata conflict. Read Metadata from File takes the sidecar's values, Save \
+             Metadata to File writes the catalog's"
+        ));
+    }
     Ok(AppliedImport {
-        report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
+        report: json!({"source":data.source,"sidecarsDisagree":disagree,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
     })
 }
@@ -5173,7 +5304,66 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows.values().filter(|r| r.contains_key("xmp")).count(), 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("exceed"), "{warnings:?}");
+        assert!(warnings[0].contains("left out"), "{warnings:?}");
+    }
+
+    /// Issue #1312: a packet past the bound because of its colour lookup tables keeps everything else (the fields the
+    /// import takes from it are the same as from a small packet), in text and in compressed form; one past the bound
+    /// even without them is still left out, alone.
+    #[test]
+    fn a_packet_large_with_colour_tables_keeps_its_fields() {
+        use SqlValue::{Blob as B, Integer as I, Null as N, Text as T};
+        let table = "A".repeat(300);
+        let packet = |extra: &str| {
+            format!(
+                "<x:xmpmeta><rdf:RDF><rdf:Description\n crs:RGBTable=\"AB12\"\n crs:Table_AB12=\"{table}\" \
+                 dc:rights=\"Own\"{extra}><crs:Table_CD34>{table}</crs:Table_CD34></rdf:Description></rdf:RDF></x:xmpmeta>"
+            )
+        };
+        let compressed = |text: &str| crate::lightroom_fixture::compressed(text);
+        let rows = vec![
+            vec![N, I(1), T(packet(""))],
+            vec![N, I(2), B(compressed(&packet("")))],
+            vec![N, I(3), B(compressed(&packet(&format!(" dc:title=\"{}\"", "t".repeat(300)))))],
+        ];
+        let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
+        let reader = Reader::new(Database::open_with_wal(bytes, &[]).unwrap(), 0);
+        let (rows, warnings) = reader.xmp_table_within(&AtomicBool::new(false), 256).unwrap();
+        for image in [1, 2] {
+            let kept = rows.get(&image).and_then(|r| r.get("xmp")).and_then(Value::as_str).unwrap_or_default();
+            assert!(kept.contains("dc:rights=\"Own\"") && kept.contains("crs:RGBTable=\"AB12\""), "image {image}: {kept}");
+            assert!(!kept.contains("crs:Table_") && kept.len() <= 256, "image {image}: {kept}");
+        }
+        assert!(rows.get(&3).is_some_and(|r| !r.contains_key("xmp")), "past the bound without its tables too");
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert_eq!(warnings.iter().filter(|w| w.contains("colour lookup tables (crs:Table_…); they are left out")).count(), 2, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.starts_with("image 3:") && w.contains("even without")), "{warnings:?}");
+    }
+
+    #[test]
+    fn colour_tables_are_stripped_in_both_forms_and_nothing_else() {
+        let xmp = "<d a=\"1\"\n  crs:Table_X1='zz' b=\"2\"><crs:Table_Y>q</crs:Table_Y><e>crs:Table_ in text</e></d>";
+        assert_eq!(strip_colour_tables(xmp), "<d a=\"1\" b=\"2\"><e>crs:Table_ in text</e></d>");
+        // an unclosed value, a name at the very end and text with no table stay as they are
+        for kept in ["<d crs:Table_X=\"never closed", "crs:Table_", "<crs:Table_Z>open", "<d a=\"é\"/>", ""] {
+            assert_eq!(strip_colour_tables(kept), kept);
+        }
+    }
+
+    #[test]
+    fn the_xmp_inflate_bound_follows_the_blob_and_the_memory() {
+        const GIB: u64 = 1 << 30;
+        let floor = MAX_XMP_PACKET;
+        // a 95 MB blob on a 128 GiB machine: what it may expand to
+        assert_eq!(xmp_inflate_limit(95_000_000, floor, Some(128 * GIB), Some(64 * GIB)), 3_040_000_000);
+        // (the header holds 32 bits)
+        assert_eq!(xmp_inflate_limit(200_000_000, floor, Some(1024 * GIB), Some(1024 * GIB)), usize::try_from(u64::from(u32::MAX)).unwrap());
+        assert_eq!(xmp_inflate_limit(4_000_000, floor, Some(128 * GIB), Some(64 * GIB)), 128_000_000);
+        // a small blob, or a small machine, keeps the old bound
+        assert_eq!(xmp_inflate_limit(10, floor, Some(128 * GIB), Some(64 * GIB)), floor);
+        assert_eq!(xmp_inflate_limit(95_000_000, floor, Some(GIB / 8), None), floor);
+        assert_eq!(xmp_inflate_limit(95_000_000, floor, None, Some(GIB)), usize::try_from(GIB / 4).unwrap());
+        assert_eq!(xmp_inflate_limit(usize::MAX, floor, None, None), usize::try_from(SETTINGS_MEMORY_UNKNOWN).unwrap());
     }
 
     #[test]
@@ -5628,6 +5818,89 @@ pub(crate) mod tests {
             let labels: Vec<_> = p.history.iter().map(|h| h.label.as_str()).collect();
             assert_eq!(labels, ["Exposure", "Dehaze"], "{}: the photo's Lightroom history is imported", p.file_name);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #1312: after the import each photo's metadata status says whether its sidecar agrees with the catalog.
+    /// One that agrees (keywords in another order too) is in step; one with an extra keyword or another copyright is a
+    /// conflict (never read automatically: the catalog's values stay), named in the warnings; a photo without a
+    /// sidecar has no status. None reads "changed in the catalog", as every photo did before.
+    #[test]
+    fn imported_photos_start_in_step_or_in_conflict_with_their_sidecars() {
+        use lcc_catalog::XmpStatus;
+        let dir = crate::tests_xmp::temp_dir("lightroom-sidecar-status");
+        let packet = |keywords: &[&str], rights: &str| {
+            let items: String = keywords.iter().map(|k| format!("<rdf:li>{k}</rdf:li>")).collect();
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:Rating="3"><dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">{rights}</rdf:li></rdf:Alt></dc:rights></rdf:Description></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        let catalog_packet = packet(&["PCA", "Race"], "Catalog rights");
+        let cases: [(&str, Option<String>, XmpStatus); 5] = [
+            ("same", Some(catalog_packet.clone()), XmpStatus::InSync),
+            ("reordered", Some(packet(&["Race", "PCA"], "Catalog rights")), XmpStatus::InSync),
+            ("extra", Some(packet(&["PCA", "Race", "Tagged elsewhere"], "Catalog rights")), XmpStatus::Conflict),
+            ("rights", Some(packet(&["PCA", "Race"], "Sidecar rights")), XmpStatus::Conflict),
+            ("bare", None, XmpStatus::Unknown),
+        ];
+        let mut photos = Vec::new();
+        for (i, (name, sidecar, _)) in cases.iter().enumerate() {
+            let raw = dir.join(format!("{name}.dng"));
+            // (different pixels: identical files would be one photo and its duplicates)
+            let pixels: Vec<u16> = (0..32 * 24).map(|p| 256 + (p * 7 + i * 101) as u16).collect();
+            std::fs::write(&raw, crate::tests_xmp::synthetic_dng_of(32, 24, "RGGB", pixels, None, Default::default())).unwrap();
+            if let Some(xmp) = sidecar {
+                std::fs::write(dir.join(format!("{name}.xmp")), xmp).unwrap();
+            }
+            let id = i as i64 + 1;
+            photos.push(CatalogPhoto {
+                source_id: id,
+                uuid: format!("photo-{id}"),
+                path: raw.to_string_lossy().into(),
+                image: row(json!({"id_local":id,"fileFormat":"DNG","fileWidth":32,"fileHeight":24,"rating":3})),
+                settings: String::new(),
+                xmp: catalog_packet.clone(),
+                keywords: vec!["PCA".into(), "Race".into()],
+                history: Vec::new(),
+                snapshots: Vec::new(),
+                caption: String::new(),
+                original: Original::Local,
+                as_shot_white: None,
+                capture_one: None,
+            });
+        }
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos,
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 5, "{r}");
+        for (i, (name, _, want)) in cases.iter().enumerate() {
+            let id = PhotoId(r["mapping"][(i + 1).to_string()].as_u64().unwrap());
+            let p = s.catalog.photo(id).unwrap();
+            // the catalog's values were imported, whatever the sidecar says
+            assert_eq!(p.meta.copyright, "Catalog rights", "{name}");
+            assert!(!p.meta.keywords.iter().any(|k| k == "Tagged elsewhere"), "{name}");
+            assert_eq!(s.xmp_status(id), *want, "{name}");
+        }
+        assert_eq!(r["sidecarsDisagree"], 2, "{r}");
+        assert!(r["warnings"].to_string().contains("2 photos' XMP sidecars say something other than the catalog"), "{r}");
+        // nothing reads a conflict automatically; Read Metadata from File settles it with the sidecar's values
+        let extra = PhotoId(r["mapping"]["3"].as_u64().unwrap());
+        let auto = s.execute("photo.autoReadMetadata", &json!({"ids": [extra.0]})).unwrap();
+        assert_eq!(auto["conflicts"], json!([extra.0]), "{auto}");
+        assert!(!s.catalog.photo(extra).unwrap().meta.keywords.iter().any(|k| k == "Tagged elsewhere"));
+        s.selection.ids = vec![extra];
+        s.execute("photo.readMetadataFromFile", &json!({"ids": [extra.0]})).unwrap();
+        assert!(s.catalog.photo(extra).unwrap().meta.keywords.iter().any(|k| k == "Tagged elsewhere"));
+        assert_eq!(s.xmp_status(extra), XmpStatus::InSync);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

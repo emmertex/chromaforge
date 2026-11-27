@@ -72,7 +72,14 @@ A failed import takes back the photos it added. Records with broken references (
 does not resolve, or a settings, keyword or collection-member record naming no photo) are skipped with a warning
 instead of landing on another photo. A single catalog record that can't be read (too large or damaged) is left
 out on its own, and the result window says how many were left out of which table; the rest of that table still
-imports. The photo behind such a record keeps only what its files say. If the record is in a table every import
+imports. A record too large for a fixed limit but within what the catalog file and the computer's memory admit
+(a professional catalog's 95 MB cached XMP, most of it colour lookup tables) is read. The photo behind a record
+that is left out keeps only what its files say.
+
+The catalog's values win over XMP sidecars next to the originals. A sidecar that says something else (keywords
+added in Photo Mechanic, a newer copyright) marks its photo as a metadata conflict, counted in the result; Read
+Metadata from File takes the sidecar's values, Save Metadata to File writes the catalog's. A sidecar that agrees
+starts in step. If the record is in a table every import
 needs (photos, files, folders), the result also says that photos may be missing. Text with invalid characters is imported with replacement characters, also counted in the result.
 
 ## Safety

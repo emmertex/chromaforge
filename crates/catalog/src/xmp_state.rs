@@ -7,6 +7,12 @@
 //! - **changed in catalog**: the fingerprint moved (edited in the app since, not saved to file);
 //! - **changed on disk**: the sidecar's time or size moved (another app wrote it);
 //! - **conflict**: both — the "Read Metadata from File / Save to File" dialog asks.
+//!
+//! An import that puts another catalog's values over what a photo's sidecar said (a Lightroom catalog import) compares
+//! the two and, where the sidecar says something else, records the stamp with [`XmpStamp::disagrees`]: the photo
+//! starts as a conflict, as Lightroom Classic flags a sidecar that disagrees with its catalog and lets the user choose
+//! (issue #1312). Not "changed on disk": that is read automatically, and the import must not take the sidecar's
+//! values on its own.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +28,14 @@ pub struct XmpStamp {
     /// sidecar existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<SidecarStat>,
+    /// The sidecar said something other than the library when this was recorded, and neither was chosen: a conflict
+    /// until the next read from or write to the sidecar records a new stamp.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disagrees: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// What the file system says about a sidecar.
@@ -77,7 +91,7 @@ impl Photo {
     /// The stamp to record right after reading from / writing to the sidecar (`file`: its stat
     /// after the write, `None` if there is none).
     pub fn xmp_stamp_now(&self, file: Option<SidecarStat>) -> XmpStamp {
-        XmpStamp { fingerprint: self.xmp_fingerprint(), file }
+        XmpStamp { fingerprint: self.xmp_fingerprint(), file, disagrees: false }
     }
 
     /// The badge, given the sidecar's stat now (`None`: no sidecar). A virtual copy has no sidecar of its own (the
@@ -89,6 +103,9 @@ impl Photo {
         }
         let Some(stamp) = self.xmp else { return XmpStatus::Unknown };
         let catalog = stamp.fingerprint != self.xmp_fingerprint();
+        if stamp.disagrees {
+            return XmpStatus::Conflict;
+        }
         let disk = stamp.file != file_now;
         match (catalog, disk) {
             (false, false) => XmpStatus::InSync,
@@ -120,6 +137,26 @@ mod tests {
         p.rating = 0;
         p.file_size = 99;
         assert_eq!(p.xmp_status(Some(st)), XmpStatus::InSync);
+    }
+
+    /// Issue #1312: a stamp recorded while the sidecar and the library disagreed is a conflict whatever happens on
+    /// either side, until a read or write records a new one.
+    #[test]
+    fn a_disagreeing_stamp_is_a_conflict_until_settled() {
+        let mut p = Photo::new(PhotoId(3), Source::Demo { scene: 0 }, "a.jpg", "JPEG", 10, 10, "2026-01-01T00:00:00");
+        let st = SidecarStat { mtime: 100, size: 2000 };
+        p.xmp = Some(XmpStamp { disagrees: true, ..p.xmp_stamp_now(Some(st)) });
+        assert_eq!(p.xmp_status(Some(st)), XmpStatus::Conflict);
+        assert_eq!(p.xmp_status(Some(SidecarStat { mtime: 101, size: 2000 })), XmpStatus::Conflict);
+        p.rating = 2;
+        assert_eq!(p.xmp_status(Some(st)), XmpStatus::Conflict);
+        p.xmp = Some(p.xmp_stamp_now(Some(st)));
+        assert_eq!(p.xmp_status(Some(st)), XmpStatus::InSync);
+        // it round-trips, and an ordinary stamp is stored as before
+        let json = serde_json::to_string(&XmpStamp { disagrees: true, ..XmpStamp::default() }).unwrap();
+        assert!(json.contains("\"disagrees\":true"), "{json}");
+        assert!(!serde_json::to_string(&XmpStamp::default()).unwrap().contains("disagrees"));
+        assert!(serde_json::from_str::<XmpStamp>(&json).unwrap().disagrees);
     }
 
     /// A virtual copy made after a sidecar sync carries the original's stamp; the original's sidecar changing (a

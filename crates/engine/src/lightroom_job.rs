@@ -392,7 +392,9 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
 
     let undo0 = s.undo.len();
     prepared.normal.revalidate_add(s);
-    let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+    // (each photo's sidecar is kept, to compare with the catalog's values once they are applied)
+    let options =
+        ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, keep_sidecars: true, ..ImportOptions::default() };
     let now = prepared.now.clone();
     let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
