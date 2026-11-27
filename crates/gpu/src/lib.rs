@@ -41,6 +41,8 @@ pub mod bm3d;
 #[cfg(not(target_arch = "wasm32"))]
 mod budget;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod busy;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cards;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clip;

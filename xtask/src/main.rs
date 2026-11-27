@@ -45,7 +45,8 @@ commands:
                   name) in any source file outside the allowlist (xtask/src/brand.rs);
                   test: build the CLI with xtask/test-brand.toml and check help, UI snapshot,
                   MCP serverInfo and config/log paths show only that brand; vars: list template keys
-  bench [FILE] [--only render,grid,tiff,keywords] [--strict] [--threshold PCT] [--save-baseline]
+  bench [FILE] [--only render,grid,tiff,keywords,startup,wheel,export45] [--export-dir DIR] [--strict]
+                  [--threshold PCT] [--save-baseline]
                   run the perf probes, check the budgets, append to target/bench/history.jsonl and compare
                   with this host's baseline (target/bench/baseline.json) or previous run; --strict fails on
                   a regression over PCT (default 20) or a budget breach (docs/perf.md)

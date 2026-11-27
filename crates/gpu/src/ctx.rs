@@ -794,6 +794,7 @@ impl Gpu {
     /// Returns the submission, to wait for it alone ([`Gpu::finish_and_read`]).
     pub fn submit(&self, cmds: impl IntoIterator<Item = wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
         let index = self.queue.submit(cmds);
+        crate::busy::submitted(&self.queue);
         let retired = take_retired();
         self.pool(retired);
         index
@@ -964,6 +965,7 @@ impl Gpu {
         // straight to the queue, not `Gpu::submit`: that also pools the buffers this thread dropped
         // since its last submission, which an encoder not yet submitted may still use
         let index = self.queue.submit([enc.finish()]);
+        crate::busy::submitted(&self.queue);
         keep_staging(&self.staging.up, (staging, index), |b| b.0.size());
         true
     }
