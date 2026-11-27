@@ -857,12 +857,19 @@ impl Database {
     }
 
     fn payload(&self, page: &[u8], cell_at: usize, payload_len: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<Vec<u8>, String> {
-        let mut out = Vec::new();
-        self.payload_chunks(page, cell_at, payload_len, cancel, &mut |capacity| out.try_reserve_exact(capacity).map_err(|_| "unable to reserve bounded SQLite payload".to_string()), &mut |piece| {
-            out.extend_from_slice(piece);
-            Ok(())
-        })?;
-        Ok(out)
+        let out = std::cell::RefCell::new(Vec::new());
+        self.payload_chunks(
+            page,
+            cell_at,
+            payload_len,
+            cancel,
+            &mut |capacity| out.borrow_mut().try_reserve_exact(capacity).map_err(|_| "unable to reserve bounded SQLite payload".to_string()),
+            &mut |piece| {
+                out.borrow_mut().extend_from_slice(piece);
+                Ok(())
+            },
+        )?;
+        Ok(out.into_inner())
     }
 
     /// A record's payload handed to `piece` a page at a time (the cell's local part, then each overflow page's), so a
@@ -1123,7 +1130,18 @@ fn serial_len(serial: u64) -> Result<(u8, usize), String> {
 
 impl<'f> LargeRecord<'f> {
     fn new(ncols: usize, encoding: TextEncoding, large: LargeValues<'f>) -> Self {
-        LargeRecord { ncols, encoding, large, header: Vec::new(), serials: None, column: 0, left: 0, small: Vec::new(), filter: None, values: Vec::new() }
+        LargeRecord {
+            ncols,
+            encoding,
+            large,
+            header: Vec::new(),
+            serials: None,
+            column: 0,
+            left: 0,
+            small: Vec::new(),
+            filter: None,
+            values: Vec::new(),
+        }
     }
 
     fn feed(&mut self, mut piece: &[u8], lossy: &mut usize) -> Result<(), String> {

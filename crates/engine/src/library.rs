@@ -1055,6 +1055,7 @@ impl Session {
         let own_store = store_with_library || self.app_store.is_none();
         let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
         let upgraded = upgrade_notice(&report);
+        let torn = torn_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -1069,7 +1070,7 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(torn_notice(&report)).chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(torn).chain(settings.warnings).collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
@@ -1807,7 +1808,15 @@ mod resolve_tests {
         s.open_library(&dir, false).unwrap();
         let before = s.logged_ops;
         s.execute_fn("test.import", |s| {
-            let p = lcc_catalog::Photo::new(lcc_catalog::PhotoId(77), lcc_catalog::Source::File { path: "/x/a.jpg".into() }, "a.jpg", "JPEG", 6, 4, "2026-01-01");
+            let p = lcc_catalog::Photo::new(
+                lcc_catalog::PhotoId(77),
+                lcc_catalog::Source::File { path: "/x/a.jpg".into() },
+                "a.jpg",
+                "JPEG",
+                6,
+                4,
+                "2026-01-01",
+            );
             s.apply_system(lcc_catalog::Op::AddPhoto { photo: Box::new(p) })?;
             s.persist()?;
             Ok(serde_json::Value::Null)

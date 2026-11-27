@@ -535,7 +535,8 @@ impl Reader {
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
                 let over = |n: usize| n > max_packet;
                 // a packet declared past the bound is read without its camera-profile tables, which are most of it
-                let decoded = if over(declared) { strip_packet(&bytes, true, max_packet).map(Some) } else { decode_compressed(&bytes, "XMP").map(Some) };
+                let decoded =
+                    if over(declared) { strip_packet(&bytes, true, max_packet).map(Some) } else { decode_compressed(&bytes, "XMP").map(Some) };
                 match decoded {
                     Ok(Some(packet)) if !over(packet.len()) => {
                         r.insert(column.to_string(), Value::String(packet));
@@ -830,10 +831,10 @@ impl crate::lightroom_sqlite::ValueFilter for XmpPacketFilter {
 
     fn finish(mut self: Box<Self>) -> Result<crate::lightroom_sqlite::Value, String> {
         // what the inflater still holds
-        if let Some(state) = self.inflate.as_mut() {
+        if let Some(mut state) = self.inflate.take() {
             let mut out = [0u8; 64 * 1024];
             loop {
-                let r = miniz_oxide::inflate::stream::inflate(state, &[], &mut out, miniz_oxide::MZFlush::Finish);
+                let r = miniz_oxide::inflate::stream::inflate(&mut state, &[], &mut out, miniz_oxide::MZFlush::Finish);
                 let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
                 self.text(&written)?;
                 match r.status {
