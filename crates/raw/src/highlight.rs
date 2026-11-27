@@ -552,7 +552,26 @@ fn rebuild_clipped(img: &mut Rgb32f, wb: [f32; 3], clip: f32, white: [f32; 3], c
                 std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
             };
             let local = (trust > 0.0).then(|| rebuild(p, q, cl, borrowed, clip, max_level)).flatten().map(past_rim);
-            let plain = (trust < 1.0).then(|| rebuild(p, q, cl, neutral, clip, max_level)).flatten().map(past_rim);
+            // Without reliable colour around, the guess is the clipped surface's own colour just below its clip (the
+            // rim) as far as the pixel's own channels agree with it, else neutral. Neutral alone turned a large partly
+            // clipped blue sky (green and blue clipped, red not) cyan: red is kept, so the neutral estimate can only
+            // lift green to blue's level, a hue that is neither the sky's nor white (issue #1487).
+            let plain = (trust < 1.0)
+                .then(|| {
+                    let neutral_guess = rebuild(p, q, cl, neutral, clip, max_level);
+                    let own = edge.and_then(|edge| {
+                        let s = edge[0] + edge[1] + edge[2];
+                        (s > 1e-6).then(|| [edge[0] / s, edge[1] / s, edge[2] / s])
+                    });
+                    let Some(own) = own else { return neutral_guess };
+                    let agree = 1.0 - smoothstep(AGREE.0, AGREE.1, contradiction(p, q, cl, own, clip));
+                    match (rebuild(p, q, cl, own, clip, max_level), neutral_guess) {
+                        (Some(a), Some(b)) => Some(std::array::from_fn(|c| b[c] + (a[c] - b[c]) * agree)),
+                        (a, b) => b.or(a),
+                    }
+                })
+                .flatten()
+                .map(past_rim);
             let mut out = match (local, plain) {
                 (Some(a), Some(b)) => std::array::from_fn(|c| b[c] + (a[c] - b[c]) * trust),
                 (Some(a), None) | (None, Some(a)) => a,
@@ -1041,5 +1060,48 @@ mod tests {
         let (mut a, mut b) = (base.clone(), base.clone());
         assert_eq!(reconstruct_mode(&mut a, WB, 0.99, [1.0; 3], Mode::default(), None), reconstruct_with(&mut b, WB, 0.99, [1.0; 3]));
         assert!(a.data == b.data);
+    }
+
+    fn hue(q: [f32; 3]) -> f32 {
+        let (r, g, b) = (q[0], q[1], q[2]);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        let d = mx - mn;
+        if d <= 0.0 {
+            return f32::NAN;
+        }
+        let h = if mx == r {
+            60.0 * (((g - b) / d) % 6.0)
+        } else if mx == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        if h < 0.0 { h + 360.0 } else { h }
+    }
+
+    /// Issue #1487: a blue sky brightening until green and blue clip, red not, with and without an unclipped strip of
+    /// the same sky above it. Far from reliable colour the neutral guess kept red and lifted green to blue's level, a
+    /// pure cyan (hue 180° where the sky is 220°) that Exposure or Highlights then showed. The rebuilt sky now keeps
+    /// the hue of its own colour just below the clip.
+    #[test]
+    fn partly_clipped_blue_sky_keeps_its_hue() {
+        let sky = [0.55f32, 1.0, 1.9];
+        let truth = hue(sky);
+        for unclipped_rows in [8usize, 0] {
+            let (w, h) = (400usize, 200usize);
+            let k = |x: usize| 0.4 + 1.8 * x as f32 / (w - 1) as f32;
+            let img0 = Rgb32f::from_fn(w, h, |x, y| sensor(sky.map(|v| v * if y < unclipped_rows { 0.5 } else { k(x) })));
+            let mut img = img0.clone();
+            reconstruct(&mut img, WB, 0.99);
+            for x in 0..w {
+                let cl = by_value(&img0.get(x, 100), 0.99);
+                if !(cl[1] && cl[2] && !cl[0]) {
+                    continue;
+                }
+                let got = hue(balanced(img.get(x, 100)));
+                assert!((got - truth).abs() < 3.0, "{unclipped_rows} unclipped rows, x {x}: hue {got} where the sky's is {truth}");
+            }
+        }
     }
 }
