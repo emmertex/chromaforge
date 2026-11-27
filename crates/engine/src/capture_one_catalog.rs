@@ -728,7 +728,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        let cancel = AtomicBool::new(false);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
         let read = read_with_progress(&db, &cancel, &AtomicUsize::new(0), &AtomicUsize::new(0)).unwrap();
         assert_eq!(read.photos.iter().map(|p| p.source_id).collect::<Vec<_>>(), vec![7], "the ARQ and its second variant are left out");
         assert!(read.members.iter().all(|m| number(m, "image") == 7), "no album place for a photo that isn't there: {:?}", read.members);

@@ -332,7 +332,7 @@ fn local_twin_promotion_counts_across_background_import_batches() {
     let id = r["imported"][0].as_u64().unwrap();
     s.execute("photo.rate", &json!({"ids": [id], "rating": 4})).unwrap();
     let mut job = ImportJob::new(&mut s, ImportOptions::default()).unwrap();
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let first = job.prepare(&[a.to_string_lossy().to_string()], &cancel);
     let report = commit_prepared(&mut s, &job.opts, job.now(), first).unwrap();
     assert_eq!(report.imported, [id], "promote the existing record with its edits");
@@ -1267,7 +1267,7 @@ fn import_rename_sequence_exhaustion_persists_across_batches() {
         ..Default::default()
     };
     let mut job = crate::import::ImportJob::new(&mut s, opts).unwrap();
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let prepared = job.prepare(std::slice::from_ref(&first.to_string_lossy().to_string()), &cancel);
     let first_result = crate::import::commit_prepared(&mut s, &job.opts, job.now(), prepared).unwrap();

@@ -50,7 +50,7 @@ fn a_batch_prepared_to_its_end_is_not_cut_short_by_a_later_cancel() {
     let mut s = Session::new();
     s.catalog = library(50);
     let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, ..ImportOptions::default() }).unwrap();
-    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let out = job.prepare_files(vec!["/pics/007/a.jpg".into(), "/pics/007/b.jpg".into()], &cancel);
     assert_eq!(out.items.len(), 2, "both files have their item");
     assert!(!out.cut_short, "nothing was left undone");
@@ -63,7 +63,7 @@ fn a_batch_cancel_stopped_before_a_file_is_cut_short() {
     let mut s = Session::new();
     s.catalog = library(50);
     let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, ..ImportOptions::default() }).unwrap();
-    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let out = job.prepare_files(vec!["/pics/007/a.jpg".into(), "/pics/007/new.jpg".into()], &cancel);
     assert_eq!(out.items.len(), 1, "only the known file has its item");
     assert!(out.cut_short, "the new file was left undone");
@@ -128,7 +128,7 @@ fn an_import_looks_the_library_up_when_it_prepares_files() {
     s.catalog = library(50);
     let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, ..ImportOptions::default() }).unwrap();
     assert!(job.by_path.is_empty() && job.by_hash.is_empty() && job.library.is_some(), "nothing is looked up yet");
-    let out = job.prepare_files(vec!["/pics/007/a.jpg".into()], &std::sync::atomic::AtomicBool::new(false));
+    let out = job.prepare_files(vec!["/pics/007/a.jpg".into()], &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
     assert!(job.library.is_none(), "looked up once");
     assert_eq!((job.by_path.len(), job.by_hash.len()), (150, 100));
     assert!(matches!(out.items.as_slice(), [PreparedItem::Duplicate { reason: "path", existing: Some(_), .. }]), "found by its path");
@@ -137,7 +137,7 @@ fn an_import_looks_the_library_up_when_it_prepares_files() {
     s.catalog.apply(Op::SetDeleted { id, deleted: true }).unwrap();
     let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, on_deleted: OnDeleted::Fresh, ..ImportOptions::default() }).unwrap();
     job.opts.on_deleted = OnDeleted::Skip;
-    job.prepare_files(Vec::new(), &std::sync::atomic::AtomicBool::new(false));
+    job.prepare_files(Vec::new(), &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
     assert_eq!(job.by_path.len(), 149, "the trashed photo was passed over, as set up");
 }
 
@@ -153,7 +153,7 @@ fn a_trashed_photo_is_not_looked_up_when_imports_replace_it() {
     s.catalog.apply(Op::SetDeleted { id, deleted: true }).unwrap();
     for (on_deleted, expected) in [(OnDeleted::Fresh, 5), (OnDeleted::Skip, 6)] {
         let mut job = ImportJob::new(&mut s, ImportOptions { mode: ImportMode::Add, on_deleted, ..ImportOptions::default() }).unwrap();
-        job.prepare_files(Vec::new(), &std::sync::atomic::AtomicBool::new(false));
+        job.prepare_files(Vec::new(), &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert_eq!(job.by_path.len(), expected, "{on_deleted:?}");
         let its_content = s.catalog.photo(id).and_then(|p| p.content_hash.clone()).unwrap();
         assert_eq!(job.by_hash.contains_key(&its_content), on_deleted == OnDeleted::Skip, "{on_deleted:?}");

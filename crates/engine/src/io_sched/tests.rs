@@ -64,7 +64,7 @@ impl H {
 
     /// Run `jobs` here and return the report.
     pub(super) fn run(&self, jobs: Vec<IoJob<R>>, workers: usize) -> (Report<R>, usize) {
-        let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+        let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
         let r = run_jobs(&self.ctx, jobs, workers, Result::is_ok, &cancel, &done).unwrap();
         (r, done.load(Ordering::SeqCst))
     }
@@ -760,7 +760,7 @@ fn a_slow_volume_moving_bytes_never_stalls() {
 #[test]
 fn cancel_before_the_start() {
     let h = H::new();
-    let (cancel, done) = (AtomicBool::new(true), AtomicUsize::new(0));
+    let (cancel, done) = (Arc::new(AtomicBool::new(true)), AtomicUsize::new(0));
     let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done).unwrap();
     assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::NotStarted)));
     assert_eq!(done.load(Ordering::SeqCst), 0);
@@ -1395,13 +1395,13 @@ fn the_probe_wrapper_keeps_todays_strings() {
         Ok(crate::media::ProbeInfo::default())
     });
     let paths: Vec<String> = ["/a/1", "/a/boom", "/b/2"].iter().map(|s| s.to_string()).collect();
-    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.first().is_some_and(|r| r.is_ok()));
     assert!(r.get(1).and_then(msg).is_some_and(|e| e.starts_with("/a/boom: ") && e.contains("bad file")));
     assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.not_responding.is_none())), "a panic isn't a volume's");
     assert_eq!(done.load(Ordering::SeqCst), 3);
-    let cancel = AtomicBool::new(true);
+    let cancel = Arc::new(AtomicBool::new(true));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.iter().all(|r| msg(r) == Some("not probed")));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 1, &done, &cancel);
@@ -1420,7 +1420,7 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let _hung = stall_volume(&h, "/c");
     h.advance(1);
     let bytes_less: crate::media::FileProbe = Arc::new(|_| Err("gone".into()));
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &["/c/0".to_string()], 4, &done, &cancel);
     assert_eq!(r.first().and_then(msg), Some("gone"), "the recovery job's own result");
     assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.not_responding.is_none()), Some(true), "its own failure, not the volume's");
@@ -1463,7 +1463,7 @@ fn cached_probes_are_checked_off_the_calling_thread() {
         .map(|(p, i)| (p.to_string(), i))
         .collect();
     let checked = crate::import::cached_probe(probe.clone(), cached, keep_if_named_kept);
-    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
     let r = crate::import::probe_scheduled(&h.ctx, &checked, &paths, 4, &done, &cancel);
     let formats: Vec<&str> = r.iter().map(|r| r.as_ref().map(|i| i.format.as_str()).unwrap_or("err")).collect();
     assert_eq!(formats, ["CACHED", "READ", "CACHED", "READ"]);

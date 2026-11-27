@@ -491,7 +491,7 @@ fn reload(s: &mut Session, p: &Value) -> Result<Value> {
     use crate::cmd::reload as r;
     let items = r::plan(s, p)?;
     let probe = r::file_probe(s);
-    let results = r::probe(probe.as_ref(), &items, &std::sync::atomic::AtomicBool::new(false), &|_| {});
+    let results = r::probe(probe.as_ref(), &items, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), &|_| {});
     let applied = r::apply(s, items, results)?;
     Ok(r::to_json(&applied))
 }

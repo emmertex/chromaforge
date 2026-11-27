@@ -71,7 +71,7 @@ pub fn file_probe(s: &Session) -> Option<FileProbe> {
 pub fn probe(
     probe: Option<&FileProbe>,
     items: &[Item],
-    cancel: &AtomicBool,
+    cancel: &std::sync::Arc<AtomicBool>,
     progress: &dyn Fn(usize),
 ) -> Vec<std::result::Result<ProbeInfo, String>> {
     let paths: Vec<String> = items.iter().map(|i| i.path.clone()).collect();

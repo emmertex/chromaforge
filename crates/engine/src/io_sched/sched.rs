@@ -136,6 +136,9 @@ pub(crate) enum Msg {
         call: CallId,
         workers: usize,
         cancel: Arc<AtomicBool>,
+        /// The caller's own cancel flag, read here directly: once it is set no job of the call
+        /// starts, even before the caller next looks at it.
+        linked: Option<Arc<AtomicBool>>,
         sink: Box<dyn CallSink>,
     },
     Submit {
@@ -249,6 +252,8 @@ struct CallState {
     vols: Vec<CallVol>,
     workers: usize,
     cancel: Arc<AtomicBool>,
+    /// The caller's own cancel flag (see [`Msg::Open`]).
+    linked: Option<Arc<AtomicBool>>,
     cancelling: bool,
     /// Jobs with no outcome yet.
     remaining: usize,
@@ -260,6 +265,11 @@ struct CallState {
 }
 
 impl CallState {
+    /// Whether the call was cancelled: by its stream, or by the caller's own flag.
+    fn cancel_set(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed) || self.linked.as_ref().is_some_and(|l| l.load(Ordering::Relaxed))
+    }
+
     /// Its own cap (PR 1): `workers`, at least 2 while one of its volumes is held to one fewer.
     fn cap(&self) -> usize {
         let cut = self.vols.iter().any(|cv| cv.active > 0 && self.remaining > cv.active);
@@ -394,7 +404,7 @@ impl Sched {
 
     pub(crate) fn handle(&mut self, msg: Msg, now: u64) {
         match msg {
-            Msg::Open { call, workers, cancel, sink } => {
+            Msg::Open { call, workers, cancel, linked, sink } => {
                 let state = CallState {
                     sink,
                     slots: HashMap::new(),
@@ -402,6 +412,7 @@ impl Sched {
                     vols: Vec::new(),
                     workers: workers.max(1),
                     cancel,
+                    linked,
                     cancelling: false,
                     remaining: 0,
                     busy: 0,
@@ -472,7 +483,7 @@ impl Sched {
         // (jobs of a cancelled call never start)
         match self.calls.get(&call) {
             Some(c) if c.cancelling => self.fail_unstarted(call),
-            Some(c) if c.cancel.load(Ordering::Relaxed) => self.begin_cancel(call),
+            Some(c) if c.cancel_set() => self.begin_cancel(call),
             _ => {}
         }
     }
@@ -541,7 +552,7 @@ impl Sched {
 
     /// Calls whose cancel was set and not yet acted on: their queued jobs never start.
     fn take_cancels(&mut self) {
-        let newly: Vec<CallId> = self.calls.iter().filter(|(_, c)| !c.cancelling && c.cancel.load(Ordering::Relaxed)).map(|(id, _)| *id).collect();
+        let newly: Vec<CallId> = self.calls.iter().filter(|(_, c)| !c.cancelling && c.cancel_set()).map(|(id, _)| *id).collect();
         for c in newly {
             self.begin_cancel(c);
         }

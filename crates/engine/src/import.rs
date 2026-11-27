@@ -872,7 +872,7 @@ pub(crate) fn probe_all(
     probe: Option<&crate::media::FileProbe>,
     paths: &[String],
     done: &std::sync::atomic::AtomicUsize,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, String>> {
     probe_all_typed(probe, paths, done, cancel).into_iter().map(|r| r.map_err(ProbeError::into_message)).collect()
 }
@@ -902,7 +902,7 @@ pub(crate) fn probe_all_typed(
     probe: Option<&crate::media::FileProbe>,
     paths: &[String],
     done: &std::sync::atomic::AtomicUsize,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
     let Some(probe) = probe.cloned() else {
         return paths
@@ -950,7 +950,7 @@ pub(crate) fn probe_all_cached(
     cached: HashMap<String, ProbeInfo>,
     keep: KeepCached,
     done: &std::sync::atomic::AtomicUsize,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
     if cached.is_empty() {
         return probe_all_typed(probe, paths, done, cancel);
@@ -989,7 +989,7 @@ pub(crate) fn probe_scheduled(
     paths: &[String],
     workers: usize,
     done: &std::sync::atomic::AtomicUsize,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
     use crate::io_sched::IoJob;
     let jobs = paths
@@ -1365,14 +1365,14 @@ pub fn import_with(s: &mut Session, paths: &[String], opts: &ImportOptions) -> c
     let prepared = if opts.plugin_hooks && !opts.local {
         let (files, walked) = job.expand_reported(paths);
         let mut skipped = 0usize;
-        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let files = crate::cmd::plugins::before_import_files(s, files, &cancel, &mut skipped);
         let mut prepared = job.prepare_files(files, &cancel);
         prepared.skipped = walked;
         prepared.plugin_skipped += skipped;
         prepared
     } else {
-        job.prepare(paths, &std::sync::atomic::AtomicBool::new(false))
+        job.prepare(paths, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
     };
     // probes a scan left for files not imported now stay for a later import
     s.import_probes.extend(std::mem::take(&mut job.cache));
@@ -1585,7 +1585,7 @@ impl ImportJob {
     /// duplicates by content, read sidecars, copy or place (Move) the files — several at once,
     /// with the names and outcomes of one after another. Nothing in the catalog changes. Stops
     /// before the next file once `cancel` is set.
-    pub fn prepare(&mut self, paths: &[String], cancel: &std::sync::atomic::AtomicBool) -> Prepared {
+    pub fn prepare(&mut self, paths: &[String], cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         let found = self.expand_report(paths);
         let mut prepared = self.prepare_files(found.files, cancel);
         prepared.skipped = Skipped { unreadable: found.unreadable, unsupported: found.unsupported };
@@ -1655,7 +1655,7 @@ impl ImportJob {
     }
 
     /// [`ImportJob::prepare`] for files [`ImportJob::expand`] returned.
-    pub fn prepare_files(&mut self, mut files: Vec<String>, cancel: &std::sync::atomic::AtomicBool) -> Prepared {
+    pub fn prepare_files(&mut self, mut files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         use std::sync::atomic::Ordering::Relaxed;
         // the library as it was, kept for the ownership of the shared stem sidecars below
         let library = self.look_up_library();
@@ -1888,7 +1888,7 @@ impl ImportJob {
 
     /// Run the transfers `plan` collected (on several threads) and append its items to `out` in
     /// file order. Transfers not started because `cancel` was set leave no item.
-    fn run_plan(&mut self, plan: &mut Plan, out: &mut Prepared, cancel: &std::sync::atomic::AtomicBool) {
+    fn run_plan(&mut self, plan: &mut Plan, out: &mut Prepared, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
         let mut done = run_transfers(std::mem::take(&mut plan.transfers), self.file_bytes.as_ref(), cancel, &self.done).into_iter();
         for slot in std::mem::take(&mut plan.slots) {
             let item = match slot {
@@ -2006,7 +2006,7 @@ pub fn batch_size() -> usize {
 fn run_transfers(
     transfers: Vec<Transfer>,
     file_bytes: Option<&crate::merge::ByteReader>,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
     // (a single transfer, as today: not started once cancelled, else run on this thread; the
@@ -2044,7 +2044,7 @@ fn transfers_scheduled(
     transfers: Vec<Transfer>,
     file_bytes: Option<crate::merge::ByteReader>,
     workers: usize,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
     use crate::io_sched::IoJob;
@@ -2840,7 +2840,7 @@ mod prepared_tests {
             last.fetch_max(done.load(Relaxed), Relaxed);
             Ok(ProbeInfo { format: "JPEG".into(), ..ProbeInfo::default() })
         }));
-        let prepared = job.prepare(&unread_paths(40), &std::sync::atomic::AtomicBool::new(false));
+        let prepared = job.prepare(&unread_paths(40), &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         assert_eq!(prepared.items.len(), 40);
         assert_eq!(seen.load(Relaxed), 40);
         assert!(done_in_probe.load(Relaxed) > 0, "progress moves while files are read");

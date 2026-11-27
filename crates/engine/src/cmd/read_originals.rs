@@ -77,7 +77,7 @@ pub fn file_probe(s: &Session) -> Option<FileProbe> {
 pub fn probe_cancellable_with_progress(
     probe: &FileProbe,
     unread: Vec<Unread>,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     progress: &dyn Fn(usize),
 ) -> Vec<(Unread, std::result::Result<ProbeInfo, String>)> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -171,7 +171,7 @@ fn read_originals(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let mut tried = HashSet::new();
     let (mut updated, mut unreadable, mut checked, mut duplicates) = (Vec::new(), 0usize, 0usize, Vec::new());
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     while checked < limit {
         let batch = unread(&s.catalog, &tried, BATCH.min(limit - checked));
         if batch.is_empty() {
@@ -332,10 +332,10 @@ mod tests {
         let probe = probe_hashing(calls.clone());
         let mut s = session_with(vec![unread_photo(1, "/x/a.NEF")], probe.clone());
         let listed = unread(&s.catalog, &HashSet::new(), 10);
-        let cancelled = probe_cancellable_with_progress(&probe, listed.clone(), &AtomicBool::new(true), &|_| {});
+        let cancelled = probe_cancellable_with_progress(&probe, listed.clone(), &std::sync::Arc::new(AtomicBool::new(true)), &|_| {});
         assert_eq!(calls.load(Ordering::Relaxed), 0, "a cancelled run reads no file");
         assert!(apply(&mut s, cancelled).unwrap().updated.is_empty());
-        let results = probe_cancellable_with_progress(&probe, listed, &AtomicBool::new(false), &|_| {});
+        let results = probe_cancellable_with_progress(&probe, listed, &std::sync::Arc::new(AtomicBool::new(false)), &|_| {});
         s.catalog
             .apply(Op::Relink { id: PhotoId(1), file_name: "a.NEF".into(), source: Source::File { path: "/y/a.NEF".into() }, format: None })
             .unwrap();

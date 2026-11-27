@@ -255,7 +255,8 @@ enum Driver {
 
 /// The streaming form: submit jobs over time, receive their outcomes as they finish, each tagged
 /// with its input index (in submission order across submits). Cancel affects only its own jobs.
-/// Dropping it cancels the jobs not yet started and forgets the rest.
+/// Dropping it cancels the jobs not yet started and forgets the rest. A caller with a cancel flag of
+/// its own links it ([`Stream::with_cancel`]): the pool then reads it directly.
 pub(crate) struct Stream<T: Send + 'static> {
     ctx: Arc<IoContext>,
     driver: Driver,
@@ -266,6 +267,8 @@ pub(crate) struct Stream<T: Send + 'static> {
     tx: Sender<CallEvent<T>>,
     rx: Receiver<CallEvent<T>>,
     cancel: Arc<AtomicBool>,
+    /// The caller's own cancel flag, read by the pool itself ([`Stream::with_cancel`]).
+    linked: Option<Arc<AtomicBool>>,
     mounts: Arc<Mounts>,
     next: usize,
 }
@@ -294,9 +297,20 @@ impl<T: Send + 'static> Stream<T> {
             tx,
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
+            linked: None,
             mounts,
             next: 0,
         }
+    }
+
+    /// Link the caller's own cancel flag (before the first submit): once it is set, no further job
+    /// of this stream starts, whether or not the caller has looked at it since. The pool only
+    /// reads it ([`Stream::cancel`] and dropping the stream never set it). Without it, a cancel
+    /// the caller forwards later lets the pool start jobs in between (a finished job's slot is
+    /// refilled at once).
+    pub(crate) fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Stream<T> {
+        self.linked = Some(cancel);
+        self
     }
 
     /// Whether this stream runs its own scheduler (the pool couldn't run).
@@ -337,7 +351,8 @@ impl<T: Send + 'static> Stream<T> {
         if !self.opened {
             self.opened = true;
             let sink: Box<dyn CallSink> = Box::new(self.tx.clone());
-            self.send(Msg::Open { call: self.call, workers: self.workers, cancel: self.cancel.clone(), sink });
+            let linked = self.linked.clone();
+            self.send(Msg::Open { call: self.call, workers: self.workers, cancel: self.cancel.clone(), linked, sink });
         }
         let mut submitted = Vec::with_capacity(jobs.len());
         for job in jobs {
@@ -425,12 +440,15 @@ impl<T: Send + 'static> Drop for Stream<T> {
 /// [`JobOutcome::Cancelled`]; `succeeded` says whether a job's result shows its volume works (a
 /// probe that returned Ok), for the recovery rules. A single job runs on the calling thread
 /// outside the limits (R2's exception); from a scheduler worker several jobs are refused.
+///
+/// `cancel` is shared with the pool, which reads it itself: once it is set no further job starts
+/// (only the ones already running still read), however long this thread takes to notice.
 pub(crate) fn run_jobs<T: Send + 'static>(
     ctx: &Arc<IoContext>,
     jobs: Vec<IoJob<T>>,
     workers: usize,
     succeeded: fn(&T) -> bool,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     done: &AtomicUsize,
 ) -> Result<Report<T>, SubmitError> {
     // (nothing to do, e.g. an Add import's batch with no copies: no mount read, no threads)
@@ -448,17 +466,15 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         return Err(SubmitError::FromPoolThread);
     }
     let n = jobs.len();
-    let mut stream = Stream::open(ctx, workers, succeeded);
     // (cancelled already: the pool sees it with the jobs, and starts none)
-    if cancel.load(Ordering::Relaxed) {
-        stream.cancel.store(true, Ordering::Release);
-    }
+    let mut stream = Stream::open(ctx, workers, succeeded).with_cancel(cancel.clone());
     stream.submit(jobs)?;
     stream.close();
     let mut outcomes: Vec<Option<JobOutcome<T>>> = (0..n).map(|_| None).collect();
     let mut metrics: Vec<Option<JobMetrics>> = vec![None; n];
     let (mut got, mut forwarded) = (0, false);
     while got < n {
+        // (the pool already starts no job: this wakes it to fail the queued ones now)
         if !forwarded && cancel.load(Ordering::Relaxed) {
             stream.cancel();
             forwarded = true;

@@ -135,7 +135,7 @@ fn transfers_keep_todays_results_order_and_names() {
         let dest = base.join(format!("w{workers}-{cross}"));
         let mounts: Vec<&Path> = if cross { vec![&card, &dest] } else { vec![] };
         let (_clock, ctx) = context(&mounts);
-        let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+        let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
         let got = transfers_scheduled(&ctx, plan(&dest), None, workers, &cancel, &done);
         let got: Vec<String> = got.iter().map(|i| describe(i.as_ref(), &dest)).collect();
         assert_eq!(got, reference, "workers {workers}, two volumes {cross}");
@@ -229,7 +229,7 @@ fn a_panicking_copy_fails_only_its_file() {
     let (_clock, ctx) = context(&[&card, &ssd]);
     let transfers =
         vec![copy_to(&card.join("x.nef"), &ssd.join("ok")), copy_to(&card.join("y.nef"), &boom), copy_to(&card.join("z.nef"), &ssd.join("ok2"))];
-    let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+    let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
     let got = transfers_scheduled(&ctx, transfers, None, 4, &cancel, &done);
     release_copies_into(&boom);
     assert!(matches!(got.first(), Some(Some(PreparedItem::Ready(_)))));
@@ -353,7 +353,7 @@ fn the_wrappers_name_the_pools_outcomes() {
             crate::io_sched::IoJob::read(
                 format!("/a/{i}"),
                 Box::new(move || {
-                    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+                    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
                     let paths = vec!["/a/x".to_string(), "/a/y".to_string()];
                     got.lock().unwrap().push(probe_scheduled(&ctx, &probe, &paths, 4, &done, &cancel));
                     Ok(ProbeInfo::default())
@@ -361,7 +361,7 @@ fn the_wrappers_name_the_pools_outcomes() {
             )
         })
         .collect();
-    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
     let r = crate::io_sched::run_jobs(&ctx, jobs, 2, Result::is_ok, &cancel, &done).unwrap();
     assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::Done(Ok(_)))));
     for res in got.lock().unwrap().iter() {

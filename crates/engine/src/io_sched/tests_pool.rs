@@ -1,7 +1,8 @@
 //! The process-wide pool (I/O spec §7, "Pool (PR 3)"), on fake volumes: calls on one volume share
 //! its limit and take turns; the streaming form; single jobs bypass the pool; jobs on pool threads
 //! run one job inline and are refused several; the supervisor's panic and spawn failure fall back;
-//! a streaming caller that stops reading stops nothing else; cancel and `done` stay per call.
+//! a streaming caller that stops reading stops nothing else; cancel and `done` stay per call; a
+//! caller's linked cancel flag stops admission at once, and is only read.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -387,7 +388,7 @@ fn a_pool_thread_runs_one_job_inline_and_refuses_several() {
             job(&format!("/a/outer{n}"), move || {
                 let outer = crate::memory::current_job().map(|j| j.id);
                 let me = std::thread::current().id();
-                let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+                let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
                 // one job, run_jobs form: inline, with its own state
                 let inner: Vec<IoJob<R>> = vec![job("/b/inner", move || {
                     let id = crate::memory::current_job().map(|j| j.id).unwrap_or(0);
@@ -633,4 +634,92 @@ fn a_wake_while_idle_gives_the_registry_its_grace() {
     h.clock.sleep(super::shared::WAKE_JUMP + 1);
     wait_until(|| !h.ctx.shared.blocked(&a, h.now()), "the idle pool to notice the wake");
     latch.release();
+}
+
+/// Jobs on `/a` that each count their start and set `flag` (an instant probe whose caller's cancel
+/// is set by the time it returns, as in the import test that found this).
+fn setting(n: usize, flag: &Arc<AtomicBool>, started: &Arc<AtomicUsize>) -> Vec<IoJob<R>> {
+    (0..n)
+        .map(|i| {
+            let (flag, started) = (flag.clone(), started.clone());
+            job(&format!("/a/s{i}"), move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                flag.store(true, Ordering::SeqCst);
+                Ok(i as u32)
+            })
+        })
+        .collect()
+}
+
+/// A stream's outcomes, read after the pool gave them all: (done, not started).
+fn tally(s: &mut Stream<R>, n: usize) -> (usize, usize) {
+    let (mut done, mut unstarted) = (0, 0);
+    for _ in 0..n {
+        match s.recv_timeout(Duration::from_secs(5)) {
+            Some((_, JobOutcome::Done(_), _)) => done += 1,
+            Some((_, JobOutcome::NotStarted, _)) => unstarted += 1,
+            other => panic!("{:?}", other.map(|(i, o, _)| (i, o))),
+        }
+    }
+    (done, unstarted)
+}
+
+/// The caller's own cancel flag, linked to its stream, is read by the pool itself: once it is set
+/// no further job starts, even while the caller never looks (it is busy elsewhere, or its thread
+/// isn't scheduled). Only the jobs already running when it was set (at most `workers`) read; a
+/// finished job's slot is not refilled. Pinned at `workers` jobs (all may start), one more (that
+/// one never does) and many more.
+#[test]
+fn a_linked_cancel_starts_no_further_job_while_the_caller_is_away() {
+    const W: usize = 3;
+    for n in [W, W + 1, 40] {
+        let h = H::new();
+        let (flag, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        let mut s: Stream<R> = Stream::open(&h.ctx, W, Result::is_ok).with_cancel(flag.clone());
+        s.submit(setting(n, &flag, &started)).unwrap();
+        s.close();
+        // (the caller reads nothing until the pool has given every outcome)
+        wait_until(|| started.load(Ordering::SeqCst) > 0 && h.ctx.pending.load(Ordering::SeqCst) == 0, "every outcome");
+        let ran = started.load(Ordering::SeqCst);
+        assert!((1..=W).contains(&ran), "n {n}: {ran} jobs started");
+        assert_eq!(tally(&mut s, n), (ran, n - ran), "n {n}");
+        if n > W {
+            assert!(ran < n, "n {n}: a job started after the flag was set");
+        }
+    }
+    // unlinked, the same caller's flag reaches the pool only when the caller forwards it: every
+    // job runs (why run_jobs and the import link theirs)
+    let h = H::new();
+    let (flag, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let mut s: Stream<R> = Stream::open(&h.ctx, W, Result::is_ok);
+    s.submit(setting(12, &flag, &started)).unwrap();
+    s.close();
+    wait_until(|| started.load(Ordering::SeqCst) == 12, "every job");
+    assert_eq!(tally(&mut s, 12), (12, 0));
+}
+
+/// A linked flag already set when the jobs come: none starts. The pool only reads the flag: the
+/// stream's own cancel and its drop never set it (the caller may share it with other work).
+#[test]
+fn a_linked_cancel_is_only_read() {
+    let h = H::new();
+    let (flag, started) = (Arc::new(AtomicBool::new(true)), Arc::new(AtomicUsize::new(0)));
+    let mut s: Stream<R> = Stream::open(&h.ctx, 2, Result::is_ok).with_cancel(flag.clone());
+    s.submit(setting(5, &flag, &started)).unwrap();
+    s.close();
+    assert_eq!(tally(&mut s, 5), (0, 5));
+    assert_eq!(started.load(Ordering::SeqCst), 0);
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut s: Stream<R> = Stream::open(&h.ctx, 1, Result::is_ok).with_cancel(flag.clone());
+    s.submit(hanging("/a", 1, &latch, &started, true)).unwrap();
+    s.submit(quick("/a", 2)).unwrap();
+    wait_until(|| started.load(Ordering::SeqCst) == 1, "the first to run");
+    s.cancel();
+    pending(&h, 1);
+    drop(s);
+    latch.release();
+    pending(&h, 0);
+    assert!(!flag.load(Ordering::SeqCst), "the caller's flag is never set by the pool");
 }
