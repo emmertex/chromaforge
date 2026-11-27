@@ -462,6 +462,9 @@ struct PrefsFile {
     import: crate::import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; issue #723).
     camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder chosen per camera (absent = Auto, see [`crate::raw_decoder`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    raw_decoders: std::collections::BTreeMap<String, crate::raw_decoder::Decoder>,
     /// Thumbnail disk cache budget (MB, 0 = default).
     cache_mb: u32,
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
@@ -938,6 +941,8 @@ impl Session {
         self.camera_profile_defaults = prefs.camera_profile_defaults;
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.raw_decoders = prefs.raw_decoders;
+        crate::raw_decoder::install_choices(&self.raw_decoders);
         self.cache_mb = prefs.cache_mb;
         self.prep.opened_library();
         // the lens database is read off this thread now, not by the first photo that needs it
@@ -1445,6 +1450,7 @@ impl Session {
             keyword_shortcuts: self.keyword_shortcut.clone(),
             import: self.import_defaults.clone(),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
+            raw_decoders: self.raw_decoders.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
             prep_unfinished: self.prep.unfinished,

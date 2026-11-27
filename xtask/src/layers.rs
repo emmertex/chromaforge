@@ -47,6 +47,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("winmsi", Class::Layer(0)),
     ("winjob", Class::Layer(0)),
     ("firstclick", Class::Layer(0)),
+    // LibRaw (C++, opt-in) behind a C shim: the raw mosaic for `lcc_engine::raw_decoder`
+    ("libraw", Class::Layer(0)),
     ("android-host", Class::Layer(0)),
     ("peer", Class::Layer(0)),
     ("sync", Class::Layer(0)),
