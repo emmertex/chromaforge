@@ -44,7 +44,8 @@ pub(crate) use pool::run_jobs;
 pub(crate) use run::{IoJob, JobOutcome};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// How often the pool runs the bookkeeping when nothing else wakes it.
+/// How often the pool runs the bookkeeping tick (progress, the stall and cancel rules), however
+/// often job ends and submits wake it for admission.
 const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -14,6 +14,26 @@ use super::run::{IoJob, JobOutcome};
 use super::shared::{CANCEL_SILENCE, STALL_WITH_BYTES};
 use super::tests::{H, Latch, R, bytes, hanging, job, ok_count, quick, vnr_count, wait_until};
 
+/// The bookkeeping tick runs once per tick period, not after every job's end: 600 short jobs on
+/// two volumes (a message each) see at most one tick per period of real time they took.
+#[test]
+fn the_bookkeeping_ticks_once_per_period_not_per_job() {
+    let tick = Duration::from_millis(250);
+    let clock = Arc::new(super::clock::FakeClock::default());
+    clock.advance(1000 * super::clock::SEC);
+    let mut ctx = super::IoContext::new(clock.clone(), super::tests::list(&["/", "/a", "/b"]), tick);
+    ctx.late_tick_is_wake = false;
+    let h = H { clock, ctx: Arc::new(ctx) };
+    let start = std::time::Instant::now();
+    let mut jobs = quick("/a", 300);
+    jobs.extend(quick("/b", 300));
+    let (r, done) = h.run(jobs, 4);
+    let periods = (start.elapsed().as_nanos() / tick.as_nanos()) as u64;
+    assert_eq!((ok_count(&r), done), (600, 600));
+    let ticks = h.ctx.ticks.load(Ordering::SeqCst);
+    assert!(ticks <= periods + 1, "{ticks} ticks in {periods} periods");
+}
+
 /// Tokens a job takes to finish: the test hands them out one at a time.
 #[derive(Default)]
 struct Tokens {
@@ -239,8 +259,8 @@ fn a_stall_fails_every_calls_jobs_on_the_volume() {
 }
 
 /// One stall abandons every call's running jobs on the volume on the same tick, not one call's
-/// now and the rest at a later tick. The pool here ticks only when woken (its tick is an hour),
-/// and nothing wakes it after the stall: a call whose jobs weren't abandoned on that tick would
+/// now and the rest at a later tick. The pool here ticks only when a cancel wakes it (its tick is
+/// an hour), and nothing wakes it after the stall: a call whose jobs weren't abandoned on that tick would
 /// never hear of them.
 #[test]
 fn one_stall_abandons_every_calls_running_jobs_on_the_same_tick() {

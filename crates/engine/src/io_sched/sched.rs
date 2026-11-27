@@ -149,7 +149,7 @@ pub(crate) enum Msg {
     Close {
         call: CallId,
     },
-    /// Look at the calls now (a cancel was set).
+    /// Look at the calls now (a cancel was set): the next step runs the bookkeeping tick at once.
     Wake,
     /// A job's thread is done with it (`pos`: its place in the call).
     Ended {
@@ -334,6 +334,15 @@ pub(crate) struct Sched {
     events_rx: Receiver<Msg>,
     /// Both clocks at the last step (wake detection).
     prev: (u64, u64),
+    /// Monotonic time the next tick counts silence from: the last tick, a late step (its gap was
+    /// the sleep), or the last step while it held no call.
+    since: u64,
+    /// When the bookkeeping tick last ran, in real time: it runs once per `tick`, however many
+    /// messages (job ends, submits) come in between. (Its cadence is a CPU cost, not a rule:
+    /// every rule reads the injected clocks, through `since`.)
+    last_tick: std::time::Instant,
+    /// A cancel woke it ([`Msg::Wake`]): the next step ticks at once (its gate waits end now).
+    tick_now: bool,
     /// A step more than [`WAKE_JUMP`] later than its wait is a wake
     /// ([`super::IoContext::late_tick_is_wake`]); off for a call that drives its own scheduler,
     /// whose steps wait on the caller.
@@ -362,6 +371,9 @@ impl Sched {
             events_tx,
             events_rx,
             prev: (clock.mono(), clock.wall()),
+            since: clock.mono(),
+            last_tick: std::time::Instant::now(),
+            tick_now: false,
             late_tick_is_wake: ctx.late_tick_is_wake,
         }
     }
@@ -383,8 +395,14 @@ impl Sched {
         self.calls.is_empty()
     }
 
+    /// How long until the next bookkeeping tick is due (a step waits at most this long while it
+    /// holds calls).
+    pub(crate) fn until_tick(&self) -> Duration {
+        self.tick.saturating_sub(self.last_tick.elapsed())
+    }
+
     /// One round: wait up to `wait` for a message, take every waiting one, then (while it holds
-    /// calls) the bookkeeping tick, then admission.
+    /// calls, once per `tick`) the bookkeeping tick, then admission.
     pub(crate) fn step(&mut self, wait: Duration) {
         let clock = self.shared.clock.clone();
         if let Ok(m) = self.events_rx.recv_timeout(wait) {
@@ -396,17 +414,23 @@ impl Sched {
         let (now, wall) = (clock.mono(), clock.wall());
         let (dm, dw) = (now.saturating_sub(self.prev.0), wall.saturating_sub(self.prev.1));
         self.prev = (now, wall);
-        // (a step far later than its wait, where the monotonic clock counts sleep: the computer
-        // slept in between)
-        let late = self.late_tick_is_wake && dm > u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX).saturating_add(WAKE_JUMP);
+        // (a step far later than it was due, where the monotonic clock counts sleep: the computer
+        // slept in between; due: its wait, and a busy step's wait ends by the next tick)
+        let due = wait.max(self.tick);
+        let late = self.late_tick_is_wake && dm > u64::try_from(due.as_nanos()).unwrap_or(u64::MAX).saturating_add(WAKE_JUMP);
         // (also while idle: the registry's entries get the grace too)
         if dw > dm.saturating_add(WAKE_JUMP) || late {
             log::info!("io: the computer woke from sleep: every volume gets a grace period");
             self.shared.note_wake(now);
         }
-        if !self.calls.is_empty() {
-            // (a late step's time was the sleep, not the volumes' silence)
-            self.tick(now, if late { 0 } else { dm });
+        // (a late step's time was the sleep, not the volumes' silence)
+        if late || self.calls.is_empty() {
+            self.since = now;
+        }
+        if !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || self.last_tick.elapsed() >= self.tick) {
+            self.last_tick = std::time::Instant::now();
+            self.tick(now, now.saturating_sub(self.since));
+            self.since = now;
             self.ticks.fetch_add(1, Ordering::Relaxed);
         }
         self.admit(clock.mono());
@@ -438,7 +462,7 @@ impl Sched {
                     c.closed = true;
                 }
             }
-            Msg::Wake => {}
+            Msg::Wake => self.tick_now = true,
             Msg::Ended { call, pos, ran } => self.finish(call, pos, ran, now),
         }
         self.pending.store(self.calls.values().map(|c| c.remaining).sum(), Ordering::Relaxed);

@@ -135,7 +135,7 @@ fn supervise(mut sched: Sched, alive: Weak<()>, #[cfg(test)] inject: Arc<AtomicB
                 }
                 IDLE_WAIT
             } else {
-                sched.tick
+                sched.until_tick()
             };
             sched.step(wait);
         }
@@ -410,7 +410,7 @@ impl<T: Send + 'static> Stream<T> {
                         if left.is_zero() && stepped {
                             return None;
                         }
-                        s.step(left.min(s.tick));
+                        s.step(left.min(s.until_tick()));
                         stepped = true;
                         continue;
                     }
