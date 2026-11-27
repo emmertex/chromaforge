@@ -104,6 +104,8 @@ fn source_path(p: &Photo) -> Option<&str> {
 
 pub(crate) struct Reader {
     db: Database,
+    /// Bytes of history-step or snapshot settings one table may decode ([`settings_budget`]).
+    settings_budget: usize,
     /// What table walks left out record by record (see [`crate::lightroom_sqlite::WalkStats`]), for the warnings.
     notes: std::sync::Mutex<Vec<String>>,
 }
@@ -112,11 +114,84 @@ pub(crate) struct Reader {
 const MAX_XMP_PACKET: usize = 16 << 20;
 /// Keyword paths kept for the photos of one catalog, all together (a million photos at ~1 KB of paths each still fit).
 const MAX_KEYWORD_BYTES: usize = 1 << 30;
-/// Most bytes of history-step or snapshot settings decoded from one table. They are archived, and an archive holds at
-/// most [`crate::lightroom_archive::MAX_ARCHIVE_BYTES`] of JSON, so this keeps all a catalog can archive while a
-/// hostile one can't make the reader allocate without bound (each row alone may decode to 16 MiB).
-const MAX_DECODED_SETTINGS: usize = crate::lightroom_archive::MAX_ARCHIVE_BYTES as usize;
-/// Set (to `true`) on a history-step or snapshot row read past [`MAX_DECODED_SETTINGS`], whose settings were left
+/// The fewest bytes of history-step or snapshot settings one table may decode, on any machine: the fixed budget
+/// every catalog had before the budget was derived from the catalog and the machine (issue #1312).
+const MIN_DECODED_SETTINGS: usize = 32 << 20;
+/// How many times its share of the catalog file a table's settings may decode to. Lightroom's settings text
+/// compresses about 10:1, so a real catalog's settings always fit; a hostile file whose BLOBs claim more than this
+/// can't make the reader allocate past it.
+const SETTINGS_EXPANSION: u64 = 32;
+/// The memory one table's settings may take when the platform doesn't say how much it has.
+const SETTINGS_MEMORY_UNKNOWN: u64 = 1 << 30;
+
+/// Bytes of history-step or snapshot settings one table may decode (issue #1312): no more than the catalog's
+/// `source_bytes` can hold ([`SETTINGS_EXPANSION`] times them), no more than a quarter of the machine's memory
+/// (`total_memory`) or half of what is free now (`free_memory`), and never less than [`MIN_DECODED_SETTINGS`]. A
+/// bigger catalog or a bigger machine gets proportionally more, and a table past it still keeps every photo's
+/// newest settings first ([`admit_newest_first`]).
+pub(crate) fn settings_budget(source_bytes: u64, total_memory: Option<u64>, free_memory: Option<u64>) -> usize {
+    let from_file = source_bytes.saturating_mul(SETTINGS_EXPANSION);
+    let from_memory = match (total_memory.map(|m| m / 4), free_memory.map(|m| m / 2)) {
+        (Some(total), Some(free)) => total.min(free),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => SETTINGS_MEMORY_UNKNOWN,
+    };
+    usize::try_from(from_file.min(from_memory)).unwrap_or(usize::MAX).max(MIN_DECODED_SETTINGS)
+}
+
+/// [`settings_budget`] for a catalog of `source_bytes` on this machine.
+fn settings_budget_here(source_bytes: u64) -> usize {
+    let total = crate::memory::total_ram().map(|m| m as u64);
+    settings_budget(source_bytes, total, lcc_sysmem::available())
+}
+
+/// A compressed settings value [`Reader::grouped_within`] met, kept so the budget can be spent again, newest first,
+/// when the table holds more than it.
+struct Charged {
+    image: i64,
+    /// Where its row is in its image's rows.
+    slot: usize,
+    /// Its row's `dateCreated` (0 without one) and `id_local`: the newest of an image is the largest.
+    when: f64,
+    id: i64,
+    declared: usize,
+    decoded: bool,
+}
+
+/// Which of `charged` fit `budget` when it is spent on every image's newest value first, then every image's second
+/// newest, and so on: a table past its budget leaves each photo its latest steps rather than spending all of it on
+/// the photos that come first in the table (issue #1312). Ties go in table order.
+fn admit_newest_first(charged: &[Charged], budget: usize) -> Vec<bool> {
+    let mut by_image: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, c) in charged.iter().enumerate() {
+        by_image.entry(c.image).or_default().push(i);
+    }
+    let mut rank = vec![0usize; charged.len()];
+    for list in by_image.values_mut() {
+        list.sort_by(|&a, &b| match (charged.get(a), charged.get(b)) {
+            (Some(a), Some(b)) => b.when.total_cmp(&a.when).then(b.id.cmp(&a.id)),
+            _ => std::cmp::Ordering::Equal,
+        });
+        for (r, &i) in list.iter().enumerate() {
+            if let Some(slot) = rank.get_mut(i) {
+                *slot = r;
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..charged.len()).collect();
+    order.sort_by_key(|&i| (rank.get(i).copied().unwrap_or(usize::MAX), i));
+    let mut admitted = vec![false; charged.len()];
+    let mut left = budget;
+    for i in order {
+        let (Some(c), Some(yes)) = (charged.get(i), admitted.get_mut(i)) else { continue };
+        if c.declared <= left {
+            left -= c.declared;
+            *yes = true;
+        }
+    }
+    admitted
+}
+/// Set (to `true`) on a history-step or snapshot row left past its table's settings budget ([`settings_budget`]), whose settings were left
 /// undecoded. Not a Lightroom column: it tells the archive's reader why the row has no `text`, and keeps the row out
 /// of the per-image "could not be read" count, since the table's one warning already covers it.
 const OVER_DECODE_BUDGET: &str = "_overDecodeBudget";
@@ -132,8 +207,9 @@ fn compressed_settings(name: &str) -> Option<(&'static str, &'static str, &'stat
 }
 
 impl Reader {
-    pub(crate) fn new(db: Database) -> Self {
-        Self { db, notes: std::sync::Mutex::new(Vec::new()) }
+    /// A reader of `db`, a catalog of `source_bytes` (its file and committed WAL together).
+    pub(crate) fn new(db: Database, source_bytes: u64) -> Self {
+        Self { db, settings_budget: settings_budget_here(source_bytes), notes: std::sync::Mutex::new(Vec::new()) }
     }
 
     /// The notes table walks have left so far, taken (each is reported once).
@@ -227,17 +303,20 @@ impl Reader {
 
     /// An optional per-image table (history steps, snapshots), streamed into rows grouped by their `image` column.
     fn grouped(&self, name: &str, warnings: &mut Vec<String>, cancel: &AtomicBool) -> Result<HashMap<i64, Vec<Row>>, String> {
-        self.grouped_within(name, MAX_DECODED_SETTINGS, warnings, cancel)
+        self.grouped_within(name, self.settings_budget, warnings, cancel)
     }
 
     /// [`Self::grouped`], with the table's compressed settings column ([`compressed_settings`]) decoded within
     /// `budget` bytes for the whole table: each value is charged its declared length before it is inflated, even one
-    /// that then fails to decode. A value that can't be decoded is left out of its row with a warning naming the
-    /// image, and those past the budget with one warning for all. Other BLOB columns are always left out.
+    /// that then fails to decode. When the table holds more than `budget`, it is spent again newest first
+    /// ([`admit_newest_first`]) and the table read a second time for the values that now fit, so every photo keeps
+    /// its latest settings; the rest get [`OVER_DECODE_BUDGET`], with one warning for all. A value that can't be
+    /// decoded is left out of its row with a warning naming the image. Other BLOB columns are always left out.
     fn grouped_within(&self, name: &str, budget: usize, warnings: &mut Vec<String>, cancel: &AtomicBool) -> Result<HashMap<i64, Vec<Row>>, String> {
         let compressed = compressed_settings(name);
         let mut out: HashMap<i64, Vec<Row>> = HashMap::new();
         let mut decoding = Vec::new();
+        let mut charged: Vec<Charged> = Vec::new();
         let mut left = budget;
         let mut over_budget = 0usize;
         let mut unkeyed = 0usize;
@@ -247,15 +326,22 @@ impl Reader {
                 unkeyed += 1;
                 return Ok(());
             };
+            let rows = out.entry(image).or_default();
             if let Some((settings, what, _)) = compressed {
                 for (column, bytes) in blobs.into_iter().filter(|(column, _)| *column == settings) {
                     // charged at its declared length before it is inflated (which never goes past that length), so
-                    // a row that then fails to decode counts too; past the budget, the rest aren't inflated at all
+                    // a row that then fails to decode counts too; past the budget, the rest aren't inflated now
                     let declared = compressed_len(&bytes);
-                    if declared.is_some_and(|n| over_budget > 0 || n > left) {
-                        over_budget += 1;
-                        r.insert(OVER_DECODE_BUDGET.to_string(), Value::Bool(true));
-                        continue;
+                    if let Some(declared) = declared {
+                        charged.try_reserve(1).map_err(|_| format!("{name}: unable to reserve bounded rows"))?;
+                        let when = r.get("dateCreated").and_then(Value::as_f64).filter(|n| n.is_finite()).unwrap_or(0.0);
+                        let decoded = over_budget == 0 && declared <= left;
+                        charged.push(Charged { image, slot: rows.len(), when, id: number(&r, "id_local"), declared, decoded });
+                        if !decoded {
+                            over_budget += 1;
+                            r.insert(OVER_DECODE_BUDGET.to_string(), Value::Bool(true));
+                            continue;
+                        }
                     }
                     left -= declared.unwrap_or(0);
                     match decode_compressed(&bytes, "settings") {
@@ -266,7 +352,7 @@ impl Reader {
                     }
                 }
             }
-            out.entry(image).or_default().push(r);
+            rows.push(r);
             Ok(())
         });
         if let Err(error) = read {
@@ -274,13 +360,85 @@ impl Reader {
             out.clear();
             return Ok(out);
         }
+        if over_budget > 0
+            && let Some((settings, what, _)) = compressed
+        {
+            over_budget = self.respend_newest_first(name, settings, what, budget, &charged, &mut out, &mut decoding, cancel).or_else(|error| {
+                self.skip_optional(name, error, warnings, cancel)?;
+                out.clear();
+                Ok::<_, String>(0)
+            })?;
+        }
         warn_unkeyed(name, unkeyed, "skipped", warnings);
         warnings.extend(decoding);
         if let (Some((_, one, many)), 1..) = (compressed, over_budget) {
             let what = if over_budget == 1 { one } else { many };
-            warnings.push(format!("{over_budget} {what} read without their settings: more than {} MiB of settings in {name}", budget >> 20));
+            warnings.push(format!(
+                "{over_budget} {what} read without their settings: more than {} MiB of settings in {name}, so each photo kept its newest ones",
+                budget >> 20
+            ));
         }
         Ok(out)
+    }
+
+    /// The second pass of [`Self::grouped_within`] for a table past its budget: settings decoded the first time that
+    /// [`admit_newest_first`] leaves out are dropped, and the table is walked again (in the same order) to decode the
+    /// ones it now lets in. Returns how many are still left out.
+    #[allow(clippy::too_many_arguments)]
+    fn respend_newest_first(
+        &self,
+        name: &str,
+        settings: &str,
+        what: &str,
+        budget: usize,
+        charged: &[Charged],
+        out: &mut HashMap<i64, Vec<Row>>,
+        decoding: &mut Vec<String>,
+        cancel: &AtomicBool,
+    ) -> Result<usize, String> {
+        let admitted = admit_newest_first(charged, budget);
+        let mut wanted = 0usize;
+        for (c, &yes) in charged.iter().zip(&admitted) {
+            let Some(row) = out.get_mut(&c.image).and_then(|rows| rows.get_mut(c.slot)) else { continue };
+            match (c.decoded, yes) {
+                // frees its memory before the second pass decodes what replaces it (one that failed to decode has
+                // nothing to free, and its warning already says what happened to it)
+                (true, false) if row.contains_key(settings) => {
+                    row.remove(settings);
+                    row.insert(OVER_DECODE_BUDGET.to_string(), Value::Bool(true));
+                }
+                (false, true) => wanted += 1,
+                _ => {}
+            }
+        }
+        if wanted > 0 {
+            let mut seen = 0usize;
+            self.each_row(name, false, false, cancel, |r, blobs| {
+                let Some(image) = image_of(&r) else { return Ok(()) };
+                for (_, bytes) in blobs.into_iter().filter(|(column, _)| *column == settings) {
+                    if compressed_len(&bytes).is_none() {
+                        continue;
+                    }
+                    let index = seen;
+                    seen += 1;
+                    let (Some(c), Some(true)) = (charged.get(index), admitted.get(index).copied()) else { continue };
+                    // the file is checked for changes after the read; a walk that disagrees decodes nothing more
+                    if c.decoded || c.image != image || c.id != number(&r, "id_local") {
+                        continue;
+                    }
+                    let Some(row) = out.get_mut(&image).and_then(|rows| rows.get_mut(c.slot)) else { continue };
+                    row.remove(OVER_DECODE_BUDGET);
+                    match decode_compressed(&bytes, "settings") {
+                        Ok(text) => {
+                            row.insert(settings.to_string(), Value::String(text));
+                        }
+                        Err(why) => decoding.push(format!("image {image}: {what} {}: {why}", c.id)),
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out.values().flatten().filter(|r| r.contains_key(OVER_DECODE_BUDGET)).count())
     }
 
     /// Fill `out` with the as-shot white of each image in `wanted`, from the last of its history steps that has one.
@@ -838,7 +996,8 @@ pub(crate) fn open_catalog(path: &Path, cancel: &AtomicBool) -> Result<(Reader, 
             hook(path);
         }
     }
-    Ok((Reader::new(db), source_guard))
+    let source_bytes = main_len.saturating_add(source_guard.wal_len().unwrap_or(0));
+    Ok((Reader::new(db, source_bytes), source_guard))
 }
 
 fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel: &AtomicBool, done: &AtomicUsize) -> Result<CatalogImport, String> {
@@ -2466,7 +2625,7 @@ pub(crate) mod tests {
         let dir = fixture::dir(tag);
         let catalog = dir.join("test.lrcat");
         fixture::write(&catalog, &[Table { name: "Adobe_libraryImageDevelopHistoryStep", columns: fixture::HISTORY_COLUMNS, rows: steps }]);
-        let reader = Reader::new(Database::open_with_wal(std::fs::read(&catalog).unwrap(), &[]).unwrap());
+        let reader = Reader::new(Database::open_with_wal(std::fs::read(&catalog).unwrap(), &[]).unwrap(), 0);
         let _ = std::fs::remove_dir_all(dir);
         let mut warnings = Vec::new();
         let grouped = reader.grouped_within("Adobe_libraryImageDevelopHistoryStep", 1 << 20, &mut warnings, &AtomicBool::new(false)).unwrap();
@@ -2484,8 +2643,50 @@ pub(crate) mod tests {
         let steps = (1..=4).map(|id| fixture::history_step(id, 1, id as f64, "Step", Field::Blob(fixture::compressed(&big)))).collect();
         let (rows, warnings) = steps_within_one_mib("history-budget", steps);
         assert_eq!(rows.len(), 4, "every step is still read");
-        assert_eq!(rows.iter().filter(|r| r.contains_key("text")).count(), 2, "the two steps within 1 MiB keep their settings");
-        assert_eq!(warnings, ["2 history steps read without their settings: more than 1 MiB of settings in Adobe_libraryImageDevelopHistoryStep"]);
+        let kept: Vec<i64> = rows.iter().filter(|r| r.contains_key("text")).map(|r| number(r, "id_local")).collect();
+        assert_eq!(kept, [3, 4], "the two newest steps within 1 MiB keep their settings");
+        assert_eq!(
+            warnings,
+            [
+                "2 history steps read without their settings: more than 1 MiB of settings in Adobe_libraryImageDevelopHistoryStep, so each photo kept its newest ones"
+            ]
+        );
+    }
+
+    /// A table past its budget is spent on every photo's newest settings first, not in table order (issue #1312): a
+    /// photo whose steps come late in the table keeps its newest step even when earlier photos alone fill the budget.
+    #[test]
+    fn a_table_past_its_budget_keeps_every_photos_newest_settings() {
+        use crate::lightroom_fixture::{self as fixture, Field};
+        let big = "x".repeat(300 << 10);
+        let blob = || Field::Blob(fixture::compressed(&big));
+        // photo 1's four steps come first in the table; photos 2 and 3 have one step each, after them
+        let mut steps: Vec<_> = (1..=4).map(|id| fixture::history_step(id, 1, id as f64, "Step", blob())).collect();
+        steps.push(fixture::history_step(5, 2, 1.0, "Step", blob()));
+        steps.push(fixture::history_step(6, 3, 1.0, "Step", blob()));
+        let (rows, warnings) = steps_within_one_mib("history-budget-fair", steps);
+        assert_eq!(rows.len(), 6, "every step is still read");
+        let kept: Vec<i64> = rows.iter().filter(|r| r.contains_key("text")).map(|r| number(r, "id_local")).collect();
+        assert_eq!(kept, [4, 5, 6], "each photo's newest step fits first; photo 1's older ones don't");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let base = Arc::new(lcc_develop::DevelopSettings::default());
+        let per_photo = |image: i64| {
+            let mine: Vec<Row> = rows.iter().filter(|r| image_of(r) == Some(image)).cloned().collect();
+            history_steps(&mine, &base, &base, |_| Ok((json!({}), Vec::new()))).0.len()
+        };
+        assert_eq!((per_photo(1), per_photo(2), per_photo(3)), (1, 1, 1), "every photo gets its history");
+    }
+
+    /// The budget grows with the catalog and the machine, and never drops below what every catalog had before.
+    #[test]
+    fn the_settings_budget_follows_the_catalog_and_the_machine() {
+        let gib = 1u64 << 30;
+        assert_eq!(settings_budget(0, Some(64 * gib), None), MIN_DECODED_SETTINGS, "a tiny catalog keeps the old floor");
+        assert_eq!(settings_budget(gib, Some(64 * gib), None), (16 * gib) as usize, "a quarter of 64 GB holds a 1 GB catalog's settings");
+        assert_eq!(settings_budget(100 << 20, Some(64 * gib), None), (3200u64 << 20) as usize, "32 times a 100 MB catalog");
+        assert_eq!(settings_budget(gib, Some(64 * gib), Some(2 * gib)), gib as usize, "half of what is free when that is less");
+        assert_eq!(settings_budget(gib, None, None), gib as usize, "1 GiB when the machine doesn't say");
+        assert_eq!(settings_budget(u64::MAX, Some(u64::MAX), Some(u64::MAX)), (u64::MAX / 4).min(usize::MAX as u64) as usize, "no overflow");
     }
 
     /// Rows read past the budget get no History entry or version, and aren't counted again in each image's "could not
@@ -2515,7 +2716,7 @@ pub(crate) mod tests {
     }
 
     /// Settings that fail to decode still cost their declared length, so a catalog of damaged rows can't make the
-    /// reader inflate without bound: past the budget, the rest are left out without being inflated.
+    /// reader inflate without bound: each pass inflates at most the budget, and each damaged step is named once.
     #[test]
     fn settings_that_fail_to_decode_still_count_against_the_budget() {
         use crate::lightroom_fixture::{self as fixture, Field};
@@ -2529,9 +2730,10 @@ pub(crate) mod tests {
             [
                 "image 1: history step 1: invalid compressed settings",
                 "image 1: history step 2: invalid compressed settings",
-                "2 history steps read without their settings: more than 1 MiB of settings in Adobe_libraryImageDevelopHistoryStep",
+                "image 1: history step 3: invalid compressed settings",
+                "image 1: history step 4: invalid compressed settings",
             ],
-            "the two damaged steps within 1 MiB are tried; the other two aren't"
+            "the two oldest are tried first in table order, then the two newest in the second pass"
         );
     }
 
@@ -5034,7 +5236,7 @@ pub(crate) mod tests {
             vec![N, I(3), T("<x:xmpmeta>padding</x:xmpmeta>".into())],
         ];
         let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
-        let reader = Reader::new(Database::open_with_wal(bytes, &[]).unwrap());
+        let reader = Reader::new(Database::open_with_wal(bytes, &[]).unwrap(), 0);
         let cancel = AtomicBool::new(false);
         let (rows, warnings) = reader.xmp_table_within(&cancel, 12).unwrap();
         assert_eq!(rows.len(), 3);
@@ -5132,7 +5334,7 @@ pub(crate) mod tests {
         page[8..10].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
         page[5..7].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
         let db = Database::open_with_wal(main, &[]).unwrap();
-        let reader = Reader::new(db);
+        let reader = Reader::new(db, 0);
         let mut warnings = Vec::new();
         let cancel = AtomicBool::new(false);
         let rows = reader.optional_table("optional_history", &mut warnings, &cancel).unwrap();

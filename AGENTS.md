@@ -1,10 +1,13 @@
 # Instructions for agents
 
-Chromaforge: clean-room, pure-Rust photo library + non-destructive raw developer, targeting Lightroom parity.
+Chromaforge: clean-room, Rust-first photo library + non-destructive raw developer, targeting Lightroom parity.
 Native macOS/Windows/Linux, web via WASM. Fork of an upstream project (`NOTICE`); "Lightroom" parity target only.
 Upstream is **not merged**: each upstream
 PR/commit is reviewed on its own and ported by hand; one intake round = one fork PR
 ([`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md), mechanics: [`docs/upstream-merge.md`](docs/upstream-merge.md)).
+Chromaforge's rules diverge from upstream's (2026-11-27): Rust-first instead of pure Rust, and black-box measurement
+of other apps (Lightroom included) may ship as fitted data. Work that relies on either is Chromaforge-only, never
+offered upstream.
 
 This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Claiming issues / opening PRs:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -74,9 +77,16 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
 
 ## Non-negotiables
 - **Third-party material** — see the licence/derivation policy below.
-- **Pure Rust** in the product, no C/C++ dependencies; covers our crates and anything we bundle. **Plug-ins are
-  exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)), any language
-  that compiles to WASM, own licence, untrusted input to the host.
+- **Rust first (2026-11-27; was pure Rust).** Our crates are Rust. A C/C++ library may be used when no good Rust
+  option exists, on these terms: behind a cargo feature in one crate, reached through a maintained safe wrapper crate
+  or an FFI helper crate that follows the `unsafe` rules under "Never crash"; every target it doesn't build on (always
+  the web build) still builds and works without it, with the feature greyed out and a note saying why; its licence
+  passes `deny.toml`; `NOTICE` credits it; and it is listed here. Hostile input reaching it gets the same no-panic,
+  no-crash tests as our own decoders. Approved: LibRaw (raw decode, opt-in), libwebp (lossy WebP export, #1482),
+  ONNX Runtime + its WebGPU plug-in (AI models on the GPU, #491: `crates/onnxrt`, feature `ort`, loaded at run time,
+  [`docs/onnxruntime.md`](docs/onnxruntime.md)).
+  **Plug-ins are exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)),
+  any language that compiles to WASM, own licence, untrusted input to the host.
 - **Layering** (`plan/architecture.md` §3, `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.
 - **Everything is a command** (`crates/engine`): id, label, menu path, shortcut, params, `enabled()`, `run()`. UI,
   CLI, control channel, MCP all dispatch by id. Every slider is a `develop` control spec.
@@ -122,15 +132,19 @@ One rule (2026-11-10): **use only material you may legally derive from.**
 - **Provenance:** every port names its source — commit **Sources:** line, module docs saying "translated from"/"read
   as a reference" (never "no code copied" when structure follows a source), `NOTICE` credit + licence text next to the
   material.
-- **Adobe boundaries (absolute):** never open/disassemble Adobe app bundles (file/symbol names and listings are the
-  limit); observing installed Lightroom is read-only (it syncs the user's library — never write); imitating layout and
-  behaviour is allowed, Adobe assets never ship; no camera matrices from Adobe-converted DNGs (check `Software` tag;
-  camera-native DNGs fine); Adobe-rendered pixels never ship; black-box fits may ship only as aggregate calibration
-  numbers (`<cli> calibrate-lightroom add`, allow-listed fields only); users' own `.dcp`/XMP import at run time
-  (`camera.importDcp`, `profile.import`) but are never committed, bundled or used as fixtures (tests build bytes).
-- **Other apps' black-box measurements (2026-11-17):** response curves measured from a non-Adobe app's output on our
-  own synthetic charts (e.g. Capture One midtone tables in `crates/develop/src/levels_table.rs`) may ship as data,
-  with the source app and method named in module docs and `NOTICE`. No copied files, assets or rendered photos.
+- **Adobe boundaries (absolute; these are copyright, licence and user-safety limits, not upstream policy):** never
+  open/disassemble Adobe app bundles (file/symbol names and listings are the limit); observing installed Lightroom is
+  read-only (it syncs the user's library — never write); imitating layout and behaviour is allowed, Adobe assets
+  never ship; no camera matrices from Adobe-converted DNGs (check `Software` tag; camera-native DNGs fine);
+  Adobe-rendered images are never committed or shipped (measure them, keep only the numbers); users' own `.dcp`/XMP
+  import at run time (`camera.importDcp`, `profile.import`) but are never committed, bundled or used as fixtures
+  (tests build bytes).
+- **Black-box measurement of any app, Lightroom included (2026-11-27; was non-Adobe only, 2026-11-17):** we may
+  measure another app's output (slider responses, tone and colour curves, process-version behaviour) on our own
+  synthetic charts or on photos whose owner agrees, fit our own models to it, and ship the fitted parameters or
+  tables as data (e.g. Capture One midtone tables in `crates/develop/src/levels_table.rs`; Lightroom tone-slider fits
+  for #1120/#1124). Name the source app, method and sample set in module docs and `NOTICE`. Only the numbers ship: no
+  copied files, assets or rendered photos. Camera calibrations still go through `<cli> calibrate-lightroom add`.
 - Now usable (with provenance): darktable/Ansel sources, all of dcraw incl. the GPL RESTRICTED (Foveon) block, LibRaw
   and other dcraw descendants, rawspeed/rawloader/rawler/dnglab/RawTherapee/ART, GPL data tables (noiseprofiles,
   wb_presets, colormatrices, basecurves). Quality habits stay: camera data ranks measured > spectral > dcraw tables

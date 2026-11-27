@@ -77,6 +77,9 @@ pub fn language_from_command(id: &str) -> Option<crate::i18n::Locale> {
 /// they always match.
 pub const PIXEL_SHIFT_ID: &str = "merge.pixelShiftNow";
 pub const PIXEL_SHIFT_LABEL: &str = "Pixel Shift…";
+/// The same series merged on the camera's own pattern, without registration (no measurement, no reconstruction).
+pub const PIXEL_SHIFT_PLAIN_ID: &str = "merge.pixelShiftPlainNow";
+pub const PIXEL_SHIFT_PLAIN_LABEL: &str = "Pixel Shift, Plain Merge…";
 
 /// Photo Merge ▸ Delete Merge Sources: the same one definition for the menu bar, the command palette and the grid's
 /// context menu.
@@ -391,6 +394,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // the frames of one Nikon pixel-shift series (no dialog: a selection that is not a complete series is refused
     // with the reason)
     (PIXEL_SHIFT_ID, PIXEL_SHIFT_LABEL, None, "Photo>Photo Merge"),
+    (PIXEL_SHIFT_PLAIN_ID, PIXEL_SHIFT_PLAIN_LABEL, None, "Photo>Photo Merge"),
     // a merged pixel-shift photo's other frames go to Recently Deleted (frame 01 and the merged photo stay)
     (DELETE_SOURCES_ID, DELETE_SOURCES_LABEL, None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
@@ -469,7 +473,6 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.exportFolder", "Choose Export Folder…", None, ""),
     ("app.about", "About {app}", None, "Help"),
     ("app.checkForUpdates", "Check for Updates…", None, "Help"),
-    ("app.installUpdate", "Install Update and Relaunch", None, "Help"),
     ("app.openReleasePage", "Open the Release Page", None, ""),
     ("app.allFilesAccess", "Allow Access to All Files…", None, ""),
     ("app.systemInfo", "System Info…", None, "Help"),
@@ -2002,6 +2005,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             json!({"soloSections": app.ui.single_panel})
         }),
         "view.filterBar" => {
+            // Develop's loupe has its own bar above the photo (#1317): the photo stays
+            if app.ui.develop_filter_shown_here() {
+                app.ui.develop_filter_bar = !app.ui.develop_filter_bar;
+                return Some(Ok(json!({"filterBar": app.ui.develop_filter_bar})));
+            }
             app.ui.filter_bar = !app.ui.filter_bar;
             if app.ui.filter_bar && !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
                 app.ui.view = app.ui.grid_style;
@@ -2596,6 +2604,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let r = crate::merge::start_last(app, "merge.pixelShift");
             crate::merge::reported(app, r)
         }
+        "merge.pixelShiftPlainNow" => {
+            let r = crate::merge::start_pixel_shift_plain(app);
+            crate::merge::reported(app, r)
+        }
         "merge.deleteSourcesNow" => {
             let r = crate::merge::ask_delete_sources(app);
             crate::merge::reported(app, r)
@@ -2648,28 +2660,6 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 Ok(_) => Ok(app.session.updater.status()),
                 // a check that cannot even be started shows why in the dialog
                 Err(e) => Err(e.to_string()),
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        "app.installUpdate" => Err("the web build updates by reloading the page".into()),
-        #[cfg(not(target_arch = "wasm32"))]
-        "app.installUpdate" => {
-            // the same install the dialog's button runs, without the plan in front of it
-            match app.session.execute("update.install", &json!({"confirm": true})) {
-                Ok(v) => {
-                    if let Some(message) = v.field("message").as_str() {
-                        app.toast(&ctx, message);
-                    }
-                    if v.field("exit").as_bool().unwrap_or(false) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    Ok(v)
-                }
-                // nothing downloaded yet: open the dialog, which explains what to do
-                Err(e) => {
-                    app.ui.dialog = Some(Dialog::Update);
-                    Err(e.to_string())
-                }
             }
         }
         // the web build has no updater: the list of releases
@@ -3804,11 +3794,6 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
             app.session.active().is_some()
         }
         "photo.tagFromTracklog" => app.session.active().is_some() && app.services.pick_tracklog.is_some(),
-        // nothing downloaded, nothing to install (the dialog's own button says the same)
-        #[cfg(target_arch = "wasm32")]
-        "app.installUpdate" => false,
-        #[cfg(not(target_arch = "wasm32"))]
-        "app.installUpdate" => app.session.updater.staged().is_some(),
         "photo.editInPhotoCraft" | "photo.editInExternal" | "photo.editInPreset" => {
             app.session.active().is_some() && app.services.open_with.is_some()
         }

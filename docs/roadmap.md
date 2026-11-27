@@ -1,6 +1,6 @@
 # Roadmap: milestones, current focus and what's next
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (M12 status: natural-language semantic search ✅, issue #487) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last updated:** 2026-11-05 · **Change:** minor (M12 status: natural-language semantic search ✅, issue #487) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Forward-looking plan. The summary with the headline numbers is [ROADMAP.md](../ROADMAP.md); the
 ranked shortfalls are [gaps.md](gaps.md); the numbers come from [target-app-parity.md](target-app-parity.md).

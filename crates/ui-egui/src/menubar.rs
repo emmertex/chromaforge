@@ -417,7 +417,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.beforeAfter" => Some(u.before_after == crate::state::BeforeAfter::SideBySide),
         "view.beforeAfterSplit" => Some(u.before_after == crate::state::BeforeAfter::Split),
         "view.autoAdvance" => Some(u.auto_advance),
-        "view.filterBar" => Some(u.filter_bar),
+        "view.filterBar" => Some(u.filter_bar_shown()),
         "library.toggleFilters" => Some(!app.session.filters_off()),
         "view.soloSections" => Some(u.single_panel),
         "mask.solo" => Some(u.mask_solo),

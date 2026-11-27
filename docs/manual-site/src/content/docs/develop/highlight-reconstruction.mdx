@@ -15,8 +15,9 @@ areas always come out neutral.
 
 Choose the method in the Edit panel: **Detail ▸ Sensor ▸ Highlights** (raws only).
 
-- **Rebuild** (the default): the colour of reliable, unclipped detail nearby, carried into the clipped area; white
-  where there is none.
+- **Rebuild** (the default): the colour of reliable, unclipped detail nearby, carried into the clipped area. Where
+  there is none, a partly clipped area keeps its own colour from just below the clip (a bright sky stays blue rather
+  than turning cyan), and a fully clipped one is white.
 - **Inpaint Opposed**: a clipped colour is rebuilt from the two others, corrected by the colour of the unclipped
   surroundings of all clipped areas. Fast; good for small specular highlights and evenly lit skies. Ported from
   darktable.
