@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 # The upstream project's own AI Denoise model (MIT OR Apache-2.0) is offered as a download
-default = ["denoise", "own-model", "heif", "onnxruntime"]
+default = ["denoise", "own-model", "heif", "onnxruntime", "libraw"]
 denoise = ["lcc-engine/denoise", "lcc-cli/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model", "lcc-cli/rawnind-model"]
 realesrgan-model = ["denoise", "lcc-engine/realesrgan-model", "lcc-cli/realesrgan-model"]
@@ -30,6 +30,9 @@ heif = ["lcc-codecs/heif", "lcc-cli/heif"]
 onnxruntime = ["lcc-engine/onnxruntime", "lcc-cli/onnxruntime"]
 # Sound for video playback and slideshow music (cpal; links libasound on Linux). See docs/video.md.
 audio-out = ["lcc-engine/audio-out"]
+# LibRaw as a per-camera raw decoder (C++; linked only when LIBRAW_DIR or LIBRAW_SYSTEM=1 is set, see
+# crates/libraw/build.rs; otherwise Settings shows it unavailable).
+libraw = ["lcc-engine/libraw", "lcc-cli/libraw"]
 
 [dependencies]
 # the command-line tool, run when the program is started as `<cli>` (`main`); its features follow
@@ -40,6 +43,7 @@ lcc-surface = { workspace = true }
 lcc-brand = { workspace = true }
 lcc-engine = { workspace = true, features = ["sam"] }
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 # the render workers' priority (`threads`)
 lcc-preview = { workspace = true }
 rayon = { workspace = true }

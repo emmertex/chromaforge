@@ -9,6 +9,7 @@ description = "Engine: session, command registry, history, render jobs, view-mod
 workspace = true
 
 [dependencies]
+lcc-libraw = { workspace = true, optional = true }
 # Paths stored in a Lightroom catalog: local files or the catalog's share (the fork also follows other shares).
 craft-docpath = { workspace = true }
 lcc-filters = { workspace = true }
@@ -23,6 +24,7 @@ lcc-pipeline = { workspace = true }
 lcc-gpu = { workspace = true }
 # the memory the process may use (cgroup limits on Linux) for the budget
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 lcc-catalog = { workspace = true }
 lcc-geo = { workspace = true }
 lcc-hash = { workspace = true }
@@ -89,7 +91,7 @@ sha2 = { workspace = true }
 lcc-publish = { workspace = true }
 lcc-tether = { workspace = true }
 lcc-credentials = { workspace = true }
-lcc-webgallery = { workspace = true, features = ["sftp"] }
+lcc-webgallery = { workspace = true }
 lcc-plugins = { workspace = true }
 # M14.8: video clips in an export batch
 lcc-video-export = { workspace = true }
@@ -104,6 +106,10 @@ trash = { workspace = true }
 rustix = { workspace = true }
 
 [features]
+# SFTP upload in Web Gallery publishing (russh, whose ring backend compiles C). On for the apps;
+# a library user that only develops photos turns default features off.
+default = ["sftp"]
+sftp = ["lcc-webgallery/sftp"]
 # Opt-in cpal sound for targets without a default path (macOS / Windows always use cpal, Linux and
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
@@ -123,6 +129,9 @@ own-model = ["denoise", "lcc-denoise/own-model", "lcc-denoise-core/own-model"]
 # a throwaway update key for the brand's; `filter_plugins::install_in_memory` (the Plug-in Manager), so
 # they install a pixel filter without a file in the plug-ins folder. Never enabled by an app build.
 test-support = []
+# LibRaw as a raw decoder a camera can be set to (`raw_decoder`): links the LibRaw C++ library when its build finds
+# one (`LIBRAW_DIR` / `LIBRAW_SYSTEM=1`, crates/libraw/build.rs), otherwise a stub. Desktop app and CLI only.
+libraw = ["dep:lcc-libraw"]
 
 [dev-dependencies]
 # EXR export tests read the files back

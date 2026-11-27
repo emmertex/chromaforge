@@ -267,6 +267,14 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(st) = st {
         f.stage = st;
     }
+    // a parameter the plug-in names in `analyzeParams` makes the measurement stale (#1395): it is
+    // dropped, and an `analyze: auto` filter is measured again
+    if f.analysis.is_some()
+        && !changed.is_empty()
+        && crate::filter_plugins::registry().get(&f.plugin).is_some_and(|r| r.manifest().analyze_params.iter().any(|k| changed.contains(k)))
+    {
+        f.analysis = None;
+    }
     // what this changes of the parameters the filter remembers, as its manifest takes them, is
     // where the next copy added starts
     let kept = crate::filter_plugins::registry().get(&f.plugin).filter(|r| !changed.is_empty() && !r.manifest().remember.is_empty()).and_then(|r| {
@@ -762,7 +770,38 @@ impl Session {
                 self.filter_analyses.failed.push((photo, uid, e.to_string()));
             }
         }
+        self.plugin_auto_measure();
         any
+    }
+
+    /// Starts the background measurement of the open photo's entries whose plug-in asks for it
+    /// (`"analyze": "auto"`, ABI v1.1, #1395) and that have none: on, not being measured, and not
+    /// failed since (a failure waits for Measure). However the entry came (added, applied, pasted,
+    /// synced, or its measurement made stale), it is measured once its photo is open.
+    fn plugin_auto_measure(&mut self) {
+        let Some(id) = self.active() else { return };
+        let Some(d) = self.develop_of(id) else { return };
+        if d.plugin_filters.iter().all(|f| f.analysis.is_some()) {
+            return;
+        }
+        let due: Vec<u32> = d
+            .plugin_filters
+            .iter()
+            .filter(|f| f.enabled && f.analysis.is_none())
+            .filter(|f| !self.plugin_analyzing(id, f.uid) && self.plugin_analyze_error(id, f.uid).is_none())
+            .filter(|f| {
+                crate::filter_plugins::registry()
+                    .get(&f.plugin)
+                    .is_some_and(|r| r.has_analyze() && r.manifest().analyze == lcc_filters::Analyze::Auto)
+            })
+            .map(|f| f.uid)
+            .collect();
+        for uid in due {
+            if let Err(e) = analyze(self, &json!({ "uid": uid })) {
+                // (said once in the panel, not tried again every frame)
+                self.filter_analyses.failed.push((id, uid, e.to_string()));
+            }
+        }
     }
 
     /// Whether any measurement is running (the app keeps polling while one is).

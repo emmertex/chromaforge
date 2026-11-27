@@ -253,6 +253,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                     "ppi": {"type": "integer", "description": "Print resolution written into the file (default 240)"},
                     "quality": {"type": "integer", "description": "JPEG/AVIF/lossy JPEG XL quality 1..100"},
                     "jxlLossless": {"type": "boolean", "description": "JPEG XL: mathematically lossless (quality unused); default false"},
+                    "webpLossless": {"type": "boolean", "description": "WebP: lossless instead of lossy at `quality`; default false (builds without lossy WebP, such as the web, always write lossless)"},
                     "jxlEffort": {"type": "string", "enum": ["fast", "normal"], "description": "JPEG XL encoder effort: normal (default) makes files about a quarter smaller than fast, in about twice the time"},
                     "jxlProgressive": {"type": "boolean", "description": "JPEG XL: progressive file, a coarse image first (default false)"},
                     "exrPrimaries": {"type": "string", "enum": ["rec2020", "acescg"], "description": "OpenEXR: primaries of the linear samples, written into the file (default rec2020)"},

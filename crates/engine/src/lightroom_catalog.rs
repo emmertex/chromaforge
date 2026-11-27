@@ -228,6 +228,20 @@ impl Reader {
         required: bool,
         kept: bool,
         cancel: &AtomicBool,
+        f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.each_row_with(name, required, kept, None, cancel, f)
+    }
+
+    /// [`Self::each_row`] that, given `large`, also reads records past the reader's size limit, their large values
+    /// through `large`'s filter for the column (named) they are in (issue #1311).
+    pub(crate) fn each_row_with(
+        &self,
+        name: &str,
+        required: bool,
+        kept: bool,
+        large: Option<&dyn Fn(&str, bool) -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>>>,
+        cancel: &AtomicBool,
         mut f: impl FnMut(Row, Vec<(&str, Vec<u8>)>) -> Result<(), String>,
     ) -> Result<(), String> {
         let Some(t) = self.db.live_table(name, cancel)? else {
@@ -253,8 +267,11 @@ impl Reader {
             }
             f(row, blobs)
         };
+        let by_index = large.map(|large| move |i: usize, text: bool| columns.get(i).and_then(|c| large(c, text)));
         let walked = if kept {
             self.db.for_each_kept_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
+        } else if let Some(by_index) = &by_index {
+            self.db.for_each_row_with_large(t.rootpage, columns.len(), cancel, by_index, &mut sink)
         } else {
             self.db.for_each_row_with_cancel(t.rootpage, columns.len(), cancel, &mut sink)
         };
@@ -499,7 +516,12 @@ impl Reader {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
         let mut unkeyed = 0usize;
-        let read = self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
+        // a record past the reader's limit (a packet carrying a camera profile's table data) is read in pieces, its
+        // `xmp` without those tables (issue #1311)
+        let large = |column: &str, text: bool| -> Option<Box<dyn crate::lightroom_sqlite::ValueFilter>> {
+            (column == "xmp").then(|| Box::new(XmpPacketFilter::new(!text, max_packet)) as Box<dyn crate::lightroom_sqlite::ValueFilter>)
+        };
+        let read = self.each_row_with("Adobe_AdditionalMetadata", false, false, Some(&large), cancel, |mut r, blobs| {
             let Some(image) = image_of(&r) else {
                 unkeyed += 1;
                 return Ok(());
@@ -512,7 +534,9 @@ impl Reader {
                 // the declared size (the decode checks it) against what is left, before inflating
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
                 let over = |n: usize| n > max_packet;
-                let decoded = if over(declared) { Ok(None) } else { decode_compressed(&bytes, "XMP").map(Some) };
+                // a packet declared past the bound is read without its camera-profile tables, which are most of it
+                let decoded =
+                    if over(declared) { strip_packet(&bytes, true, max_packet).map(Some) } else { decode_compressed(&bytes, "XMP").map(Some) };
                 match decoded {
                     Ok(Some(packet)) if !over(packet.len()) => {
                         r.insert(column.to_string(), Value::String(packet));
@@ -521,13 +545,18 @@ impl Reader {
                     Err(error) => warnings.push(format!("image {image}: {error}")),
                 }
             }
-            // a text packet is held to the same bound as a decoded one
+            // a text packet is held to the same bound as a decoded one (its tables taken out first)
             if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
                 && !blobs_had_xmp
                 && len > max_packet
             {
-                r.remove("xmp");
-                warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20));
+                let text = r.remove("xmp");
+                match text.as_ref().and_then(Value::as_str).map(|t| strip_packet(t.as_bytes(), false, max_packet)) {
+                    Some(Ok(packet)) => {
+                        r.insert("xmp".into(), Value::String(packet));
+                    }
+                    _ => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
+                }
             }
             out.insert(image, r);
             Ok(())
@@ -740,6 +769,170 @@ fn compressed_len(bytes: &[u8]) -> Option<usize> {
 /// Lightroom's compressed text (`Adobe_AdditionalMetadata.xmp`, and history-step and snapshot settings since Lightroom
 /// Classic 13): the decoded length as 4 big-endian bytes, then a zlib stream, at most 16 MiB decoded. Errors name it
 /// `what`.
+/// The name Lightroom gives the attributes carrying a camera profile's table data in a photo's cached XMP
+/// (`crs:Table_<digest>="…"`, up to about 120 MB each): nothing the import reads, and nearly all of such a packet.
+const XMP_TABLE_ATTRIBUTE: &[u8] = b"crs:Table_";
+
+/// A photo's cached XMP packet read a piece at a time (issue #1311): zlib-compressed after a 4-byte length (`blob`) or
+/// plain text, with every `crs:Table_<digest>` attribute left out, held to `max` bytes. Constant memory beyond what
+/// it keeps.
+struct XmpPacketFilter {
+    blob: bool,
+    max: usize,
+    /// The compressed stream's 4-byte length prefix, while it is read.
+    prefix: usize,
+    inflate: Option<Box<miniz_oxide::inflate::stream::InflateState>>,
+    strip: TableStripper,
+}
+
+impl XmpPacketFilter {
+    fn new(blob: bool, max: usize) -> Self {
+        let inflate = blob.then(|| miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Zlib));
+        XmpPacketFilter { blob, max, prefix: 0, inflate, strip: TableStripper::default() }
+    }
+
+    fn text(&mut self, text: &[u8]) -> Result<(), String> {
+        self.strip.feed(text);
+        if self.strip.out.len() > self.max {
+            return Err(format!("the XMP packet exceeds {} MiB even without its camera-profile tables", self.max >> 20));
+        }
+        Ok(())
+    }
+}
+
+impl crate::lightroom_sqlite::ValueFilter for XmpPacketFilter {
+    fn feed(&mut self, mut piece: &[u8]) -> Result<(), String> {
+        if !self.blob {
+            return self.text(piece);
+        }
+        if self.prefix < 4 {
+            let skip = (4 - self.prefix).min(piece.len());
+            self.prefix += skip;
+            piece = piece.get(skip..).unwrap_or_default();
+        }
+        let mut out = [0u8; 64 * 1024];
+        while !piece.is_empty() {
+            let Some(state) = self.inflate.as_mut() else { return Ok(()) };
+            let r = miniz_oxide::inflate::stream::inflate(state, piece, &mut out, miniz_oxide::MZFlush::None);
+            let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+            self.text(&written)?;
+            piece = piece.get(r.bytes_consumed..).unwrap_or_default();
+            match r.status {
+                Ok(miniz_oxide::MZStatus::StreamEnd) => {
+                    self.inflate = None;
+                }
+                Ok(_) if r.bytes_consumed == 0 && r.bytes_written == 0 => return Err("invalid compressed XMP".into()),
+                Ok(_) => {}
+                Err(_) => return Err("invalid compressed XMP".into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<crate::lightroom_sqlite::Value, String> {
+        // what the inflater still holds
+        if let Some(mut state) = self.inflate.take() {
+            let mut out = [0u8; 64 * 1024];
+            loop {
+                let r = miniz_oxide::inflate::stream::inflate(&mut state, &[], &mut out, miniz_oxide::MZFlush::Finish);
+                let written = out.get(..r.bytes_written).unwrap_or_default().to_vec();
+                self.text(&written)?;
+                match r.status {
+                    Ok(miniz_oxide::MZStatus::StreamEnd) => break,
+                    Ok(_) if r.bytes_written > 0 => {}
+                    _ => return Err("truncated compressed XMP".into()),
+                }
+            }
+        }
+        let text = self.strip.finish();
+        String::from_utf8(text).map(crate::lightroom_sqlite::Value::Text).map_err(|e| format!("XMP not UTF-8: {e}"))
+    }
+}
+
+/// A packet already in memory read as [`XmpPacketFilter`] reads one in pieces.
+fn strip_packet(bytes: &[u8], blob: bool, max: usize) -> Result<String, String> {
+    use crate::lightroom_sqlite::ValueFilter;
+    let mut f = Box::new(XmpPacketFilter::new(blob, max));
+    for piece in bytes.chunks(1 << 20) {
+        f.feed(piece)?;
+    }
+    match f.finish()? {
+        crate::lightroom_sqlite::Value::Text(t) => Ok(t),
+        _ => Err("XMP is not text".into()),
+    }
+}
+
+/// Copies XML text, leaving out each `crs:Table_<digest>="…"` attribute (name, `=` and quoted value), fed in pieces
+/// that may split anywhere.
+#[derive(Default)]
+struct TableStripper {
+    out: Vec<u8>,
+    /// How much of [`XMP_TABLE_ATTRIBUTE`] the latest bytes matched (held back until it is known).
+    matched: usize,
+    state: StripState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum StripState {
+    #[default]
+    Text,
+    /// In a table attribute's name, until `=`.
+    Name,
+    /// After its `=`, before the quote.
+    Equals,
+    /// In its value, until this quote.
+    Value(u8),
+}
+
+impl TableStripper {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            match self.state {
+                StripState::Text => {
+                    if XMP_TABLE_ATTRIBUTE.get(self.matched) == Some(&b) {
+                        self.matched += 1;
+                        if self.matched == XMP_TABLE_ATTRIBUTE.len() {
+                            self.matched = 0;
+                            self.state = StripState::Name;
+                        }
+                        continue;
+                    }
+                    // a partial match that failed is text after all
+                    self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+                    self.matched = 0;
+                    if XMP_TABLE_ATTRIBUTE.first() == Some(&b) {
+                        self.matched = 1;
+                    } else {
+                        self.out.push(b);
+                    }
+                }
+                StripState::Name => {
+                    if b == b'=' {
+                        self.state = StripState::Equals;
+                    }
+                }
+                StripState::Equals => {
+                    if b == b'"' || b == b'\'' {
+                        self.state = StripState::Value(b);
+                    }
+                }
+                StripState::Value(q) => {
+                    if b == q {
+                        self.state = StripState::Text;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.state == StripState::Text {
+            self.out.extend_from_slice(XMP_TABLE_ATTRIBUTE.get(..self.matched).unwrap_or_default());
+        }
+        self.out
+    }
+}
+
 fn decode_compressed(bytes: &[u8], what: &str) -> Result<String, String> {
     if bytes.len() < 4 {
         return Err(format!("truncated {what} header"));
@@ -1035,11 +1228,18 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     warnings.extend(metadata_warnings);
     done.fetch_add(1, Ordering::Relaxed);
     // the caption each image has in Lightroom's own IPTC table (the cached XMP may not restate it)
+    // (a row whose image is not a photo id goes to no photo, as in the other side tables: issue #4090)
+    let mut unkeyed_captions = 0usize;
     let mut captions: HashMap<i64, String> = optional_table("AgLibraryIPTC", &mut warnings)?
         .into_iter()
         .filter(|r| !text(r, "caption").trim().is_empty())
-        .map(|r| (number(&r, "image"), text(&r, "caption").to_string()))
+        .filter_map(|r| {
+            let image = image_of(&r);
+            unkeyed_captions += usize::from(image.is_none());
+            Some((image?, text(&r, "caption").to_string()))
+        })
         .collect();
+    warn_unkeyed("AgLibraryIPTC", unkeyed_captions, "skipped", &mut warnings);
     let keyword_rows: HashMap<_, _> = optional_table("AgLibraryKeyword", &mut warnings)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     let mut keywords: HashMap<i64, Vec<String>> = HashMap::new();
     // each keyword's path is resolved once, however many photos carry it
@@ -1522,6 +1722,14 @@ fn strip_lua_sentinels(value: &mut crate::preset_import::Lua) -> usize {
     }
 }
 
+/// Remove the `crs:` fields of a parsed packet whose value is Lightroom's "not set" (-999999), from both the flat and
+/// the structured properties, so they read as absent.
+fn strip_unset_crs_fields(d: &mut lcc_meta::XmpData) {
+    let unset = |s: &str| s.trim().parse::<f64>().is_ok_and(|v| v == -999999.0);
+    d.properties.retain(|k, v| !(k.starts_with("crs:") && v.len() == 1 && v.iter().all(|s| unset(s))));
+    d.values.retain(|k, v| !(k.starts_with("crs:") && matches!(v, lcc_meta::XmpValue::Text(s) if unset(s))));
+}
+
 fn strip_xmp_sentinels(value: &mut Value) {
     match value {
         Value::Object(fields) => fields.retain(|_, value| {
@@ -1673,7 +1881,15 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     let copy_masters: HashSet<_> = data.photos.iter().map(|p| number(&p.image, "masterImage")).filter(|id| *id != 0).collect();
     let refused: HashSet<_> = data.photos.iter().filter(|p| matches!(p.original, Original::Refused(_))).map(|p| p.source_id).collect();
     let mut planned: HashMap<PhotoId, Photo> = HashMap::new();
-    for src in photos {
+    // diagnostics (issue #1363): the per-photo loop as one step, how far it has got, and each photo's time in aggregate
+    // `done` counts the photos finished before the current one (a hang in photo k shows done=k-1); an error passed up
+    // with `?` ends the stage `abandoned`, and the enclosing `lightroom_commit` records the error
+    let photos_total = photos.len() as u64;
+    let mut photos_span =
+        lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photos", lcc_diag::Class::Top, &[("photos", lcc_diag::Val::U64(photos_total))]);
+    for (finished, src) in photos.into_iter().enumerate() {
+        let _photo_timer = lcc_diag::item_timer(lcc_diag::Subsystem::Commit, "apply_photo");
+        photos_span.note("done", lcc_diag::Val::U64(finished as u64));
         let master = number(&src.image, "masterImage");
         if master == 0 && missing_sources.contains(&key(&src.path)) {
             missing.push(src.path.clone());
@@ -1781,7 +1997,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.develop = Arc::new(p.camera_defaults());
         }
         if !src.xmp.is_empty() {
-            match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
+            match lcc_meta::parse_xmp(&src.xmp).map(|mut d| {
+                // Lightroom's "not set" value (-999999) in the cached packet means no value, as in the develop text:
+                // removed before the settings are read, because an old process version's field (Shadows) is
+                // converted on reading and would no longer be recognisable afterwards (Blacks +100)
+                strip_unset_crs_fields(&mut d);
+                crate::sidecar::sidecar_from_xmp(&d, crate::crs::Target::for_photo(&p))
+            }) {
                 Ok(mut sc) => {
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
@@ -1966,6 +2188,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             "{which}: Lightroom's last edit time is missing or not a date; photos with develop settings are dated at the import, the others keep any edit date they already had"
         ));
     }
+    photos_span.set("done", lcc_diag::Val::U64(photos_total));
+    photos_span.finish(lcc_diag::Outcome::Ok);
+    let collections_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_collections", lcc_diag::Class::Top, &[]);
     let rows = first_of_each_collection(&data, &mut warnings);
     let mut albums = HashMap::new();
     // Two collections never share an album. An index that names one album for two gives the second a new one; the
@@ -2209,6 +2434,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         s.commit(step, Op::Batch { ops })?;
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
+    collections_span.finish(lcc_diag::Outcome::Ok);
     Ok(AppliedImport {
         report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
@@ -2258,13 +2484,25 @@ fn leads_to(
 }
 
 /// Lightroom folder stacks → stacks, top (position 1) first. Photos already stacked in the library
-/// keep their stack; a stack that would have fewer than two photos is skipped.
+/// keep their stack; a stack that would have fewer than two photos is skipped. A row whose stack is
+/// not a whole number names no stack: read as 0, rows with a missing or NULL stack would all join
+/// one stack of unrelated photos.
 fn stack_ops(s: &mut crate::Session, data: &CatalogImport, ids: &HashMap<i64, PhotoId>, ops: &mut Vec<Op>, warnings: &mut Vec<String>) -> usize {
     let mut groups: BTreeMap<i64, Vec<(f64, PhotoId, bool)>> = BTreeMap::new();
+    let mut unstacked = 0usize;
     for r in &data.stacks {
         let Some(photo) = image_of(r).and_then(|image| ids.get(&image).copied()) else { continue };
+        let Some(stack) = id_of(r, "stack") else {
+            unstacked += 1;
+            continue;
+        };
         let position = r.get("position").and_then(Value::as_f64).filter(|p| p.is_finite()).unwrap_or(f64::MAX);
-        groups.entry(number(r, "stack")).or_default().push((position, photo, number(r, "collapsed") != 0));
+        groups.entry(stack).or_default().push((position, photo, number(r, "collapsed") != 0));
+    }
+    match unstacked {
+        0 => {}
+        1 => warnings.push("AgLibraryFolderStackImage: 1 record skipped; its stack is not a stack id".into()),
+        n => warnings.push(format!("AgLibraryFolderStackImage: {n} records skipped; their stack is not a stack id")),
     }
     let mut taken: HashSet<PhotoId> = HashSet::new();
     let mut made = 0;
@@ -3677,6 +3915,36 @@ pub(crate) mod tests {
         assert_eq!(partial["light"]["contrast"], -100.0);
     }
 
+    /// The "not set" value in the cached packet on an older process version's field is no value either: Shadows
+    /// (process 2010) is converted to Blacks on reading, so -999999 there came in as Blacks +100 when it was only
+    /// stripped after mapping. The develop text still applies.
+    #[test]
+    fn a_not_set_value_on_an_old_process_field_in_the_cached_packet_is_no_value() {
+        let mut data = sample();
+        data.photos.truncate(1);
+        data.photos[0].image.remove("masterImage");
+        data.photos[0].settings = "s = { Exposure2012 = 0.5 }".into();
+        // only old-process fields in the packet: a process 2012 field there would make the old ones be ignored anyway
+        data.photos[0].xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Shadows="-999999" crs:Brightness=" -999999 "/></rdf:RDF></x:xmpmeta>"#.into();
+        let mut s = crate::Session::new();
+        apply(&mut s, data, false).unwrap();
+        let p = s.catalog.photos().next().unwrap();
+        let defaults = p.camera_defaults();
+        assert_eq!(p.develop.light.blacks, defaults.light.blacks, "Shadows -999999 is no Blacks value");
+        assert_eq!(p.develop.light.shadows, defaults.light.shadows);
+        assert_eq!(p.develop.light.exposure, 0.5, "the develop text still applies");
+        // and the stripping touches only crs: fields that say "not set"
+        let mut d = lcc_meta::parse_xmp(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" crs:Shadows="-999999" crs:Blacks2012="-999998" crs:Exposure2012="-999999.5" xmp:Rating="-999999"/></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        strip_unset_crs_fields(&mut d);
+        assert!(!d.properties.contains_key("crs:Shadows"));
+        for kept in ["crs:Blacks2012", "crs:Exposure2012", "xmp:Rating"] {
+            assert!(d.properties.contains_key(kept), "{kept} was removed: {:?}", d.properties);
+        }
+    }
+
     #[test]
     fn wal_checksums_cover_commits_without_materializing_historical_databases() {
         let mut main = vec![0; 512];
@@ -4526,6 +4794,56 @@ pub(crate) mod tests {
         assert_eq!(cached(Some(vec![N, T("  ".into()), N, I(1)])), "From the packet", "a blank caption keeps the packet's");
         assert_eq!(cached(Some(vec![N, T("Another image's".into()), N, I(2)])), "From the packet", "another image's row keeps it");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A caption row in Lightroom's IPTC table whose image is not a whole photo id goes to no photo, as in the other
+    /// side tables (#4090): image 1.5 is not image 1, and a missing one is not photo 0. Each such row is counted in one
+    /// warning; a row naming photo 1 still gives it its caption.
+    #[test]
+    fn a_caption_row_whose_image_is_not_a_photo_id_goes_to_no_photo() {
+        use SqlValue::{Null as N, Real as R, Text as T};
+        for (image, caption) in [(R(1.5), ""), (N, ""), (SqlValue::Integer(1), "Harbour at dawn")] {
+            let dir = std::env::temp_dir().join(format!("app-lrcat-caption-key-{}-{}", std::process::id(), caption.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("captions.lrcat");
+            let mut tables = photo_tables((dir.to_str().unwrap(), ""));
+            let text = if caption.is_empty() { "Stray" } else { caption };
+            tables.push(("AgLibraryIPTC", "id_local INTEGER PRIMARY KEY, caption, copyright, image", vec![N, T(text.into()), N, image.clone()]));
+            std::fs::write(&path, native_catalog(&tables)).unwrap();
+            let mut s = crate::Session::new();
+            let imported = s.execute("library.importLightroom", &json!({"path": path})).unwrap();
+            let id = PhotoId(imported["mapping"]["1"].as_u64().unwrap());
+            assert_eq!(s.catalog.photo(id).unwrap().meta.caption, caption, "image {image:?}: {imported}");
+            let warned = imported["warnings"].to_string().contains("AgLibraryIPTC: 1 record skipped");
+            assert_eq!(warned, caption.is_empty(), "image {image:?}: {imported}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// Stack rows whose stack is not a whole number (missing, NULL, a fraction) name no stack: read as 0 they joined
+    /// one stack of unrelated photos. They are skipped with one warning; whole stack ids still stack.
+    #[test]
+    fn stack_rows_whose_stack_is_not_a_stack_id_stack_nothing() {
+        for stack in [json!(null), json!(2.5)] {
+            let mut s = crate::Session::new();
+            let mut data = sample();
+            data.stacks = vec![
+                row(json!({"stack": stack, "image": 1, "position": 1, "collapsed": 0})),
+                row(json!({"stack": stack, "image": 2, "position": 2, "collapsed": 0})),
+            ];
+            let r = apply(&mut s, data, false).unwrap();
+            assert_eq!(r["stacks"], 0, "stack {stack}: {r}");
+            assert!(s.catalog.stacks().next().is_none(), "stack {stack}: {r}");
+            assert!(r["warnings"].to_string().contains("AgLibraryFolderStackImage: 2 records skipped"), "stack {stack}: {r}");
+        }
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.stacks = vec![
+            row(json!({"stack": 7, "image": 1, "position": 1, "collapsed": 0})),
+            row(json!({"stack": 7.0, "image": 2, "position": 2, "collapsed": 0})),
+        ];
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["stacks"], 1, "{r}");
     }
 
     #[test]
@@ -6162,5 +6480,38 @@ pub(crate) mod tests {
             assert_eq!(image(bad.clone()), None, "{bad}");
         }
         assert_eq!(image_of(&row(json!({"tag": 1}))), None);
+    }
+}
+
+#[cfg(test)]
+mod xmp_table_tests {
+    use super::*;
+
+    /// Issue #1311: a packet's camera-profile tables are left out however the text is split, quotes of either kind,
+    /// and everything else is kept; a compressed packet reads the same; one still too large without them is refused.
+    #[test]
+    fn camera_profile_tables_are_left_out_of_a_packet() {
+        let table = "x".repeat(300_000);
+        let packet = format!(
+            r#"<rdf:Description crs:CameraProfile="Adobe Standard" crs:Table_ABC123="{table}" dc:creator="Jo" crs:Table_9='{table}' photoshop:Credit="crs:Tab"/>"#
+        );
+        let want = r#"<rdf:Description crs:CameraProfile="Adobe Standard"  dc:creator="Jo"  photoshop:Credit="crs:Tab"/>"#;
+        for split in [1usize, 7, 4096, packet.len()] {
+            let mut s = TableStripper::default();
+            for piece in packet.as_bytes().chunks(split) {
+                s.feed(piece);
+            }
+            assert_eq!(String::from_utf8(s.finish()).unwrap(), want, "split {split}");
+        }
+        assert_eq!(strip_packet(packet.as_bytes(), false, 1 << 20).unwrap(), want);
+        // compressed as Lightroom stores it: a 4-byte length, then zlib
+        let mut blob = (packet.len() as u32).to_be_bytes().to_vec();
+        blob.extend(miniz_oxide::deflate::compress_to_vec_zlib(packet.as_bytes(), 6));
+        assert_eq!(strip_packet(&blob, true, 1 << 20).unwrap(), want);
+        // still past the bound without its tables
+        assert!(strip_packet(format!("{table}{table}").as_bytes(), false, 1000).is_err());
+        // damaged compressed data: an error, never a panic
+        assert!(strip_packet(&[0, 0, 0, 9, 1, 2, 3, 4, 5], true, 1000).is_err());
+        assert!(strip_packet(blob.get(..blob.len() / 2).unwrap(), true, 1 << 20).is_err());
     }
 }
