@@ -197,3 +197,22 @@ fn hard_drive_same_name_photos_dont_overwrite_each_other() {
     let c = hd.publish(&Upload { photo: PhotoId(3), file_name: "a.tif", bytes: b"three", sidecars: &side, previous: None }).unwrap();
     assert_eq!(c.remote_id, "a-3.tif");
 }
+
+// #1376: a run stopped before it recorded what it sent leaves the files; the next run adopts a file of the wanted
+// name holding exactly the same bytes instead of writing `a-2.jpg` beside it, and still steps aside for another photo's
+#[test]
+fn hard_drive_adopts_a_file_an_interrupted_run_left() {
+    let d = tmp("hd-interrupted");
+    let (s, coll) = svc(&d);
+    let mut hd = open_service(&s, &coll).unwrap();
+    let side = [("xmp", b"<x/>".to_vec())];
+    hd.publish(&Upload { photo: PhotoId(1), file_name: "a.jpg", bytes: b"one", sidecars: &side, previous: None }).unwrap();
+    // the link was never recorded: the next run sends it again with no previous name
+    let again = hd.publish(&Upload { photo: PhotoId(1), file_name: "a.jpg", bytes: b"one", sidecars: &side, previous: None }).unwrap();
+    assert_eq!(again.remote_id, "a.jpg");
+    assert!(!d.join("Web/a-2.jpg").exists(), "no duplicate");
+    // other bytes under the same name are another photo's: they stay
+    let other = hd.publish(&Upload { photo: PhotoId(2), file_name: "a.jpg", bytes: b"onf", sidecars: &side, previous: None }).unwrap();
+    assert_eq!(other.remote_id, "a-2.jpg");
+    assert_eq!(std::fs::read(d.join("Web/a.jpg")).unwrap(), b"one");
+}
