@@ -11,8 +11,9 @@
 //! settled limits within one step, and the named properties of c2, M4, D2, c and f; noise means
 //! and the interference sweep's mean and worst case no worse than §5.7.1's tables by 10 %.
 
+use super::limits::IO_CAP;
 use super::limits::{Controller, Counters, Demand};
-use super::sim::{Adaptive, Fixed, IO_CAP, PyRandom, Scenario, noise_scenarios, scenarios, simulate, wave};
+use super::sim::{Adaptive, Fixed, PyRandom, Scenario, noise_scenarios, scenarios, simulate, wave};
 use super::sim_reference::{CLEAN, CLEAN_FIXED, NOISE, NOISE_FIXED, WAVE};
 
 const T_MAX: f64 = 20000.0;

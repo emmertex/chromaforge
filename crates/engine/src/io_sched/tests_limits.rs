@@ -5,8 +5,8 @@
 //! Pool-level behaviour (the I/O cap, measurement on the right volume) is in `tests_pool_limits`.
 
 use super::limits::{
-    ABORT_FACTOR, ABORT_MIN, AbortReason, Controller, Counters, DOWN_OWN, DOWN_TOTAL, Demand, Event, FORGET, GATE_SHARE, HOLD_FIRST, HOLD_MAX, Phase,
-    TOTAL_SHARE, UP_GAIN, WINDOW_JOBS, WINDOW_LONG, WINDOW_MIN,
+    ABORT_FACTOR, ABORT_MIN, AbortReason, Controller, Counters, DOWN_OWN, DOWN_TOTAL, Demand, Event, FORGET, GATE_SHARE, HOLD_FIRST, HOLD_MAX,
+    IO_CAP, Phase, TOTAL_SHARE, UP_GAIN, WINDOW_JOBS, WINDOW_LONG, WINDOW_MIN, cut, demand, under_cap,
 };
 
 const V: &str = "v";
@@ -450,4 +450,37 @@ fn windows_that_move_no_bytes_are_discarded() {
     let events = r.ctl.take_events();
     assert!(!events.iter().any(|e| matches!(e, Event::Probe { .. } | Event::Decided { .. })), "{events:?}");
     assert_eq!(r.limit(), 4);
+}
+
+/// Where a volume stands after admission: running against its limit (at, just below, just
+/// above), and below its limit only a job waiting for the I/O cap keeps it at its limit.
+#[test]
+fn demand_after_admission() {
+    use Demand::{AtLimit, Draining, Limited};
+    for (running, waiting, want) in [
+        (4, false, AtLimit),
+        (3, false, Limited),
+        (5, false, Draining),
+        (4, true, AtLimit),
+        (3, true, AtLimit),
+        (5, true, Draining),
+        (0, false, Limited),
+    ] {
+        assert_eq!(demand(running, 4, waiting), want, "{running} running at limit 4, waiting {waiting}");
+    }
+}
+
+/// R4a: a volume with work is cut while some job doesn't need it (at, below, above the total);
+/// its limit is then one fewer than the cap, at least 1; never above the cap.
+#[test]
+fn the_cut_and_the_limit_under_the_cap() {
+    assert_eq!(IO_CAP, 32);
+    for (active, total, want) in [(5, 5, false), (5, 6, true), (5, 4, false), (0, 3, false)] {
+        assert_eq!(cut(active, total), want, "{active} of {total}");
+    }
+    for (own, cap, cut, want) in
+        [(40, 32, false, 32), (40, 32, true, 31), (32, 32, true, 31), (31, 32, true, 31), (30, 32, true, 30), (5, 2, true, 1), (5, 1, true, 1)]
+    {
+        assert_eq!(under_cap(own, cap, cut), want, "{own} under {cap}, cut {cut}");
+    }
 }

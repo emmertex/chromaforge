@@ -187,8 +187,9 @@ fn two_calls_on_one_volume_share_its_limit() {
     }
 }
 
-/// PR 5: two calls on two volumes each run their volume's own limit: the I/O cap (32), not the
-/// calls' `workers()`, bounds them together.
+/// PR 5: two calls on two volumes each run their volume's own limit (3 + 3), not one cap of the
+/// calls' `workers()` (3) for both; the I/O cap's value is pinned by
+/// `the_io_cap_is_32_running_jobs`.
 #[test]
 fn two_calls_on_two_volumes_each_run_their_volumes_limit() {
     let h = H::new();
@@ -202,6 +203,33 @@ fn two_calls_on_two_volumes_each_run_their_volumes_limit() {
     drain(&h, &tokens, 16);
     assert_eq!(ok_count(&a.join()) + ok_count(&b.join()), 16);
     assert_eq!(conc.max_all(), 6);
+}
+
+/// The I/O cap is 32 running jobs, every volume together (§5.7): five volumes whose calls start
+/// at 8 each (40 could run) run 32 at once, never 33.
+#[test]
+fn the_io_cap_is_32_running_jobs() {
+    assert_eq!(super::limits::IO_CAP, 32);
+    let h = H::new();
+    assert_eq!(h.ctx.io_cap, 32);
+    let (conc, tokens) = (Arc::new(Conc::default()), Tokens::new());
+    // (one call at a time, each keyed from the mount list read for it)
+    let calls: Vec<_> = ["/x", "/a", "/b", "/c", "/srv/nas"]
+        .iter()
+        .enumerate()
+        .map(|(k, v)| {
+            let c = h.start(tokened(v, "J", 10, &conc, &tokens), 8);
+            pending(&h, 10 * (k + 1));
+            c
+        })
+        .collect();
+    wait_until(|| conc.running() == 32, "the pool at its cap");
+    if let Some(c) = calls.first() {
+        c.settle(&h, 5);
+    }
+    assert_eq!((conc.running(), conc.max_all()), (32, 32), "at the cap, never above");
+    drain(&h, &tokens, 50);
+    assert_eq!(calls.into_iter().map(|c| ok_count(&c.join())).sum::<usize>(), 50);
 }
 
 /// R2 process-wide under a small I/O cap: two calls on two volumes share one cap (each volume

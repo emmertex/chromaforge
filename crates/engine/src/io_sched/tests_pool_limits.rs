@@ -141,11 +141,17 @@ fn ticks(h: &H, n: u64) {
 
 /// One half second of the device: `finish(waiting)` decides how many of the waiting jobs end.
 fn step(h: &H, call: &Call, dev: &Device, finish: impl Fn(usize) -> usize) {
+    step_on(h, call, dev, &["/a"], finish);
+}
+
+/// [`step`] for jobs on `vols` (a copy's two): the slots filled are the smaller of their limits.
+fn step_on(h: &H, call: &Call, dev: &Device, vols: &[&str], finish: impl Fn(usize) -> usize) {
     ticks(h, 2);
     // (every slot the pool has filled is a job waiting on the device)
     wait_until(
         || {
-            let limit = h.ctx.shared.learned(&key("/a/x")).map_or(usize::MAX, |l| l.limit);
+            let limit =
+                vols.iter().map(|v| h.ctx.shared.learned(&key(&format!("{v}/x"))).map_or(usize::MAX, |l| l.limit)).min().unwrap_or(usize::MAX);
             dev.waiting() >= limit.min(h.ctx.pending.load(Ordering::SeqCst))
         },
         "the volume's slots to fill",
@@ -239,6 +245,95 @@ fn a_copy_is_measured_on_what_it_wrote() {
         dev.finish(usize::MAX / 2);
         assert_eq!(super::tests::ok_count(&call.join()), 400);
     }
+}
+
+/// "At its limit" is also exactly its limit running with nothing queued (a call's tail): the
+/// first baseline's window opens and takes the probing token. One fewer than the limit running,
+/// nothing queued, is demand-limited (no token); one more job, queued, is at its limit too.
+#[test]
+fn exactly_its_limit_running_is_at_its_limit() {
+    for (n, at_limit) in [(3, true), (2, false), (4, true)] {
+        let h = H::new();
+        let dev = Arc::new(Device::default());
+        let call = start(&h, jobs("/a", None, n, &dev, false), 3);
+        wait_until(|| dev.waiting() == n.min(3), "the jobs to start");
+        ticks(&h, 3);
+        assert_eq!(learned(&h, "/a").probing, at_limit, "{n} jobs at limit 3: {:?}", learned(&h, "/a"));
+        dev.finish(usize::MAX / 2);
+        assert_eq!(super::tests::ok_count(&call.join()), n);
+    }
+}
+
+/// While a lowered limit drains (more running than the new limit), no window runs: a
+/// down-probe's window opens only once the running jobs are down to its limit, so the time spent
+/// draining isn't measured as the lower limit's.
+#[test]
+fn a_lowered_limit_measures_nothing_until_it_drains() {
+    let h = H::new();
+    let dev = Arc::new(Device::default());
+    let call = start(&h, jobs("/a", None, 2000, &dev, false), 2);
+    let draining = || {
+        let l = learned(&h, "/a");
+        l.limit == 1 && l.probing && dev.waiting() == 2
+    };
+    let finish_one = || {
+        let done = call.done.load(Ordering::SeqCst);
+        dev.finish(1);
+        wait_until(|| call.done.load(Ordering::SeqCst) > done, "the finished job's outcome");
+    };
+    // one job a half second whatever the limit: the up-probe fails, then the down-probe (2 -> 1)
+    // begins with two running
+    let mut found = false;
+    for _ in 0..300 {
+        ticks(&h, 2);
+        if draining() {
+            found = true;
+            break;
+        }
+        let limit = learned(&h, "/a").limit.max(1);
+        wait_until(|| dev.waiting() >= limit, "the volume's slots to fill");
+        finish_one();
+        ticks(&h, 2);
+        if draining() {
+            found = true;
+            break;
+        }
+        h.advance(SEC / 2);
+    }
+    assert!(found, "a down-probe began with two running: {:?}", learned(&h, "/a"));
+    let before = learned(&h, "/a").windows;
+    // nothing finishes for 5 s (draining), then eight jobs finish at once at the probe's limit
+    for _ in 0..10 {
+        h.advance(SEC / 2);
+        ticks(&h, 2);
+    }
+    for _ in 0..8 {
+        finish_one();
+        wait_until(|| dev.waiting() >= 1, "the probe's slot to fill");
+        ticks(&h, 2);
+    }
+    assert_eq!(learned(&h, "/a").windows, before, "the drain was measured: {:?}", learned(&h, "/a"));
+    dev.finish(usize::MAX / 2);
+    assert_eq!(super::tests::ok_count(&call.join()), 2000);
+}
+
+/// A destination that its card can't fill (every copy into it waits for the card's slots, not
+/// the destination's) is not at its limit: its up-probe ends as demand-limited instead of being
+/// judged, and it never steps down to what the card feeds it (it went to 1, so the card's copies
+/// then ran one at a time).
+#[test]
+fn a_destination_its_card_cant_fill_is_not_at_its_limit() {
+    let h = H::new();
+    let dev = Arc::new(Device::default());
+    let call = start(&h, jobs("/a", Some("/b"), 2000, &dev, false), 2);
+    for _ in 0..80 {
+        step_on(&h, &call, &dev, &["/a", "/b"], |w| w.min(1));
+    }
+    let b = learned(&h, "/b");
+    assert!(b.windows >= 2, "the destination was measured at its limit: {b:?}");
+    assert!(b.limit >= 2, "it kept a step down to what its card feeds it: {b:?}");
+    dev.finish(usize::MAX / 2);
+    assert_eq!(super::tests::ok_count(&call.join()), 2000);
 }
 
 /// A window whose jobs wait at the work gate (memory, not the volume, holds them up) is discarded:

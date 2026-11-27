@@ -33,7 +33,7 @@ use lcc_catalog::folders::VolumeKey;
 
 use super::IoContext;
 use super::job::{JobState, Moved, Side};
-use super::limits::{AbortReason, Controller, Counters, Demand, Event, Phase};
+use super::limits::{self, AbortReason, Controller, Counters, Demand, Event, Phase};
 use super::run::JobMetrics;
 use super::shared::{AbandonKind, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Learned, Shared, WAKE_JUMP};
 
@@ -486,13 +486,19 @@ impl Sched {
         // (a call with every outcome is forgotten below: the tick sees its volumes go idle first,
         // so what the controller learned, and the probe it held, are settled and published)
         let ending = self.calls.values().any(|c| c.closed && c.remaining == 0);
-        if !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || ending || self.last_tick.elapsed() >= self.tick) {
+        let ticking = !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || ending || self.last_tick.elapsed() >= self.tick);
+        if ticking {
             self.last_tick = std::time::Instant::now();
             self.tick(now, now.saturating_sub(self.since));
             self.since = now;
-            self.ticks.fetch_add(1, Ordering::Relaxed);
         }
         self.admit(clock.mono());
+        // (the controller's tick after admission: a volume below its limit with queued work is
+        // then held back by something else, not waiting for a free slot of its own)
+        if ticking {
+            self.adapt(now);
+            self.ticks.fetch_add(1, Ordering::Relaxed);
+        }
         self.reap();
     }
 
@@ -618,15 +624,14 @@ impl Sched {
 
     /// The cap now (§5.7): the I/O cap, at least 2 while some volume is held to one fewer (R4a).
     fn cap(&self, total: usize) -> usize {
-        if self.vols.iter().any(|v| cut(v, total)) { self.io_cap.max(2) } else { self.io_cap }
+        if self.vols.iter().any(|v| limits::cut(v.active, total)) { self.io_cap.max(2) } else { self.io_cap }
     }
 
     /// Volume `v`'s limit under `cap`: the controller's, held to one fewer than the cap while
-    /// some job with no outcome doesn't need it (R4a).
+    /// some job with no outcome doesn't need it (R4a; [`limits::under_cap`]).
     fn limit(&self, v: usize, cap: usize, total: usize) -> usize {
         let Some(pv) = self.vols.get(v) else { return cap };
-        let own = self.ctl.limit(&pv.key).min(cap);
-        if cut(pv, total) { own.min(cap.saturating_sub(1).max(1)) } else { own }
+        limits::under_cap(self.ctl.limit(&pv.key), cap, limits::cut(pv.active, total))
     }
 
     /// Whether volume `v` can take one more running job now (not waiting on its recovery job,
@@ -1200,7 +1205,6 @@ impl Sched {
                 }
             }
         }
-        self.adapt(now);
     }
 
     /// The controller's tick (§5.7): every volume's demand and counters; what it learned is
@@ -1213,7 +1217,7 @@ impl Sched {
         let t = secs(now);
         let total = self.total();
         // (PR 1's cap is at least 2 while some volume is held to one fewer, R4a)
-        let some_cut = self.vols.iter().any(|pv| cut(pv, total));
+        let some_cut = self.vols.iter().any(|pv| limits::cut(pv.active, total));
         for v in 0..self.vols.len() {
             let Some(pv) = self.vols.get(v) else { continue };
             let key = pv.key.clone();
@@ -1224,7 +1228,7 @@ impl Sched {
                 // least 2 for a volume not held to one fewer while another is, as PR 1's cap, so a
                 // hung card's copy never holds the only slot of the SSD the other card copies into)
                 let workers = self.calls.values().filter(|c| c.vols.get(v).is_some_and(|cv| cv.active > 0)).map(|c| c.workers).max().unwrap_or(1);
-                let hint = if some_cut && !cut(pv, total) { workers.max(2) } else { workers };
+                let hint = if some_cut && !limits::cut(pv.active, total) { workers.max(2) } else { workers };
                 self.ctl.offer_start(t, &key, hint);
             }
         }
@@ -1235,6 +1239,7 @@ impl Sched {
         let total = self.total();
         let cap = self.cap(total);
         let measured_total = self.measured_total as f64;
+        let demands = self.demands(cap, total, now);
         for v in 0..self.vols.len() {
             let Some(pv) = self.vols.get(v) else { continue };
             let key = pv.key.clone();
@@ -1242,7 +1247,7 @@ impl Sched {
             if self.ctl.phase(&key).is_none() {
                 continue;
             }
-            let demand = self.demand(v, cap, total, now);
+            let demand = demands.get(v).copied().unwrap_or(Demand::Limited);
             let counters = pv.meter.counters();
             let was_busy = pv.was_busy;
             self.ctl.tick(t, &key, demand, counters, measured_total);
@@ -1275,23 +1280,50 @@ impl Sched {
         self.shared.set_learned(learned);
     }
 
-    /// Where volume `v` stands against its limit (§5.7 "Window"): demand-limited while blocked
-    /// or recovering, or with nothing it is measured on.
-    fn demand(&self, v: usize, cap: usize, total: usize, now: u64) -> Demand {
-        let Some(pv) = self.vols.get(v) else { return Demand::Limited };
-        if pv.measured == 0 || pv.recovery.is_some() || self.shared.blocked(&pv.key, now) {
-            return Demand::Limited;
+    /// Where every volume stands against its limit, after admission (§5.7 "Window";
+    /// [`limits::demand`]): demand-limited while blocked or recovering, or with nothing it is
+    /// measured on. Below its limit a volume is at it only while a queued job that needs it waits
+    /// for the I/O cap alone: a queue's front (what admission starts next) that isn't a copy, or a
+    /// copy whose other volume has a free slot. A copy waiting for a slot on its other volume (a
+    /// destination fed by a card that is full) leaves this one demand-limited, not at its limit.
+    fn demands(&self, cap: usize, total: usize, now: u64) -> Vec<Demand> {
+        let limits: Vec<usize> = (0..self.vols.len()).map(|v| self.limit(v, cap, total)).collect();
+        let stopped: Vec<bool> = self.vols.iter().map(|pv| pv.recovery.is_some() || self.shared.blocked(&pv.key, now)).collect();
+        let room = |v: usize| {
+            !stopped.get(v).copied().unwrap_or(true) && self.vols.get(v).zip(limits.get(v)).is_some_and(|(pv, &limit)| pv.running.len() < limit)
+        };
+        let mut waiting = vec![false; self.vols.len()];
+        let mut set = |v: usize| {
+            if let Some(w) = waiting.get_mut(v) {
+                *w = true;
+            }
+        };
+        for call in self.calls.values().filter(|c| !c.cancelling) {
+            for (u, cv) in call.vols.iter().enumerate() {
+                let Some(i) = cv.queue.front() else { continue };
+                match call.slots.get(i).and_then(|s| s.dest) {
+                    None => set(u),
+                    Some(d) => {
+                        if room(d) {
+                            set(u);
+                        }
+                        if room(u) {
+                            set(d);
+                        }
+                    }
+                }
+            }
         }
-        let limit = self.limit(v, cap, total);
-        let running = pv.running.len();
-        let queued = pv.active.saturating_sub(running);
-        if running > limit {
-            Demand::Draining
-        } else if queued > 0 || running == limit {
-            Demand::AtLimit
-        } else {
-            Demand::Limited
-        }
+        self.vols
+            .iter()
+            .enumerate()
+            .map(|(v, pv)| {
+                let (Some(&limit), Some(&waits), Some(&stop)) = (limits.get(v), waiting.get(v), stopped.get(v)) else {
+                    return Demand::Limited;
+                };
+                if pv.measured == 0 || stop { Demand::Limited } else { limits::demand(pv.running.len(), limit, waits) }
+            })
+            .collect()
     }
 
     /// A controller line: to stderr under `<PREFIX>_PROFILE`, else the debug log.
@@ -1407,10 +1439,4 @@ impl Seen {
             silent.saturating_add(dt)
         }
     }
-}
-
-/// Whether volume `v` is held to one fewer than the cap (R4a): it has work and some job with no
-/// outcome yet doesn't need it (a job on another volume, or a copy between two others).
-fn cut(v: &Vol, total: usize) -> bool {
-    v.active > 0 && total > v.active
 }

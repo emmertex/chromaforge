@@ -12,12 +12,11 @@ use std::collections::VecDeque;
 
 use sha2::{Digest, Sha512};
 
-use super::limits::{Controller, Counters, Demand};
+use super::limits::{Controller, Counters, Demand, IO_CAP, cut, demand, under_cap};
 
 pub(crate) const DT: f64 = 0.05;
 const CORES: f64 = 16.0;
 const HASH_MBPS: f64 = 600.0;
-pub(crate) const IO_CAP: usize = 32;
 
 // ------------------------------------------------------------------ Python's random.Random
 
@@ -288,17 +287,17 @@ pub(crate) fn simulate(sc: &Scenario, policy: &mut dyn Policy, t_max: f64, noise
         if pending.is_empty() && (0..nv).all(|v| queue[v].is_empty() && running[v].is_empty()) {
             break;
         }
-        // admission, round-robin
+        // admission, round-robin, under the product's limit (the I/O cap, R4a's cut: the
+        // simulator's "another volume is busy", as its jobs each need one volume)
         let mut n_run: usize = running.iter().map(Vec::len).sum();
-        let busy = (0..nv).filter(|&v| !queue[v].is_empty() || !running[v].is_empty()).count();
+        let active: Vec<usize> = (0..nv).map(|v| queue[v].len() + running[v].len()).collect();
+        let total_jobs: usize = active.iter().sum();
+        let lim_of = |policy: &dyn Policy, v: usize| under_cap(policy.limit(v), IO_CAP, cut(active[v], total_jobs));
         let mut progressed = true;
         while progressed && n_run < IO_CAP {
             progressed = false;
             for v in rr.clone() {
-                let mut lim = policy.limit(v);
-                if busy > 1 {
-                    lim = lim.min(IO_CAP.saturating_sub(1).max(1));
-                }
+                let lim = lim_of(&*policy, v);
                 if !queue[v].is_empty() && running[v].len() < lim && n_run < IO_CAP {
                     if let Some((size, lat)) = queue[v].pop_front() {
                         running[v].push([size, lat]);
@@ -310,19 +309,9 @@ pub(crate) fn simulate(sc: &Scenario, policy: &mut dyn Policy, t_max: f64, noise
                 }
             }
         }
-        // a window counts only while the volume runs at its limit
-        let demand: Vec<Demand> = (0..nv)
-            .map(|v| {
-                let lim = policy.limit(v);
-                if running[v].len() > lim {
-                    Demand::Draining
-                } else if !queue[v].is_empty() || running[v].len() == lim {
-                    Demand::AtLimit
-                } else {
-                    Demand::Limited
-                }
-            })
-            .collect();
+        // a window counts only while the volume runs at its limit (the product's rule; a queued
+        // job here waits for the I/O cap alone)
+        let demand: Vec<Demand> = (0..nv).map(|v| demand(running[v].len(), lim_of(&*policy, v), !queue[v].is_empty())).collect();
         for (d, dev) in sc.devices.iter().enumerate() {
             if dev.noise != 0.0 && t >= noise_next[d] - 1e-9 {
                 noise_f[d] = 1.0 + noise_rng[d].uniform(-dev.noise, dev.noise);

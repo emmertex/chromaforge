@@ -29,7 +29,8 @@
 //!   relearns).
 //!
 //! Pure: the scheduler (or the simulator in the tests) calls [`Controller::tick`] for each volume
-//! with the time, whether it is at its limit, and its cumulative counters. Times are seconds.
+//! with the time, where it stands against its limit ([`demand`], after admission), and its
+//! cumulative counters. Times are seconds. Both admit under the same limit ([`under_cap`], [`cut`]).
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::collections::HashMap;
@@ -71,13 +72,42 @@ const FIRST_LAST_WINDOW: f64 = 10.0;
 /// Where a volume stands against its limit at a tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Demand {
-    /// At its limit: jobs queued, or exactly its limit running. Windows run.
+    /// At its limit: exactly its limit running, or fewer with a job that waits only for the I/O
+    /// cap. Windows run.
     AtLimit,
     /// More running than its limit (it was lowered): windows wait until it drains.
     Draining,
-    /// Demand-limited: nothing queued and fewer running than its limit (or nothing it can be
-    /// measured on). A probe ends.
+    /// Demand-limited: fewer running than its limit and nothing waiting that only the cap holds
+    /// back (a copy waiting for its other volume doesn't count), or nothing it can be measured
+    /// on. A probe ends.
     Limited,
+}
+
+/// Where a volume stands after admission (§5.7 "Window"): `running` jobs against its `limit`
+/// (as [`under_cap`] gives it); `waiting`: a queued job needing it is held back only by the I/O
+/// cap (admission has run, so the volume's own limit isn't what holds it), not by the other
+/// volume of a copy. The scheduler and the simulator both decide with this.
+pub(crate) fn demand(running: usize, limit: usize, waiting: bool) -> Demand {
+    if running > limit {
+        Demand::Draining
+    } else if running == limit || waiting {
+        Demand::AtLimit
+    } else {
+        Demand::Limited
+    }
+}
+
+/// Whether a volume with `active` jobs is held to one fewer than the cap (R4a): it has work and
+/// some of the `total` jobs with no outcome doesn't need it.
+pub(crate) fn cut(active: usize, total: usize) -> bool {
+    active > 0 && total > active
+}
+
+/// A volume's limit under `cap`: the controller's `own`, at most the cap, and one fewer (at least
+/// 1) while it is [`cut`] (R4a). The scheduler and the simulator both admit with this.
+pub(crate) fn under_cap(own: usize, cap: usize, cut: bool) -> usize {
+    let own = own.min(cap);
+    if cut { own.min(cap.saturating_sub(1).max(1)) } else { own }
 }
 
 /// A volume's cumulative counters (only ever growing).
