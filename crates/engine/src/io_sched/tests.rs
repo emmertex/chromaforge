@@ -14,7 +14,8 @@ use std::time::Duration;
 use lcc_catalog::folders::Mounts;
 
 use super::clock::{Clock, FakeClock, SEC};
-use super::run::{IoJob, JobOutcome, Report, run_jobs};
+use super::pool::run_jobs;
+use super::run::{IoJob, JobOutcome, Report};
 use super::shared::{CANCEL_SILENCE, COMPUTING_FACTOR, IDLE_AFTER, RECOVERY_EVERY, RECOVERY_STUCK, STALL_GRACE, STALL_WITH_BYTES, WAKE_JUMP};
 use super::{IoContext, mounts::MountReader};
 
@@ -57,14 +58,14 @@ impl H {
     pub(super) fn start(&self, jobs: Vec<IoJob<R>>, workers: usize) -> Call {
         let (cancel, done) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
         let (ctx, c, d) = (self.ctx.clone(), cancel.clone(), done.clone());
-        let handle = std::thread::spawn(move || run_jobs(&ctx, jobs, workers, Result::is_ok, &c, &d));
+        let handle = std::thread::spawn(move || run_jobs(&ctx, jobs, workers, Result::is_ok, &c, &d).unwrap());
         Call { handle, cancel, done }
     }
 
     /// Run `jobs` here and return the report.
     pub(super) fn run(&self, jobs: Vec<IoJob<R>>, workers: usize) -> (Report<R>, usize) {
         let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
-        let r = run_jobs(&self.ctx, jobs, workers, Result::is_ok, &cancel, &done);
+        let r = run_jobs(&self.ctx, jobs, workers, Result::is_ok, &cancel, &done).unwrap();
         (r, done.load(Ordering::SeqCst))
     }
 }
@@ -760,7 +761,7 @@ fn a_slow_volume_moving_bytes_never_stalls() {
 fn cancel_before_the_start() {
     let h = H::new();
     let (cancel, done) = (AtomicBool::new(true), AtomicUsize::new(0));
-    let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done);
+    let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done).unwrap();
     assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::NotStarted)));
     assert_eq!(done.load(Ordering::SeqCst), 0);
     let ran = Arc::new(AtomicBool::new(false));
@@ -769,7 +770,7 @@ fn cancel_before_the_start() {
         ran2.store(true, Ordering::SeqCst);
         Ok(1)
     });
-    let r = run_jobs(&h.ctx, vec![one], 4, Result::is_ok, &cancel, &done);
+    let r = run_jobs(&h.ctx, vec![one], 4, Result::is_ok, &cancel, &done).unwrap();
     assert!(matches!(r.outcomes.as_slice(), [JobOutcome::NotStarted]));
     assert!(!ran.load(Ordering::SeqCst));
     assert_eq!(done.load(Ordering::SeqCst), 0);

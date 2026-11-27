@@ -991,7 +991,7 @@ pub(crate) fn probe_scheduled(
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
-    use crate::io_sched::{IoJob, JobOutcome};
+    use crate::io_sched::IoJob;
     let jobs = paths
         .iter()
         .map(|p| {
@@ -999,22 +999,30 @@ pub(crate) fn probe_scheduled(
             IoJob::read(p.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>)
         })
         .collect();
-    let report = crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done);
+    let report = match crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done) {
+        Ok(r) => r,
+        // (several files from inside a file job: refused, never a wait for itself)
+        Err(e) => return paths.iter().map(|p| Err(ProbeError::from(format!("{p}: {e}")))).collect(),
+    };
     let unreached = if workers > 1 { "not probed" } else { "cancelled" };
-    report
-        .outcomes
-        .into_iter()
-        .zip(paths)
-        .map(|(o, p)| match o {
-            JobOutcome::Done(r) => r.map_err(ProbeError::from),
-            JobOutcome::NotStarted => Err(ProbeError::from(unreached.to_string())),
-            JobOutcome::Cancelled => Err(ProbeError::from(String::from("cancelled"))),
-            JobOutcome::VolumeNotResponding { volume, .. } => {
-                Err(ProbeError { message: format!("{p}: volume not responding ({volume})"), not_responding: Some(volume.to_string()) })
-            }
-            JobOutcome::Panicked(m) => Err(ProbeError::from(format!("{p}: {m}"))),
-        })
-        .collect()
+    report.outcomes.into_iter().zip(paths).map(|(o, p)| probe_outcome(o, p, unreached)).collect()
+}
+
+/// A probe's outcome as the string today's loops gave (`unreached`: a file cancel left unreached),
+/// a volume that stopped responding also typed.
+#[cfg(not(target_arch = "wasm32"))]
+fn probe_outcome(o: crate::io_sched::JobOutcome<Result<ProbeInfo, String>>, p: &str, unreached: &str) -> Result<ProbeInfo, ProbeError> {
+    use crate::io_sched::JobOutcome;
+    match o {
+        JobOutcome::Done(r) => r.map_err(ProbeError::from),
+        JobOutcome::NotStarted => Err(ProbeError::from(unreached.to_string())),
+        JobOutcome::Cancelled => Err(ProbeError::from(String::from("cancelled"))),
+        JobOutcome::VolumeNotResponding { volume, .. } => {
+            Err(ProbeError { message: format!("{p}: volume not responding ({volume})"), not_responding: Some(volume.to_string()) })
+        }
+        JobOutcome::Panicked(m) => Err(ProbeError::from(format!("{p}: {m}"))),
+        JobOutcome::SchedulerStopped => Err(ProbeError::from(format!("{p}: not read: the I/O scheduler stopped"))),
+    }
 }
 
 /// Copy `src` into `dir` as `name` (default: its own name), made unique with -1, -2…; returns the
@@ -2039,7 +2047,7 @@ fn transfers_scheduled(
     cancel: &std::sync::atomic::AtomicBool,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
-    use crate::io_sched::{IoJob, JobOutcome};
+    use crate::io_sched::IoJob;
     // (the tests' injected faults hold for the workers too)
     #[cfg(test)]
     let fault = crate::import_move::injected_fault();
@@ -2061,39 +2069,51 @@ fn transfers_scheduled(
             IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> }
         })
         .collect();
-    let report = crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done);
-    report
-        .outcomes
-        .into_iter()
-        .zip(about)
-        .map(|(o, (path, dir, moving))| {
-            let what = if moving { "move" } else { "copy" };
-            let folder = dir.to_string_lossy().into_owned();
-            let interrupted = |path: String, why, volume: Option<&lcc_catalog::folders::VolumeKey>, msg| {
-                let folder = (why == Interruption::OutcomeUnknown).then(|| folder.clone());
-                PreparedItem::Interrupted(Box::new(Interrupted { path, why, volume: volume.map(ToString::to_string), folder }), msg)
-            };
-            match o {
-                JobOutcome::Done(item) => Some(item),
-                JobOutcome::NotStarted => None,
-                JobOutcome::Cancelled => Some(interrupted(
-                    path,
-                    Interruption::OutcomeUnknown,
-                    None,
-                    format!("outcome unknown: the {what} into {} was left behind when the import was cancelled (it showed no progress); a file may still appear there, outside the library; the original is kept", dir.display()),
-                )),
-                JobOutcome::VolumeNotResponding { volume, abandoned: true } => {
-                    let msg = format!("outcome unknown: volume {volume} stopped responding during the {what} into {}; a file may still appear there, outside the library; the original is kept", dir.display());
-                    Some(interrupted(path, Interruption::OutcomeUnknown, Some(&volume), msg))
-                }
-                JobOutcome::VolumeNotResponding { volume, abandoned: false } => {
-                    let msg = format!("volume not responding ({volume}): not {}; the original is kept", if moving { "moved" } else { "copied" });
-                    Some(interrupted(path, Interruption::VolumeNotResponding, Some(&volume), msg))
-                }
-                JobOutcome::Panicked(m) => Some(PreparedItem::Failed(path, m)),
-            }
-        })
-        .collect()
+    let report = match crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done) {
+        Ok(r) => r,
+        // (several copies from inside a file job: refused, never a wait for itself)
+        Err(e) => return about.into_iter().map(|(path, _, _)| Some(PreparedItem::Failed(path, format!("{e}; the original is kept")))).collect(),
+    };
+    report.outcomes.into_iter().zip(about).map(|(o, (path, dir, moving))| transfer_outcome(o, path, &dir, moving)).collect()
+}
+
+/// A transfer's outcome as an item (`None`: not started), in the words the import report uses; a
+/// volume that stopped responding and a copy left unfinished are also typed ([`Interrupted`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn transfer_outcome(o: crate::io_sched::JobOutcome<PreparedItem>, path: String, dir: &Path, moving: bool) -> Option<PreparedItem> {
+    use crate::io_sched::JobOutcome;
+    let what = if moving { "move" } else { "copy" };
+    let not_done = if moving { "moved" } else { "copied" };
+    let interrupted = |path: String, why, volume: Option<&lcc_catalog::folders::VolumeKey>, msg| {
+        let folder = (why == Interruption::OutcomeUnknown).then(|| dir.to_string_lossy().into_owned());
+        PreparedItem::Interrupted(Box::new(Interrupted { path, why, volume: volume.map(ToString::to_string), folder }), msg)
+    };
+    match o {
+        JobOutcome::Done(item) => Some(item),
+        JobOutcome::NotStarted => None,
+        JobOutcome::Cancelled => Some(interrupted(
+            path,
+            Interruption::OutcomeUnknown,
+            None,
+            format!(
+                "outcome unknown: the {what} into {} was left behind when the import was cancelled (it showed no progress); a file may still appear there, outside the library; the original is kept",
+                dir.display()
+            ),
+        )),
+        JobOutcome::VolumeNotResponding { volume, abandoned: true } => {
+            let msg = format!(
+                "outcome unknown: volume {volume} stopped responding during the {what} into {}; a file may still appear there, outside the library; the original is kept",
+                dir.display()
+            );
+            Some(interrupted(path, Interruption::OutcomeUnknown, Some(&volume), msg))
+        }
+        JobOutcome::VolumeNotResponding { volume, abandoned: false } => {
+            let msg = format!("volume not responding ({volume}): not {not_done}; the original is kept");
+            Some(interrupted(path, Interruption::VolumeNotResponding, Some(&volume), msg))
+        }
+        JobOutcome::Panicked(m) => Some(PreparedItem::Failed(path, m)),
+        JobOutcome::SchedulerStopped => Some(PreparedItem::Failed(path, format!("not {not_done}: the I/O scheduler stopped; the original is kept"))),
+    }
 }
 
 /// A transfer whose result shows its volumes work (for the scheduler's recovery rule).
