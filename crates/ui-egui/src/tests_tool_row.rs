@@ -121,3 +121,69 @@ fn presets_and_the_fold_button_bring_the_tools_back() {
     run(&mut h, "panel.toggle", json!({"edge": "right", "show": true}));
     assert!(rect(&h, "icon:crop").is_some(), "showing the edge unfolds it");
 }
+
+/// #1251: the row's buttons are part of the panel customisation: Browse Profiles hides as a tool does, and the
+/// row follows the saved order, Edit always first.
+#[test]
+fn the_rows_buttons_hide_and_move_as_the_tools_do() {
+    let mut h = develop();
+    let run = |h: &mut Headless, command: &str, params: serde_json::Value| {
+        let r = h.request("engine.execute", json!({"command": command, "params": params}), T);
+        assert_eq!(r["ok"], true, "{command}: {r}");
+        h.settle(SETTLE);
+    };
+    assert!(rect(&h, "icon:profileBrowser").is_some(), "Browse Profiles shows by default");
+    run(&mut h, "panel.show", json!({"panel": "profiles", "visible": false}));
+    assert!(rect(&h, "icon:profileBrowser").is_none(), "hidden from the row");
+    assert!(rect(&h, "icon:crop").is_some() && rect(&h, "icon:toolsEdit").is_some(), "the rest stay");
+    run(&mut h, "panel.show", json!({"panel": "profiles", "visible": true}));
+    assert!(rect(&h, "icon:profileBrowser").is_some(), "and back");
+    // Browse Profiles first, Masking before Crop: Edit keeps its place at the start
+    run(&mut h, "panel.order", json!({"order": ["profiles", "masking", "crop", "remove", "redEye"]}));
+    let x = |h: &Headless, id: &str| rect(h, id).unwrap_or_else(|| panic!("{id}")).center().x;
+    assert!(x(&h, "icon:toolsEdit") < x(&h, "icon:profileBrowser"), "Edit stays first");
+    assert!(x(&h, "icon:profileBrowser") < x(&h, "icon:masking"), "Browse Profiles moved left");
+    assert!(x(&h, "icon:masking") < x(&h, "icon:crop"), "Masking before Crop");
+    // the row's Browse Profiles still opens the browser from its new place
+    click(&mut h, "icon:profileBrowser");
+    assert_eq!(h.app.ui.right, RightPanel::Profiles);
+}
+
+/// #1251: with Settings ▸ Develop ▸ Detach the mask list, the masks sit in a window of their own over the photo, and
+/// the selected mask's Refine Edges and Feather stay in the panel.
+#[test]
+fn a_detached_mask_list_floats_and_leaves_feather_in_the_panel() {
+    let mut h = develop();
+    let run = |h: &mut Headless, command: &str, params: serde_json::Value| -> serde_json::Value {
+        let r = h.request("engine.execute", json!({"command": command, "params": params}), T);
+        assert_eq!(r["ok"], true, "{command}: {r}");
+        h.settle(SETTLE);
+        r["result"].clone()
+    };
+    run(&mut h, "panel.masking", json!({}));
+    run(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2}));
+    let id = h.app.session.active_mask.expect("the new mask is selected");
+    let row = format!("mask:{id}");
+    assert!(rect(&h, "window:maskList").is_none(), "docked by default");
+    let panel_row = rect(&h, &row).expect("the mask's row in the panel");
+    assert!(rect(&h, "slider:maskFeather").is_some() && rect(&h, "slider:refine").is_some(), "Feather and Refine Edges");
+    assert_eq!(run(&mut h, "view.masksDetached", json!({"on": true}))["on"], true);
+    let window = rect(&h, "window:maskList").expect("the list's own window");
+    let row_now = rect(&h, &row).expect("the mask's row");
+    assert!(window.contains(row_now.center()), "the row is in the window");
+    assert!(row_now.center().x < panel_row.left(), "over the photo, left of the panel");
+    let feather = rect(&h, "slider:maskFeather").expect("Feather stays");
+    assert!(!window.contains(feather.center()), "in the panel, not the window");
+    assert!(rect(&h, "slider:refine").is_some(), "Refine Edges stays");
+    // a click on the row in the window still selects and edits the mask
+    click(&mut h, &row);
+    assert_eq!(h.app.session.active_mask, Some(id));
+    // docking puts it back in the panel
+    assert_eq!(run(&mut h, "view.masksDetached", json!({}))["on"], false);
+    assert!(rect(&h, "window:maskList").is_none());
+    assert!(rect(&h, &row).is_some_and(|r| (r.center().x - panel_row.center().x).abs() < 1.0), "back in the panel");
+    // a wrong argument is an error, not a switch
+    let r = h.request("engine.execute", json!({"command": "view.masksDetached", "params": {"on": "yes"}}), T);
+    assert_ne!(r["ok"], true, "{r}");
+    assert!(!h.app.ui.settings.masks_detached);
+}

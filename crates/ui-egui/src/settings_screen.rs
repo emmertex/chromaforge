@@ -48,89 +48,34 @@ const WINDOW_PAD: f32 = 16.0;
 /// The rows' widest, so a large window doesn't stretch them.
 const CONTENT_MAX: f32 = 820.0;
 
-/// A section: its key, name, icon, the tab whose rows it shows, and words a search finds it by.
+/// A section: its key, name, icon and the tab whose rows it shows.
 /// The keys and labels are [`crate::panels::settings::TABS`]'s, in its order.
 struct Section {
     key: &'static str,
     label: &'static str,
     icon: Icon,
     tabs: &'static [&'static str],
-    words: &'static str,
 }
 
 const SECTIONS: &[Section] = &[
-    Section {
-        key: "general",
-        label: "General",
-        icon: Icon::Gear,
-        tabs: &["general"],
-        words: "language catalog library location open new startup culling auto advance confirm external editing photocraft editor",
-    },
-    Section {
-        key: "import",
-        label: "Import",
-        icon: Icon::Plus,
-        tabs: &["import"],
-        words: "raw defaults non-raw metadata preset xmp sidecars names cameras cards auto import watched folder copy album lens profiles database",
-    },
-    Section { key: "folders", label: "Folders", icon: Icon::Folder, tabs: &["folders"], words: "folders watch polling new photos forget unchanged" },
-    Section {
-        key: "performance",
-        label: "Performance",
-        icon: Icon::Activity,
-        tabs: &["performance"],
-        words: "performance rendering preview size memory cache thumbnail clear smart previews gpu",
-    },
-    Section { key: "display", label: "Display", icon: Icon::Monitor, tabs: &["display"], words: "monitor profile icc srgb screen" },
-    Section {
-        key: "interface",
-        label: "Interface",
-        icon: Icon::Palette,
-        tabs: &["interface"],
-        words: "layout classic modern appearance mode dark light font size sliders slider text pill filmstrip grid badges ratings flags wheel scroll info overlay loupe",
-    },
-    Section {
-        key: "notifications",
-        label: "Notifications",
-        icon: Icon::Chat,
-        tabs: &["notifications"],
-        words: "notifications messages overlay pill flash changes information confirmation warnings persistent test duration opacity size position background",
-    },
-    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
-    Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"], words: "faces people recognition" },
-    Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"], words: "profiles hide camera body serial" },
-    Section {
-        key: "develop",
-        label: "Develop",
-        icon: Icon::Sliders,
-        tabs: &["develop"],
-        words: "develop tool profiles tools sliders groups custom hide panel witchcraft eboda",
-    },
-    Section { key: "denoise", label: "AI Denoise", icon: Icon::Sparkle, tabs: &["denoise"], words: "ai denoise" },
-    Section {
-        key: "ai",
-        label: "AI Models",
-        icon: Icon::Brush,
-        tabs: &["ai"],
-        words: "ai models download sam sam3 sam2 eomt birefnet mediapipe denoise faces recognition masks object describe subject sky landscape people folder location licence",
-    },
-    Section {
-        key: "genfill",
-        label: "Generative Fill",
-        icon: Icon::Object,
-        tabs: &["genfill"],
-        words: "generative fill openai service api key consent",
-    },
-    Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"], words: "keyboard keymap keys" },
-    Section {
-        key: "controls",
-        label: "Controls",
-        icon: Icon::Sliders,
-        tabs: &["controls"],
-        words: "control surfaces hardware console dial dials knob keys keypad dialpad actions ring logi logitech mx creative loupedeck tactilebridge plugin pairing",
-    },
-    Section { key: "connections", label: "Connections", icon: Icon::Share, tabs: &["connections"], words: "connections keychain" },
-    Section { key: "sync", label: "Sync", icon: Icon::Cloud, tabs: &["sync"], words: "devices peers pair pairing catalog collections share network" },
+    Section { key: "general", label: "General", icon: Icon::Gear, tabs: &["general"] },
+    Section { key: "import", label: "Import", icon: Icon::Plus, tabs: &["import"] },
+    Section { key: "folders", label: "Folders", icon: Icon::Folder, tabs: &["folders"] },
+    Section { key: "performance", label: "Performance", icon: Icon::Activity, tabs: &["performance"] },
+    Section { key: "display", label: "Display", icon: Icon::Monitor, tabs: &["display"] },
+    Section { key: "interface", label: "Interface", icon: Icon::Palette, tabs: &["interface"] },
+    Section { key: "notifications", label: "Notifications", icon: Icon::Chat, tabs: &["notifications"] },
+    Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"] },
+    Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"] },
+    Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"] },
+    Section { key: "develop", label: "Develop", icon: Icon::Sliders, tabs: &["develop"] },
+    Section { key: "denoise", label: "AI Denoise", icon: Icon::Sparkle, tabs: &["denoise"] },
+    Section { key: "ai", label: "AI Models", icon: Icon::Brush, tabs: &["ai"] },
+    Section { key: "genfill", label: "Generative Fill", icon: Icon::Object, tabs: &["genfill"] },
+    Section { key: "shortcuts", label: "Shortcuts", icon: Icon::Help, tabs: &["shortcuts"] },
+    Section { key: "controls", label: "Controls", icon: Icon::Sliders, tabs: &["controls"] },
+    Section { key: "connections", label: "Connections", icon: Icon::Share, tabs: &["connections"] },
+    Section { key: "sync", label: "Sync", icon: Icon::Cloud, tabs: &["sync"] },
 ];
 
 /// How Settings is drawn ([`presentation`]).
@@ -196,8 +141,8 @@ pub struct SettingsScreen {
 }
 
 fn shown(app: &LccApp, s: &Section) -> bool {
-    // the browser has no sync and no control surfaces
-    if cfg!(target_arch = "wasm32") && matches!(s.key, "sync" | "controls") {
+    // the browser has no sync, no control surfaces and no connections (the pages the tab row hides too)
+    if cfg!(target_arch = "wasm32") && matches!(s.key, "sync" | "controls" | "connections") {
         return false;
     }
     // Slideshow is a Classic module: its settings are Classic's
@@ -548,7 +493,11 @@ fn rail_ui(app: &mut LccApp, ui: &mut egui::Ui, rail: Rect, open: &str, wide: bo
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rail.shrink2(inset)));
     egui::ScrollArea::vertical().id_salt("settings-rail").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
-        let query = app.modern_sheets.settings.search.trim().to_lowercase();
+        let words = crate::settings_search::words(&app.modern_sheets.settings.search);
+        if wide && !words.is_empty() {
+            let keys: Vec<&'static str> = SECTIONS.iter().filter(|s| shown(app, s)).map(|s| s.key).collect();
+            crate::settings_search::ensure(app, ui, open, &keys);
+        }
         if wide {
             crate::text_field::TextField::singleline("settingsSearch", &mut app.modern_sheets.settings.search)
                 .hint(crate::i18n::tr("Search settings"))
@@ -557,7 +506,8 @@ fn rail_ui(app: &mut LccApp, ui: &mut egui::Ui, rail: Rect, open: &str, wide: bo
             ui.add_space(8.0);
         }
         for s in SECTIONS.iter().filter(|s| shown(app, s)) {
-            let matches = query.is_empty() || crate::i18n::tr(s.label).to_lowercase().contains(&query) || s.words.contains(query.as_str());
+            // (a page not read yet stays listed until it has been)
+            let matches = words.is_empty() || crate::settings_search::matches(ui.ctx(), s.key, crate::i18n::tr(s.label), &words).unwrap_or(true);
             if wide && !matches {
                 continue;
             }

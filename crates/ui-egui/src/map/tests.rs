@@ -677,3 +677,241 @@ fn photos_dropped_on_a_saved_location_in_the_list_take_its_centre() {
     run(&mut h, "edit.undo", json!({}));
     assert!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.is_none(), "one undo step");
 }
+
+/// Scrolls the map's side panel until the widget is inside it (the Saved Locations section sits
+/// below Metadata, which grows with the selection).
+fn scroll_side_to(h: &mut Headless, id: &str) -> egui::Rect {
+    let side = widget(h, "map:side").expect("the side panel");
+    h.request("ui.move", json!({"x": side.center().x, "y": side.center().y}), T);
+    for _ in 0..30 {
+        if let Some(r) = widget(h, id).filter(|r| side.contains_rect(*r)) {
+            return r;
+        }
+        h.request("ui.scroll", json!({"dy": -300.0}), T);
+        h.settle(SETTLE);
+    }
+    panic!("{id} never scrolled into the side panel");
+}
+
+#[test]
+fn the_box_on_a_saved_location_row_shows_and_moves_the_selected_photos() {
+    let mut h = map_on_fake_tiles();
+    run(&mut h, "map.saveLocation", json!({"name": "Home", "lat": 40.653957, "lon": -4.689763, "radius": 25}));
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|i| i.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 40.653957, "lon": -4.689763}));
+    let gps = |h: &Headless, id: u64| h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).and_then(|p| p.meta.gps);
+    // one of two selected photos is inside: the engine says so, and the box moves the other one there
+    run(&mut h, "library.select", json!({"ids": ids}));
+    h.settle(SETTLE);
+    let l = run(&mut h, "map.locations", json!({}));
+    assert_eq!(l["locations"][0]["selected"], 1, "{l}");
+    scroll_side_to(&mut h, "map:locationHere:Home");
+    let r = h.request("ui.clickWidget", json!({"id": "map:locationHere:Home"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.selection.ids.len(), 2, "the click hit the box, not the filmstrip");
+    let g = gps(&h, ids[1]).expect("ticked: the selected photo is placed at the location");
+    assert!((g.0 - 40.653957).abs() < 1e-6 && (g.1 + 4.689763).abs() < 1e-6, "{g:?}");
+    assert_eq!(run(&mut h, "map.locations", json!({}))["locations"][0]["selected"], 2);
+    // the privacy of the location is untouched: Private lives in the Edit Location panel now
+    assert_eq!(run(&mut h, "map.locations", json!({}))["locations"][0]["private"], false);
+    // ticked already: a click changes nothing, and one undo takes back the move
+    scroll_side_to(&mut h, "map:locationHere:Home");
+    h.request("ui.clickWidget", json!({"id": "map:locationHere:Home"}), T);
+    h.settle(SETTLE);
+    run(&mut h, "edit.undo", json!({}));
+    assert!(gps(&h, ids[1]).is_none(), "one undo step");
+    assert!(gps(&h, ids[0]).is_some(), "the photo that was already there keeps its position");
+}
+
+/// Lightroom Classic's GPS badge: a grid cell of a photo with a position shows a map marker, and a
+/// click on it opens the Map on that photo.
+#[test]
+fn a_grid_cell_badge_marks_photos_with_a_position_and_opens_the_map_on_them() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
+    run(&mut h, "map.view", json!({"lat": 10.0, "lon": 100.0, "zoom": 9}));
+    run(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    run(&mut h, "module.library", json!({}));
+    let r = h.request("ui.set", json!({"view": "squareGrid"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let badge = format!("badge:gps:{}", ids[0]);
+    assert!(widget(&h, &badge).is_some(), "the photo with a position has the badge");
+    assert!(widget(&h, &format!("badge:gps:{}", ids[1])).is_none(), "the one without has none");
+    let r = h.request("ui.clickWidget", json!({"id": badge}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Map, "the badge opens the Map");
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(ids[0])], "on that photo");
+    let c = h.app.map.centre();
+    assert!((c.lat - 48.8566).abs() < 0.01 && (c.lon - 2.3522).abs() < 0.01, "centred on its pin: {c:?}");
+    // the badges setting hides it, as it hides the others
+    run(&mut h, "module.library", json!({}));
+    run(&mut h, "view.gridCellStyle", json!({"badges": false}));
+    h.settle(SETTLE);
+    assert!(widget(&h, &format!("badge:gps:{}", ids[0])).is_none());
+}
+
+/// Lightroom Classic's card over a hovered pin: the photo, its name, date and exposure, and for a
+/// pin of several photos "1 of N" with arrows. The card stays while the pointer moves onto it.
+#[test]
+fn a_pin_hover_card_steps_through_the_pins_photos_and_selects_one() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": ids}));
+    run(&mut h, "map.geotag", json!({"ids": ids, "lat": 48.85, "lon": 2.35}));
+    run(&mut h, "library.select", json!({"ids": []}));
+    h.settle(SETTLE);
+    let pin = widget(&h, &format!("map:pin:{}", ids[0])).expect("the pin is on screen");
+    h.events.push(egui::Event::PointerMoved(pin.center()));
+    h.step();
+    h.step();
+    assert!(widget(&h, "map:hover").is_some(), "hovering the pin opens the card");
+    let card = h.app.map.hover_card.clone().expect("the card's state");
+    assert_eq!((card.ids.len(), card.index), (3, 0));
+    // over to the card (across the gap) and its arrow: the card stays and shows the next photo
+    let next = widget(&h, "map:hover:next").expect("a pin of three photos has arrows");
+    let r = h.request("ui.clickWidget", json!({"id": "map:hover:next"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.map.hover_card.as_ref().map(|c| c.index), Some(1), "moving onto the card kept it; next: the second photo");
+    assert!(widget(&h, "map:hover").is_some_and(|c| c.contains(next.center())));
+    // back twice: round the start to the last photo
+    for _ in 0..2 {
+        h.request("ui.clickWidget", json!({"id": "map:hover:prev"}), T);
+        h.step();
+    }
+    assert_eq!(h.app.map.hover_card.as_ref().map(|c| c.index), Some(2));
+    // a click on the photo selects that one
+    h.request("ui.clickWidget", json!({"id": "map:hover:photo"}), T);
+    h.step();
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(card.ids[2])]);
+    // away from the pin and the card: it closes
+    let canvas = widget(&h, "map:canvas").expect("the canvas");
+    h.events.push(egui::Event::PointerMoved(canvas.left_bottom() + egui::vec2(40.0, -40.0)));
+    h.step();
+    h.step();
+    assert!(h.app.map.hover_card.is_none() && widget(&h, "map:hover").is_none(), "the card closes");
+    // a pin of one photo: no arrows
+    run(&mut h, "map.geotag", json!({"ids": [ids[2]], "lat": 48.80, "lon": 2.20}));
+    h.settle(SETTLE);
+    let one = widget(&h, &format!("map:pin:{}", ids[2])).expect("the single pin");
+    h.events.push(egui::Event::PointerMoved(one.center()));
+    h.step();
+    h.step();
+    assert!(widget(&h, "map:hover").is_some() && widget(&h, "map:hover:next").is_none());
+}
+
+/// Lightroom Classic: one click on a filmstrip thumbnail brings the map to that photo at the zoom
+/// it has, gliding when the pin is near and jumping when it is far; no position, no move.
+#[test]
+fn one_filmstrip_click_centres_the_map_on_the_photo_and_keeps_the_zoom() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0], ids[1]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.86, "lon": 2.37}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[1]], "lat": 40.42, "lon": -3.70}));
+    run(&mut h, "library.select", json!({"ids": []}));
+    // the filmstrip lists every photo (the Location Filter is off)
+    run(&mut h, "map.filter", json!({"filter": "all"}));
+    h.settle(SETTLE);
+    let zoom = h.app.map.prefs.zoom;
+    let near = |h: &Headless, lat: f64, lon: f64| {
+        let c = h.app.map.centre();
+        (c.lat - lat).abs() < 1e-4 && (c.lon - lon).abs() < 1e-4
+    };
+    // near: on its way after one frame, there once the glide is over
+    let r = h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[0])}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(h.app.map.glide.is_some(), "a pin a few hundred pixels away: the map glides");
+    assert!(!near(&h, 48.86, 2.37), "not there in one frame");
+    assert!(h.step_until(T, |h| h.app.map.glide.is_none()), "the glide ends");
+    h.settle(SETTLE);
+    assert!(near(&h, 48.86, 2.37), "centred on the photo: {:?}", h.app.map.centre());
+    assert_eq!(h.app.map.prefs.zoom, zoom, "the zoom stays");
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(ids[0])], "the click selects it too");
+    // far: there at once
+    h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[1])}), T);
+    h.step();
+    assert!(h.app.map.glide.is_none() && near(&h, 40.42, -3.70), "Madrid from Paris at zoom 12: a jump");
+    assert_eq!(h.app.map.prefs.zoom, zoom);
+    // no position: the map stays
+    h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[2])}), T);
+    h.settle(SETTLE);
+    assert!(near(&h, 40.42, -3.70));
+    // a drag, zoom or search during a glide ends it where it is
+    let mut m = crate::map::MapUi::default();
+    m.prefs.lat = 0.0;
+    m.prefs.lon = 0.0;
+    m.glide = Some(crate::map::Glide { from: (0.5, 0.5), to: (0.6, 0.5), start: 0.0, last: lcc_geo::LatLon::new(1.0, 1.0) });
+    assert!(!crate::map::glide_step(&mut m, 0.1) && m.glide.is_none(), "a map moved by something else stops gliding");
+}
+
+#[test]
+fn search_finds_saved_locations_whatever_the_accents_and_lists_several() {
+    let mut h = map_on_fake_tiles();
+    // two names with a decomposed Á (an A then U+0301), as some imported catalogs store them
+    for (name, lat, lon) in [
+        ("A\u{301}vila – Casa", 40.656, -4.700),
+        ("A\u{301}vila – Finca", 40.700, -4.750),
+        ("Madrid – Casa", 40.400, -3.700),
+        ("Casa", 41.000, -3.000),
+    ] {
+        run(&mut h, "map.saveLocation", json!({"name": name, "lat": lat, "lon": lon, "radius": 50}));
+    }
+    let lat = |h: &mut Headless| run(h, "map.view", json!({}))["lat"].as_f64().unwrap();
+    // one match centres the map on it
+    let r = run(&mut h, "map.search", json!({"query": "madrid"}));
+    assert_eq!((r["found"].as_str(), r["name"].as_str()), (Some("savedLocation"), Some("Madrid – Casa")), "{r}");
+    assert!((lat(&mut h) - 40.4).abs() < 1e-6);
+    // a name typed in full wins over the longer names that contain it
+    let r = run(&mut h, "map.search", json!({"query": "casa"}));
+    assert_eq!(r["name"], "Casa", "{r}");
+    // several matches, however the accent is typed: listed, the map stays put
+    for q in ["avila", "Ávila", "ÁVILA", "A\u{301}vila"] {
+        let r = run(&mut h, "map.search", json!({"query": q}));
+        assert_eq!(r["found"], "savedLocations", "{q:?}: {r}");
+        assert_eq!(r["names"].as_array().unwrap().len(), 2, "{q:?}: {r}");
+    }
+    assert!((lat(&mut h) - 41.0).abs() < 1e-6);
+    // the list shows under the search box; clicking one centres the map there and closes it
+    h.settle(SETTLE);
+    let (list, search) = (widget(&h, "map:searchMatches").expect("matches listed"), widget(&h, "map:search").unwrap());
+    assert!(list.top() >= search.bottom() && (list.right() - search.right()).abs() < 1.0, "{list:?} under {search:?}");
+    // every match shows in full: one line each, none scrolled out of view
+    let rows: Vec<egui::Rect> =
+        ["A\u{301}vila – Casa", "A\u{301}vila – Finca"].iter().map(|n| widget(&h, &format!("map:searchMatch:{n}")).unwrap()).collect();
+    assert!(rows.iter().all(|r| list.contains_rect(*r) && r.height() < 30.0), "{rows:?} in {list:?}");
+    assert!(h.click_as_user("map:searchMatch:A\u{301}vila – Finca"));
+    assert!((lat(&mut h) - 40.7).abs() < 1e-6);
+    assert!(widget(&h, "map:searchMatches").is_none());
+    assert!(h.app.map.location_matches.is_empty());
+    // Esc closes it without moving the map
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:searchMatches").is_some());
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    h.settle(SETTLE);
+    assert!(h.app.map.location_matches.is_empty());
+    assert!((lat(&mut h) - 40.7).abs() < 1e-6);
+    // without online lookups the list has no "Search online" row; with them it does, and it
+    // looks the typed text up instead (here at a local address that refuses, so nothing leaves)
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:searchOnline").is_none());
+    run(&mut h, "map.geocoder", json!({"endpoint": "http://127.0.0.1:9", "consent": true}));
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    let (list, online) = (widget(&h, "map:searchMatches").unwrap(), widget(&h, "map:searchOnline").expect("online row"));
+    assert!(list.contains_rect(online), "{online:?} in {list:?}");
+    assert!(h.click_as_user("map:searchOnline"));
+    assert!(h.app.map.location_matches.is_empty());
+    assert_eq!(run(&mut h, "map.search", json!({"query": "avila", "online": true}))["pending"], true);
+    // and only the list: the Map stays open (Esc is Back otherwise)
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Map);
+}

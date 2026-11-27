@@ -9,6 +9,10 @@ sidebar:
 - The **?** beside a group or a setting opens this manual at the part about it.
 - **App settings** (layout, theme, GPU, shortcuts…) are this computer's. **Catalog settings** (import defaults, XMP
   sidecars, thumbnail cache, slideshow playback) travel with the catalog.
+- **Search settings** (the field above the list of pages) finds a page by any text on it, in the app's language: a
+  heading, a setting's name or choices, or a note under it. Several words must all be on the page, in any order, whatever
+  their case. It also takes the whole id of a setting (`settings.gpu`); part of an id with no dot in it finds nothing. The list keeps only the pages that match; the
+  open page stays open, with the matches marked. Clear the field to list every page again.
 - Where the settings are kept, and what goes online: [Settings and privacy](../../platforms/settings-and-privacy/).
 
 ## General
@@ -213,6 +217,14 @@ messages at the bottom of the window. Each kind has a **Test** button that shows
   white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style…).
 - Profiles are saved with the app's settings. Scripts and agents: `view.toolProfile {id}` picks one (without an id it
   lists them); `view.toolProfileEdit {op, …}` changes your own. The Modern layout's cards show their sections whole.
+
+### Tool Row and Masking
+- **Tool Row**: show or hide each button under the histogram (Crop, Remove, Red Eye, Masking, Browse Profiles, and
+  the Compact layout's Reset). Edit always stays. Right-click the row to do the same, or to move a button left or
+  right (`panel.show`, `panel.order`).
+- **Detach the mask list** (off by default): the masks show in a window of their own over the photo, which you can
+  move and resize. Feather, Refine Edges and the mask's sliders stay in the panel. Right-click the window, or a mask,
+  to dock it again (`view.masksDetached {on}`).
 
 ## AI Denoise
 - The denoiser in use (the built-in one needs nothing installed), where it runs (**Automatic**, graphics card or
