@@ -571,14 +571,28 @@ fn cancel_hands_over_what_was_done_in_order() {
 }
 
 /// Nobody takes the batches any more (the import was dropped): what is not handed over is taken
-/// back — a Move's placed files are removed, its sources untouched.
+/// back — a Move's placed files are removed, its sources untouched. The first file's move is held
+/// (each file into its own folder, moves copying as across volumes) until the two batches after it
+/// are placed: then the first batch is taken, the second refused, and the third, placed already,
+/// must be taken back.
 #[test]
 fn a_refused_batch_takes_back_the_rest() {
     let root = temp_root("refused");
-    let files: Vec<String> = cards_of(&root, 12);
+    let files: Vec<String> = cards_of(&root, 12).into_iter().filter(|f| f.contains("/a/")).collect();
     let ctx = context(&root);
     let mut s = Session::new().with_fs();
-    let mut job = ImportJob::new(&mut s, options(&root, ImportMode::Move)).unwrap();
+    let mut opts = options(&root, ImportMode::Move);
+    opts.organize = Organize::Template("{name}".into());
+    let mut job = ImportJob::new(&mut s, opts).unwrap();
+    let dest = root.join("dest");
+    let first = dest.join("a000");
+    hold_copies_into(&first, Hold::Wait(Arc::new((Mutex::new(false), Condvar::new()))));
+    let (d, f) = (dest.clone(), first.clone());
+    let releaser = std::thread::spawn(move || {
+        wait_until(|| walk(&d).iter().filter(|p| !p.starts_with(&f)).count() >= 8, "batches 1 and 2 placed");
+        release_copies_into(&f);
+    });
+    crate::import_move::inject(crate::import_move::Fault::NoLink);
     let cancel = AtomicBool::new(false);
     let mut taken: Vec<Prepared> = Vec::new();
     job.prepare_streamed(&ctx, files.clone(), &cancel, small(), &mut |p| {
@@ -591,12 +605,15 @@ fn a_refused_batch_takes_back_the_rest() {
             false
         }
     });
+    crate::import_move::inject(crate::import_move::Fault::None);
+    releaser.join().unwrap();
     let kept: Vec<PathBuf> = taken
         .iter()
         .flat_map(|b| &b.items)
         .filter_map(|it| if let PreparedItem::Ready(r) = it { Some(PathBuf::from(&r.stored)) } else { None })
         .collect();
-    let mut on_disk = walk(&root.join("dest"));
+    assert_eq!(kept.len(), 4, "the first batch, taken");
+    let mut on_disk = walk(&dest);
     on_disk.sort();
     assert_eq!(on_disk, kept, "only the batch taken is placed");
     assert!(files.iter().all(|f| Path::new(f).exists()), "sources untouched");

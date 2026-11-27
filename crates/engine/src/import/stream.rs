@@ -396,31 +396,24 @@ impl<'a> Run<'a> {
         self.pos.insert(p, Pos { path: path.to_string(), vol, read: Read::Queued, holds: false });
     }
 
-    /// Read ahead what each volume has room for, in file order, the volumes taking turns, all in
-    /// one submit (so the pool sees every volume's work at once and shares its slots).
+    /// Read ahead what each volume has room for, in file order, every volume's reads in one submit
+    /// (so the pool sees every volume's work at once and shares its slots between them, rather than
+    /// giving the first volume submitted every slot).
     fn feed(&mut self, job: &ImportJob) {
         if self.stop.is_some() {
             return;
         }
         let mut picks = Vec::new();
-        loop {
-            let mut any = false;
-            for v in 0..self.vols.len() {
-                while let Some(vf) = self.vols.get_mut(v)
-                    && vf.held < self.look.per_volume
-                    && let Some(p) = vf.queue.pop_front()
-                {
-                    if let Some(e) = self.pos.get_mut(&p).filter(|e| matches!(e.read, Read::Queued)) {
-                        e.holds = true;
-                        vf.held = vf.held.saturating_add(1);
-                        picks.push(p);
-                        any = true;
-                        break;
-                    }
+        for v in 0..self.vols.len() {
+            while let Some(vf) = self.vols.get_mut(v)
+                && vf.held < self.look.per_volume
+                && let Some(p) = vf.queue.pop_front()
+            {
+                if let Some(e) = self.pos.get_mut(&p).filter(|e| matches!(e.read, Read::Queued)) {
+                    e.holds = true;
+                    vf.held = vf.held.saturating_add(1);
+                    picks.push(p);
                 }
-            }
-            if !any {
-                break;
             }
         }
         self.submit_probes(job, picks);
