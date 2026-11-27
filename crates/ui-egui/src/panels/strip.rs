@@ -11,13 +11,21 @@ use crate::state::RightPanel;
 /// panels, which open over its Classic right column. The other modules have no strip.
 pub fn strip_declared(module: ModuleId) -> &'static [PanelId] {
     match module {
-        ModuleId::Develop => &[PanelId::Edit, PanelId::Crop, PanelId::Remove, PanelId::RedEye, PanelId::Masking],
+        // (then Browse Profiles and Compact's Reset: entries of the row, shown, hidden and moved as the tools are)
+        ModuleId::Develop => &[PanelId::Edit, PanelId::Crop, PanelId::Remove, PanelId::RedEye, PanelId::Masking, PanelId::Profiles, PanelId::Reset],
         _ => &[],
     }
 }
 
 /// The active module's strip panels, in the user's order and without hidden ones.
 pub fn strip_panels(app: &LccApp) -> Vec<PanelId> {
+    let mut out = strip_panels_all(app);
+    out.retain(|p| !app.ui.hidden_panels.contains(p));
+    out
+}
+
+/// The active module's strip panels in the user's order, hidden ones too.
+pub fn strip_panels_all(app: &LccApp) -> Vec<PanelId> {
     let declared = strip_declared(app.ui.module);
     let mut out: Vec<PanelId> = app.ui.panel_order.iter().copied().filter(|p| declared.contains(p)).collect();
     for p in declared {
@@ -25,7 +33,6 @@ pub fn strip_panels(app: &LccApp) -> Vec<PanelId> {
             out.push(*p);
         }
     }
-    out.retain(|p| !app.ui.hidden_panels.contains(p));
     out
 }
 

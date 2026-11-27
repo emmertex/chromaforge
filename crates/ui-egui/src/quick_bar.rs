@@ -84,7 +84,7 @@ pub struct Entry {
 /// The built-in quick settings, left to right. Add a row here to add one.
 pub const ENTRIES: &[Entry] = &[
     Entry { id: "info", label: "Info Overlay", command: "view.infoOverlay", glyph: Glyph::Icon(Icon::Info), state: info_state },
-    Entry { id: "overlay", label: "On-Screen Overlay", command: "view.changeOverlay", glyph: Glyph::Icon(Icon::Chat), state: overlay_state },
+    Entry { id: "overlay", label: "Show changes", command: "view.changeOverlay", glyph: Glyph::Icon(Icon::Chat), state: overlay_state },
     Entry {
         id: "eyes",
         label: "Eye Focus Strip",
@@ -132,7 +132,7 @@ fn overlay_state(app: &LccApp) -> Shows {
 /// The commands this module adds.
 pub const COMMANDS: &[UiCommand] = &[
     ("view.quickSettings", "Quick Settings", None, ""),
-    ("view.changeOverlay", "On-Screen Overlay", None, "View>Loupe Info"),
+    ("view.changeOverlay", "Show changes", None, "View>Loupe Info"),
     ("view.dismissEyeFocus", "Hide Eye Focus Strip", None, ""),
     ("view.zoomToEye", "Zoom to Eye", None, ""),
 ];
