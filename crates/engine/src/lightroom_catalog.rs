@@ -1228,11 +1228,18 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     warnings.extend(metadata_warnings);
     done.fetch_add(1, Ordering::Relaxed);
     // the caption each image has in Lightroom's own IPTC table (the cached XMP may not restate it)
+    // (a row whose image is not a photo id goes to no photo, as in the other side tables: issue #4090)
+    let mut unkeyed_captions = 0usize;
     let mut captions: HashMap<i64, String> = optional_table("AgLibraryIPTC", &mut warnings)?
         .into_iter()
         .filter(|r| !text(r, "caption").trim().is_empty())
-        .map(|r| (number(&r, "image"), text(&r, "caption").to_string()))
+        .filter_map(|r| {
+            let image = image_of(&r);
+            unkeyed_captions += usize::from(image.is_none());
+            Some((image?, text(&r, "caption").to_string()))
+        })
         .collect();
+    warn_unkeyed("AgLibraryIPTC", unkeyed_captions, "skipped", &mut warnings);
     let keyword_rows: HashMap<_, _> = optional_table("AgLibraryKeyword", &mut warnings)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     let mut keywords: HashMap<i64, Vec<String>> = HashMap::new();
     // each keyword's path is resolved once, however many photos carry it
@@ -2465,13 +2472,25 @@ fn leads_to(
 }
 
 /// Lightroom folder stacks → stacks, top (position 1) first. Photos already stacked in the library
-/// keep their stack; a stack that would have fewer than two photos is skipped.
+/// keep their stack; a stack that would have fewer than two photos is skipped. A row whose stack is
+/// not a whole number names no stack: read as 0, rows with a missing or NULL stack would all join
+/// one stack of unrelated photos.
 fn stack_ops(s: &mut crate::Session, data: &CatalogImport, ids: &HashMap<i64, PhotoId>, ops: &mut Vec<Op>, warnings: &mut Vec<String>) -> usize {
     let mut groups: BTreeMap<i64, Vec<(f64, PhotoId, bool)>> = BTreeMap::new();
+    let mut unstacked = 0usize;
     for r in &data.stacks {
         let Some(photo) = image_of(r).and_then(|image| ids.get(&image).copied()) else { continue };
+        let Some(stack) = id_of(r, "stack") else {
+            unstacked += 1;
+            continue;
+        };
         let position = r.get("position").and_then(Value::as_f64).filter(|p| p.is_finite()).unwrap_or(f64::MAX);
-        groups.entry(number(r, "stack")).or_default().push((position, photo, number(r, "collapsed") != 0));
+        groups.entry(stack).or_default().push((position, photo, number(r, "collapsed") != 0));
+    }
+    match unstacked {
+        0 => {}
+        1 => warnings.push("AgLibraryFolderStackImage: 1 record skipped; its stack is not a stack id".into()),
+        n => warnings.push(format!("AgLibraryFolderStackImage: {n} records skipped; their stack is not a stack id")),
     }
     let mut taken: HashSet<PhotoId> = HashSet::new();
     let mut made = 0;
@@ -4763,6 +4782,56 @@ pub(crate) mod tests {
         assert_eq!(cached(Some(vec![N, T("  ".into()), N, I(1)])), "From the packet", "a blank caption keeps the packet's");
         assert_eq!(cached(Some(vec![N, T("Another image's".into()), N, I(2)])), "From the packet", "another image's row keeps it");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A caption row in Lightroom's IPTC table whose image is not a whole photo id goes to no photo, as in the other
+    /// side tables (#4090): image 1.5 is not image 1, and a missing one is not photo 0. Each such row is counted in one
+    /// warning; a row naming photo 1 still gives it its caption.
+    #[test]
+    fn a_caption_row_whose_image_is_not_a_photo_id_goes_to_no_photo() {
+        use SqlValue::{Null as N, Real as R, Text as T};
+        for (image, caption) in [(R(1.5), ""), (N, ""), (SqlValue::Integer(1), "Harbour at dawn")] {
+            let dir = std::env::temp_dir().join(format!("app-lrcat-caption-key-{}-{}", std::process::id(), caption.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("captions.lrcat");
+            let mut tables = photo_tables((dir.to_str().unwrap(), ""));
+            let text = if caption.is_empty() { "Stray" } else { caption };
+            tables.push(("AgLibraryIPTC", "id_local INTEGER PRIMARY KEY, caption, copyright, image", vec![N, T(text.into()), N, image.clone()]));
+            std::fs::write(&path, native_catalog(&tables)).unwrap();
+            let mut s = crate::Session::new();
+            let imported = s.execute("library.importLightroom", &json!({"path": path})).unwrap();
+            let id = PhotoId(imported["mapping"]["1"].as_u64().unwrap());
+            assert_eq!(s.catalog.photo(id).unwrap().meta.caption, caption, "image {image:?}: {imported}");
+            let warned = imported["warnings"].to_string().contains("AgLibraryIPTC: 1 record skipped");
+            assert_eq!(warned, caption.is_empty(), "image {image:?}: {imported}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// Stack rows whose stack is not a whole number (missing, NULL, a fraction) name no stack: read as 0 they joined
+    /// one stack of unrelated photos. They are skipped with one warning; whole stack ids still stack.
+    #[test]
+    fn stack_rows_whose_stack_is_not_a_stack_id_stack_nothing() {
+        for stack in [json!(null), json!(2.5)] {
+            let mut s = crate::Session::new();
+            let mut data = sample();
+            data.stacks = vec![
+                row(json!({"stack": stack, "image": 1, "position": 1, "collapsed": 0})),
+                row(json!({"stack": stack, "image": 2, "position": 2, "collapsed": 0})),
+            ];
+            let r = apply(&mut s, data, false).unwrap();
+            assert_eq!(r["stacks"], 0, "stack {stack}: {r}");
+            assert!(s.catalog.stacks().next().is_none(), "stack {stack}: {r}");
+            assert!(r["warnings"].to_string().contains("AgLibraryFolderStackImage: 2 records skipped"), "stack {stack}: {r}");
+        }
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.stacks = vec![
+            row(json!({"stack": 7, "image": 1, "position": 1, "collapsed": 0})),
+            row(json!({"stack": 7.0, "image": 2, "position": 2, "collapsed": 0})),
+        ];
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["stacks"], 1, "{r}");
     }
 
     #[test]
