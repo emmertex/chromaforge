@@ -474,8 +474,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if let Some((group, above, keep_all)) = settle {
         match apply_group(app, &json!({"group": group, "above": above, "keepAll": keep_all})) {
             Ok(r) => {
-                let n = r["removed"].as_array().map_or(0, Vec::len);
-                let left = r["groupsLeft"].as_u64().unwrap_or(0);
+                let n = r.get("removed").and_then(|v| v.as_array()).map_or(0, Vec::len);
+                let left = r.get("groupsLeft").and_then(|v| v.as_u64()).unwrap_or(0);
                 let text = if n == 0 {
                     tr_format!("Kept. Groups left: {left}", left = left).to_string()
                 } else {
