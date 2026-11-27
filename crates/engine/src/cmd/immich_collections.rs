@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 
 use crate::Session;
 use crate::device_sync::{catalog, now_ms, record, touched};
-use crate::remote::{LINK_ONLY, Msg};
+use crate::remote::Msg;
 
 /// How often each account's albums are listed again.
 const EVERY: Duration = Duration::from_secs(60);
@@ -213,7 +213,7 @@ pub(crate) fn finish_listing(s: &mut Session, l: Listing) {
             match lib.keys.get(k).and_then(|p| s.catalog.photo(*p)) {
                 None if take == Take::FullQuality => copy.push(a.id.clone()),
                 None => link.push(a.id.clone()),
-                Some(p) if take == Take::FullQuality && p.preview_only.as_deref() == Some(LINK_ONLY) && fetch.len() < FETCH_PER_PASS => {
+                Some(p) if take == Take::FullQuality && crate::remote::is_link_only(p) && fetch.len() < FETCH_PER_PASS => {
                     fetch.push(p.id.0);
                 }
                 Some(_) => {}

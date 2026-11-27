@@ -2922,6 +2922,8 @@ mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
 #[cfg(test)]
+mod tests_export_binning;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
@@ -3060,6 +3062,8 @@ mod tests_profile_manager;
 mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
+#[cfg(test)]
+mod tests_reload_sha1;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]
