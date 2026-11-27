@@ -228,7 +228,8 @@ attribution: "GeoNames, geonames.org". The lookup code (crates/geocode) is our o
 
 Lossy WebP export (native builds)
 ---------------------------------
-Desktop builds encode lossy WebP with libwebp 1.3.1 (https://chromium.googlesource.com/webm/libwebp),
+Desktop builds encode lossy WebP with libwebp 1.3.1 with the CVE-2023-4863 fix
+(https://chromium.googlesource.com/webm/libwebp),
 Copyright (c) 2010, Google Inc., licensed under the BSD 3-Clause License with Google's additional
 patent grant (crates/codecs/LICENSE-libwebp.txt). It is compiled from the C sources vendored in the
 libwebp-sys crate 0.9.6 (MIT License, https://github.com/NoXF/libwebp-sys) and called through the

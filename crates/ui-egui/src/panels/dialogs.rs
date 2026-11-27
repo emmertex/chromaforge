@@ -4046,12 +4046,17 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             };
             let mut on = opts.webp_lossless || !lcc_codecs::WEBP_LOSSY;
             ui.add_enabled_ui(lcc_codecs::WEBP_LOSSY, |ui| {
-                if crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr("Lossless")).on_hover_text(crate::i18n::tr(tip)).on_disabled_hover_text(crate::i18n::tr(tip)).changed() {
+                if crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr("Lossless"))
+                    .on_hover_text(crate::i18n::tr(tip))
+                    .on_disabled_hover_text(crate::i18n::tr(tip))
+                    .changed()
+                {
                     opts.webp_lossless = on;
                 }
             });
         }
-        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy()) {
+        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy())
+        {
             let mut q = opts.quality as f64;
             if num(ui, &QUALITY, &mut q) {
                 opts.quality = q as u8;

@@ -503,8 +503,8 @@ fn webp_lossy_close_with_metadata() {
     assert_eq!(d.icc.as_deref(), Some(&icc[..]));
     assert_eq!(d.xmp.as_deref(), Some("<w/>"));
     let got = d.to_srgb8();
-    let err: f64 = got.data.iter().zip(&img.data).flat_map(|(a, b)| (0..3).map(move |k| (a[k] as f64 - b[k] as f64).abs())).sum::<f64>()
-        / (64.0 * 48.0 * 3.0);
+    let err: f64 =
+        got.data.iter().zip(&img.data).flat_map(|(a, b)| (0..3).map(move |k| (a[k] as f64 - b[k] as f64).abs())).sum::<f64>() / (64.0 * 48.0 * 3.0);
     assert!(err < 6.0, "mean error {err}");
     // no metadata: the encoder's own file
     let plain = encode_webp_lossy(&e, 90, &EncodeMeta::default()).unwrap();
