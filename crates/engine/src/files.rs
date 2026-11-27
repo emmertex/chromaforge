@@ -756,7 +756,7 @@ fn load_bytes_now(
         let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
-            None => lcc_raw::decode(&bytes),
+            None => crate::raw_decoder::decode(&bytes),
         };
         let mut raw = match decoded.map_err(|e| preview_reason(&bytes, e)) {
             Ok(r) => r,
