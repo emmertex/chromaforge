@@ -1289,6 +1289,27 @@ pub struct MergeSources {
     /// Merged pixels per sensor pixel (per side).
     pub scale: u16,
     pub frames: Vec<MergeSource>,
+    /// How the image was merged (registered or plain, and why plain). `None` for a merge made before registration
+    /// existed, whose file says nothing either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<MergeRegistration>,
+}
+
+/// How a pixel-shift merge was made (the DNG's own XMP says the same, with the per-frame models besides).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeRegistration {
+    /// The positions of the frames were measured and the image reconstructed from them (false: the camera's own pattern).
+    pub registered: bool,
+    /// The hold-out test of the measured positions against the camera's own pattern: `better`, `equal` or `worse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Why the plain merge was used, as a short code (`noTexture`, `measuredWorse`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Per-frame brightness gains were applied.
+    #[serde(default)]
+    pub gains: bool,
 }
 
 /// One frame of a merge.
@@ -1337,7 +1358,7 @@ mod merged_colour_tests {
         let camera = "NIKON CORPORATION NIKON Z 0";
         let nef = raw("NEF", camera);
         let mut merged = raw("DNG", camera);
-        merged.merge_sources = Some(Box::new(MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: vec![] }));
+        merged.merge_sources = Some(Box::new(MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: vec![], registration: None }));
         let dng = raw("DNG", camera);
         assert!(nef.fitted_look() && nef.relative_wb(), "the camera's NEF");
         assert!(!dng.fitted_look() && !dng.relative_wb(), "a DNG of any other origin");
