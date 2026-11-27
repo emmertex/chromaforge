@@ -851,3 +851,67 @@ fn one_filmstrip_click_centres_the_map_on_the_photo_and_keeps_the_zoom() {
     m.glide = Some(crate::map::Glide { from: (0.5, 0.5), to: (0.6, 0.5), start: 0.0, last: lcc_geo::LatLon::new(1.0, 1.0) });
     assert!(!crate::map::glide_step(&mut m, 0.1) && m.glide.is_none(), "a map moved by something else stops gliding");
 }
+
+#[test]
+fn search_finds_saved_locations_whatever_the_accents_and_lists_several() {
+    let mut h = map_on_fake_tiles();
+    // two names with a decomposed Á (an A then U+0301), as some imported catalogs store them
+    for (name, lat, lon) in [
+        ("A\u{301}vila – Casa", 40.656, -4.700),
+        ("A\u{301}vila – Finca", 40.700, -4.750),
+        ("Madrid – Casa", 40.400, -3.700),
+        ("Casa", 41.000, -3.000),
+    ] {
+        run(&mut h, "map.saveLocation", json!({"name": name, "lat": lat, "lon": lon, "radius": 50}));
+    }
+    let lat = |h: &mut Headless| run(h, "map.view", json!({}))["lat"].as_f64().unwrap();
+    // one match centres the map on it
+    let r = run(&mut h, "map.search", json!({"query": "madrid"}));
+    assert_eq!((r["found"].as_str(), r["name"].as_str()), (Some("savedLocation"), Some("Madrid – Casa")), "{r}");
+    assert!((lat(&mut h) - 40.4).abs() < 1e-6);
+    // a name typed in full wins over the longer names that contain it
+    let r = run(&mut h, "map.search", json!({"query": "casa"}));
+    assert_eq!(r["name"], "Casa", "{r}");
+    // several matches, however the accent is typed: listed, the map stays put
+    for q in ["avila", "Ávila", "ÁVILA", "A\u{301}vila"] {
+        let r = run(&mut h, "map.search", json!({"query": q}));
+        assert_eq!(r["found"], "savedLocations", "{q:?}: {r}");
+        assert_eq!(r["names"].as_array().unwrap().len(), 2, "{q:?}: {r}");
+    }
+    assert!((lat(&mut h) - 41.0).abs() < 1e-6);
+    // the list shows under the search box; clicking one centres the map there and closes it
+    h.settle(SETTLE);
+    let (list, search) = (widget(&h, "map:searchMatches").expect("matches listed"), widget(&h, "map:search").unwrap());
+    assert!(list.top() >= search.bottom() && (list.right() - search.right()).abs() < 1.0, "{list:?} under {search:?}");
+    // every match shows in full: one line each, none scrolled out of view
+    let rows: Vec<egui::Rect> =
+        ["A\u{301}vila – Casa", "A\u{301}vila – Finca"].iter().map(|n| widget(&h, &format!("map:searchMatch:{n}")).unwrap()).collect();
+    assert!(rows.iter().all(|r| list.contains_rect(*r) && r.height() < 30.0), "{rows:?} in {list:?}");
+    assert!(h.click_as_user("map:searchMatch:A\u{301}vila – Finca"));
+    assert!((lat(&mut h) - 40.7).abs() < 1e-6);
+    assert!(widget(&h, "map:searchMatches").is_none());
+    assert!(h.app.map.location_matches.is_empty());
+    // Esc closes it without moving the map
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:searchMatches").is_some());
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    h.settle(SETTLE);
+    assert!(h.app.map.location_matches.is_empty());
+    assert!((lat(&mut h) - 40.7).abs() < 1e-6);
+    // without online lookups the list has no "Search online" row; with them it does, and it
+    // looks the typed text up instead (here at a local address that refuses, so nothing leaves)
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:searchOnline").is_none());
+    run(&mut h, "map.geocoder", json!({"endpoint": "http://127.0.0.1:9", "consent": true}));
+    run(&mut h, "map.search", json!({"query": "avila"}));
+    h.settle(SETTLE);
+    let (list, online) = (widget(&h, "map:searchMatches").unwrap(), widget(&h, "map:searchOnline").expect("online row"));
+    assert!(list.contains_rect(online), "{online:?} in {list:?}");
+    assert!(h.click_as_user("map:searchOnline"));
+    assert!(h.app.map.location_matches.is_empty());
+    assert_eq!(run(&mut h, "map.search", json!({"query": "avila", "online": true}))["pending"], true);
+    // and only the list: the Map stays open (Esc is Back otherwise)
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Map);
+}
