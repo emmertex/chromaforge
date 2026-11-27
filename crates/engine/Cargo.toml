@@ -23,6 +23,7 @@ lcc-pipeline = { workspace = true }
 lcc-gpu = { workspace = true }
 # the memory the process may use (cgroup limits on Linux) for the budget
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 lcc-catalog = { workspace = true }
 lcc-geo = { workspace = true }
 lcc-hash = { workspace = true }

@@ -23,6 +23,7 @@ lcc-denoise = { path = "crates/denoise", default-features = false }
 lcc-geom = { path = "crates/geom" }
 lcc-faces = { path = "crates/faces" }
 lcc-sysmem = { path = "crates/sysmem" }
+lcc-diag = { path = "crates/diag" }
 lcc-hdrmeta = { path = "crates/hdrmeta" }
 lcc-gpumem = { path = "crates/gpumem" }
 lcc-winspool = { path = "crates/winspool" }

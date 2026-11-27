@@ -30,6 +30,7 @@ lcc-pipeline = { workspace = true }
 lcc-develop = { workspace = true }
 chrono = { workspace = true }
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 lcc-mcp = { workspace = true }
 # marking this process as the CLI, so it never installs an update over the app (`main_with`)
 lcc-updater = { workspace = true }

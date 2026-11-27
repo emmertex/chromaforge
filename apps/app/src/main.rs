@@ -1361,14 +1361,17 @@ fn main() -> std::process::ExitCode {
     if let Some(cli_args) = cli_args(argv0.as_deref(), args) {
         return lcc_cli::main_with(cli_args);
     }
-    match run() {
+    let code = match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         // what returning the error from `main` printed
         Err(e) => {
             eprintln!("Error: {e:?}");
             std::process::ExitCode::FAILURE
         }
-    }
+    };
+    // diagnostics (issue #1363): the last records reach disk before the process ends (no-op when off)
+    lcc_diag::flush();
+    code
 }
 
 /// The option that starts the command-line tool, for a launcher that can't start this program
@@ -1398,6 +1401,8 @@ fn run() -> eframe::Result {
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
+    // diagnostics recorder, off unless <PREFIX>_DIAG is set (docs/diagnostics.md); its panic hook chains after the ones above
+    lcc_diag::start_from_env();
     alloc_release::install();
     // from an AppImage: a launcher entry and icon for the taskbar, on a thread of its own (`desktop_entry`)
     #[cfg(target_os = "linux")]

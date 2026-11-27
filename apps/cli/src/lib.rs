@@ -319,6 +319,13 @@ pub fn main() -> ExitCode {
 
 /// Run the command-line tool on `args` (without the program name) and return its exit status.
 pub fn main_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    let code = run_with(args_os);
+    // diagnostics (issue #1363): the last records reach disk before the process ends (no-op when off)
+    lcc_diag::flush();
+    code
+}
+
+fn run_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
     // `--features dhat-heap`: count allocations; the profile is written when `_heap` drops
     // (<PREFIX>_DHAT_FILE, default dhat-heap.json).
     #[cfg(feature = "dhat-heap")]
@@ -344,6 +351,8 @@ pub fn main_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitC
             Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
         }
     }
+    // diagnostics recorder, off unless <PREFIX>_DIAG is set (docs/diagnostics.md); its panic hook chains after logging's
+    lcc_diag::start_from_env();
     // `std::env::args` panics on an argument that isn't UTF-8: refuse it with a message instead
     let mut args: Vec<String> = Vec::new();
     for (index, arg) in args_os.into_iter().enumerate() {

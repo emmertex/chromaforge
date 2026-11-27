@@ -1148,6 +1148,14 @@ impl Session {
     /// Called after every top-level command; cheap when nothing changed. Fails (with
     /// [`EngineError::NotSaved`]) only when the queued ops couldn't be written; they stay queued.
     pub fn persist(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): at `detail`, since it runs after every command; listed while it runs
+        let span = lcc_diag::span_at(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "persist", lcc_diag::Class::Top, &[]);
+        let r = self.persist_inner();
+        span.done(&r);
+        r
+    }
+
+    fn persist_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
             let mut appended = lib.journal.append(&self.pending_log);
@@ -1356,6 +1364,14 @@ impl Session {
     /// by a thread of its own). An error: a write failed and the changes it lost are saved by
     /// the next save (a snapshot). A no-op without a library.
     pub fn flush_catalog(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): waiting for the log writer, listed while it runs
+        let span = lcc_diag::span_at(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "flush_catalog", lcc_diag::Class::Top, &[]);
+        let r = self.flush_catalog_inner();
+        span.done(&r);
+        r
+    }
+
+    fn flush_catalog_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         lib.journal.flush().map_err(|e| {
             let reason = e.to_string();

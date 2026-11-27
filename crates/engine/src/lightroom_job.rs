@@ -375,7 +375,21 @@ impl LightroomJob {
 }
 
 /// Apply prepared data on the owner thread.  No source, archive or index filesystem work occurs.
-pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+pub fn commit_prepared(s: &mut crate::Session, prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+    // diagnostics (issue #1363): listed in the in-flight file while it runs; every return path ends it
+    let span = lcc_diag::span_at(
+        lcc_diag::Level::Critical,
+        lcc_diag::Subsystem::Commit,
+        "lightroom_commit",
+        lcc_diag::Class::Top,
+        &[("photos", lcc_diag::Val::U64(prepared.data.photos.len() as u64))],
+    );
+    let r = commit_prepared_inner(s, prepared);
+    span.done(&r);
+    r
+}
+
+fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
     if prepared.cancelled {
         prepared.normal.rollback();
         return Err(cancelled());
@@ -397,7 +411,8 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
     let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
     let file_step = s.committed_step(before);
-    let applied = match lightroom_catalog::apply_prepared(
+    let apply_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_prepared", lcc_diag::Class::Top, &[]);
+    let applied = lightroom_catalog::apply_prepared(
         s,
         prepared.data,
         lightroom_catalog::ApplyPrepared {
@@ -408,7 +423,9 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
             missing_sources: &prepared.missing_sources,
             undo0,
         },
-    ) {
+    );
+    apply_span.done(&applied);
+    let applied = match applied {
         Ok(applied) => applied,
         // The file step has made the catalog's originals records, and photos browsed in Local the library's. A catalog
         // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
@@ -426,8 +443,10 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
     if prepared.originals_to_read > 0 {
         report["originalsToRead"] = serde_json::json!(prepared.originals_to_read);
     }
+    let index_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "index_json", lcc_diag::Class::Top, &[]);
     let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
     let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
+    index_span.finish(lcc_diag::Outcome::Ok);
     Ok(LightroomCompletion { report, finalization: LightroomArchiveFinalization { path, bytes } })
 }
 

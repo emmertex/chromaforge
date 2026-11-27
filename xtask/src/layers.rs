@@ -39,6 +39,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("raster", Class::Layer(0)),
     ("tiff", Class::Layer(0)),
     ("sysmem", Class::Layer(0)),
+    ("diag", Class::Layer(0)),
     ("hdrmeta", Class::Layer(0)),
     ("gpumem", Class::Layer(0)),
     ("winspool", Class::Layer(0)),
@@ -129,6 +130,7 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["brand", "raster"],
     &["brand", "tiff"],
     &["brand", "sysmem"],
+    &["brand", "diag"],
     &["brand", "fetch"],
     &["brand", "net"],
     // the updater reads the release feed over the network crate, for the brand's repository

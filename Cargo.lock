@@ -4575,6 +4575,7 @@ dependencies = [
  "lcc-brand",
  "lcc-cli",
  "lcc-codecs",
+ "lcc-diag",
  "lcc-engine",
  "lcc-firstclick",
  "lcc-gpu",
@@ -4723,6 +4724,7 @@ dependencies = [
  "lcc-colourfit",
  "lcc-denoise",
  "lcc-develop",
+ "lcc-diag",
  "lcc-engine",
  "lcc-genfill",
  "lcc-geom",
@@ -4891,6 +4893,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lcc-diag"
+version = "26.48.1"
+dependencies = [
+ "lcc-brand",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lcc-engine"
 version = "26.48.1"
 dependencies = [
@@ -4918,6 +4929,7 @@ dependencies = [
  "lcc-denoise",
  "lcc-denoise-core",
  "lcc-develop",
+ "lcc-diag",
  "lcc-faces",
  "lcc-fetch",
  "lcc-fidelity",

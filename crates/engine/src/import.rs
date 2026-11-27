@@ -842,6 +842,15 @@ pub(crate) fn probe_all(
             })
             .collect();
     };
+    // diagnostics (issue #1363): listed in the in-flight file while it runs, with how many files are done
+    let span = lcc_diag::span_at(
+        lcc_diag::Level::Critical,
+        lcc_diag::Subsystem::Probe,
+        "probe_all",
+        lcc_diag::Class::Top,
+        &[("files", lcc_diag::Val::U64(paths.len() as u64))],
+    );
+    let finish = |span: lcc_diag::Span<'_>| span.finish(if cancel.load(Relaxed) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Ok });
     #[cfg(not(target_arch = "wasm32"))]
     {
         let n = workers(paths.len());
@@ -860,27 +869,36 @@ pub(crate) fn probe_all(
                             if cancel.load(Relaxed) {
                                 break;
                             }
+                            let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
                             let r = probe(&paths[i]);
-                            done.fetch_add(1, Relaxed);
+                            leaf.done(&r);
+                            let n = done.fetch_add(1, Relaxed) + 1;
+                            span.note("done", lcc_diag::Val::U64(n as u64));
                             out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
                         }
                     });
                 }
             });
+            finish(span);
             return results.into_iter().map(|r| r.unwrap_or_else(|| Err("not probed".into()))).collect();
         }
     }
-    paths
+    let out = paths
         .iter()
         .map(|p| {
             if cancel.load(Relaxed) {
                 return Err("cancelled".into());
             }
+            let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
             let r = probe(p);
-            done.fetch_add(1, Relaxed);
+            leaf.done(&r);
+            let n = done.fetch_add(1, Relaxed) + 1;
+            span.note("done", lcc_diag::Val::U64(n as u64));
             r
         })
-        .collect()
+        .collect();
+    finish(span);
+    out
 }
 
 /// Copy `src` into `dir` as `name` (default: its own name), made unique with -1, -2…; returns the
@@ -1960,6 +1978,14 @@ fn trashed_file_is_gone(cat: &lcc_catalog::Catalog, id: PhotoId) -> bool {
 /// a Move's sources are removed once it is saved). On a failed commit a Move's placed files are
 /// taken back.
 pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
+    // diagnostics (issue #1363): listed in the in-flight file while it runs; every return path ends it
+    let span = lcc_diag::span_at(lcc_diag::Level::Critical, lcc_diag::Subsystem::Import, "import_commit", lcc_diag::Class::Top, &[]);
+    let r = commit_prepared_inner(s, opts, now, prepared);
+    span.done(&r);
+    r
+}
+
+fn commit_prepared_inner(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
     let now = now.to_string();
     let mut report =
         ImportReport { scanned: prepared.scanned, skipped: prepared.skipped, skipped_by_plugin: prepared.plugin_skipped, ..Default::default() };

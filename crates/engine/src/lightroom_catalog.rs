@@ -1673,7 +1673,14 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     let copy_masters: HashSet<_> = data.photos.iter().map(|p| number(&p.image, "masterImage")).filter(|id| *id != 0).collect();
     let refused: HashSet<_> = data.photos.iter().filter(|p| matches!(p.original, Original::Refused(_))).map(|p| p.source_id).collect();
     let mut planned: HashMap<PhotoId, Photo> = HashMap::new();
+    // diagnostics (issue #1363): the per-photo loop as one step, how far it has got, and each photo's time in aggregate
+    let photos_span =
+        lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photos", lcc_diag::Class::Top, &[("photos", lcc_diag::Val::U64(photos.len() as u64))]);
+    let mut photos_done = 0u64;
     for src in photos {
+        let _photo_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photo", lcc_diag::Class::Leaf, &[]);
+        photos_done = photos_done.saturating_add(1);
+        photos_span.note("done", lcc_diag::Val::U64(photos_done));
         let master = number(&src.image, "masterImage");
         if master == 0 && missing_sources.contains(&key(&src.path)) {
             missing.push(src.path.clone());
@@ -1966,6 +1973,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             "{which}: Lightroom's last edit time is missing or not a date; photos with develop settings are dated at the import, the others keep any edit date they already had"
         ));
     }
+    photos_span.finish(lcc_diag::Outcome::Ok);
+    let collections_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_collections", lcc_diag::Class::Top, &[]);
     let rows = first_of_each_collection(&data, &mut warnings);
     let mut albums = HashMap::new();
     // Two collections never share an album. An index that names one album for two gives the second a new one; the
@@ -2209,6 +2218,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         s.commit(step, Op::Batch { ops })?;
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
+    collections_span.finish(lcc_diag::Outcome::Ok);
     Ok(AppliedImport {
         report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),

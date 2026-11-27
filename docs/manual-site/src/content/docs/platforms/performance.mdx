@@ -27,6 +27,11 @@ import Shot from '../../../components/Shot.astro';
 - Budgets (measured on one desktop): slider update under 16 ms, loupe under 60 ms, a 24 MP JPEG export about half a second.
 - A GPU backend can be forced or turned off with an environment variable named in the developer docs, if a driver crashes.
 
+## Diagnostics
+- **Diagnostics recorder**: off by default. Started with an environment variable named in the developer docs, it keeps a record of the steps of an import (reading files, committing, saving the library) in a `diag` folder next to the settings.
+- **After a hang or a forced quit**: a file in that folder says which step was running and how far it had got; attach the folder to a bug report.
+- **Private**: step names, counts and timings only, never file names or paths; nothing is sent anywhere.
+
 ## Activity stack
 - Anything slow (import, export, previews, sync, downloads) runs off the main thread and shows as a row with a progress bar and a stop button when it can stop.
 - **Classic and Compact**: in the module bar. One task shows its bar; several show "N operations in progress…"; click for the full list.
