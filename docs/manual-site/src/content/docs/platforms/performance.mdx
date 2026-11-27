@@ -28,8 +28,8 @@ import Shot from '../../../components/Shot.astro';
 - A GPU backend can be forced or turned off with an environment variable named in the developer docs, if a driver crashes.
 
 ## Diagnostics
-- **Diagnostics recorder**: off by default. Started with an environment variable named in the developer docs, it keeps a record of the steps of an import (reading files, committing, saving the library) in a `diag` folder next to the settings.
-- **After a hang or a forced quit**: a file in that folder says which step was running and how far it had got; attach the folder to a bug report.
+- **Diagnostics recorder**: off by default. Started with an environment variable named in the developer docs, it keeps a record of the steps of an import (reading files, committing, saving the library) in a `diag` folder in the settings folder; the log says where.
+- **After a hang or a forced quit**: a file in that folder says which step was running, how far it had got, and that the app did not end cleanly; attach the folder to a bug report.
 - **Private**: step names, counts and timings only, never file names or paths; nothing is sent anywhere.
 
 ## Activity stack

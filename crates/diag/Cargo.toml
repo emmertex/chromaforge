@@ -12,3 +12,6 @@ workspace = true
 lcc-brand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }

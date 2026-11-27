@@ -22,8 +22,7 @@ fn main() {
     let dir = std::env::temp_dir().join(format!("lcc-diag-bench-{}", std::process::id()));
     let cfg = std::env::args().nth(1).unwrap_or_else(|| "trace".into());
     let (config, _) = Config::parse(&cfg);
-    start(Some(dir.clone()), &config);
-    println!("config: {cfg}");
+    println!("config: {cfg}, start: {:?}", start(dir.clone(), &config));
     for _ in 0..2 {
         // warm-up pass, then the numbers
         leaf_ns(1, 20_000, Subsystem::Probe);
@@ -38,15 +37,16 @@ fn main() {
     println!("top span begin+end:    {:8.1} us/pair", t.elapsed().as_nanos() as f64 / n as f64 / 1000.0);
     let t = Instant::now();
     for _ in 0..n {
-        event(Subsystem::Ui, "slow_frame", &[("ms", Val::U64(1))]);
+        event_at(Level::Normal, Subsystem::App, "event", &[("ms", Val::U64(1))]);
     }
     println!("event:                 {:8.1} us/call", t.elapsed().as_nanos() as f64 / n as f64 / 1000.0);
     if let Some(s) = snapshot(0) {
+        let o = s.overhead;
         println!(
-            "self-measured: {} calls, {:.1} ns/call inside the recorder; writer thread {:.1} ms",
-            s.overhead.calls,
-            s.overhead.recorder_ns as f64 / s.overhead.calls.max(1) as f64,
-            s.overhead.writer_ns as f64 / 1e6
+            "self-measured (steps, events): {} calls, {:.1} ns/call; rendering and writing {:.1} ms",
+            o.calls,
+            o.recorder_ns as f64 / o.calls.max(1) as f64,
+            o.writer_ns as f64 / 1e6
         );
     }
     let _ = std::fs::remove_dir_all(dir);

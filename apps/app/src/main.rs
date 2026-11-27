@@ -207,6 +207,9 @@ impl eframe::App for App {
         // app after this and the session's last writes (face data) still go out under the lock.
         #[cfg(target_os = "macos")]
         self.0.session.release_library_lock();
+        // diagnostics (issue #1363): an orderly end, marked and written now, as macOS ends the process just below
+        // (no-op when off)
+        lcc_diag::finish();
         // macOS (#1331): end the process here, before eframe tears the window down, as Quit from
         // the menu bar already does (PR #444). AccessKit's macOS adapter subclasses the window's
         // content view and restores its class on teardown; AppKit's Touch Bar support observes
@@ -1368,8 +1371,8 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     };
-    // diagnostics (issue #1363): the last records reach disk before the process ends (no-op when off)
-    lcc_diag::flush();
+    // diagnostics (issue #1363): an orderly end, marked and written (no-op when off; on macOS `on_exit` did it)
+    lcc_diag::finish();
     code
 }
 
@@ -1400,8 +1403,6 @@ fn run() -> eframe::Result {
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
-    // diagnostics recorder, off unless <PREFIX>_DIAG is set (docs/diagnostics.md); its panic hook chains after the ones above
-    lcc_diag::start_from_env();
     alloc_release::install();
     // from an AppImage: a launcher entry and icon for the taskbar, on a thread of its own (`desktop_entry`)
     #[cfg(target_os = "linux")]
@@ -1506,6 +1507,10 @@ fn run() -> eframe::Result {
             None => logger.no_file(),
         }
     }
+    // the diagnostics recorder (off unless <PREFIX>_DIAG is set): after the settings folder was migrated (creating its
+    // `diag/` first would make the folder look migrated) and the arguments read, and like the log file never in a run
+    // that keeps no settings
+    lcc_engine::logging::start_diagnostics(!in_memory && !lcc_brand::env_is_set("NO_PREFS"));
     // a Windows copy unpacked from the zip, before anything is opened: a version a zip update
     // started waits here until the one it replaced has ended (however long quitting takes); a new
     // version that never came up on its last start is undone and the previous one started instead

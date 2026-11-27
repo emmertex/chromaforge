@@ -4899,6 +4899,7 @@ name = "lcc-diag"
 version = "26.48.1"
 dependencies = [
  "lcc-brand",
+ "lcc-testkit",
  "serde",
  "serde_json",
 ]

@@ -1674,13 +1674,14 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     let refused: HashSet<_> = data.photos.iter().filter(|p| matches!(p.original, Original::Refused(_))).map(|p| p.source_id).collect();
     let mut planned: HashMap<PhotoId, Photo> = HashMap::new();
     // diagnostics (issue #1363): the per-photo loop as one step, how far it has got, and each photo's time in aggregate
-    let photos_span =
-        lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photos", lcc_diag::Class::Top, &[("photos", lcc_diag::Val::U64(photos.len() as u64))]);
-    let mut photos_done = 0u64;
-    for src in photos {
-        let _photo_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photo", lcc_diag::Class::Leaf, &[]);
-        photos_done = photos_done.saturating_add(1);
-        photos_span.note("done", lcc_diag::Val::U64(photos_done));
+    // `done` counts the photos finished before the current one (a hang in photo k shows done=k-1); an error passed up
+    // with `?` ends the stage `abandoned`, and the enclosing `lightroom_commit` records the error
+    let photos_total = photos.len() as u64;
+    let mut photos_span =
+        lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photos", lcc_diag::Class::Top, &[("photos", lcc_diag::Val::U64(photos_total))]);
+    for (finished, src) in photos.into_iter().enumerate() {
+        let _photo_timer = lcc_diag::item_timer(lcc_diag::Subsystem::Commit, "apply_photo");
+        photos_span.note("done", lcc_diag::Val::U64(finished as u64));
         let master = number(&src.image, "masterImage");
         if master == 0 && missing_sources.contains(&key(&src.path)) {
             missing.push(src.path.clone());
@@ -1973,6 +1974,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             "{which}: Lightroom's last edit time is missing or not a date; photos with develop settings are dated at the import, the others keep any edit date they already had"
         ));
     }
+    photos_span.set("done", lcc_diag::Val::U64(photos_total));
     photos_span.finish(lcc_diag::Outcome::Ok);
     let collections_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_collections", lcc_diag::Class::Top, &[]);
     let rows = first_of_each_collection(&data, &mut warnings);

@@ -1149,10 +1149,7 @@ impl Session {
     /// [`EngineError::NotSaved`]) only when the queued ops couldn't be written; they stay queued.
     pub fn persist(&mut self) -> Result<()> {
         // diagnostics (issue #1363): at `detail`, since it runs after every command; listed while it runs
-        let span = lcc_diag::span_at(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "persist", lcc_diag::Class::Top, &[]);
-        let r = self.persist_inner();
-        span.done(&r);
-        r
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "persist", &[], crate::diag_outcome, |_| self.persist_inner())
     }
 
     fn persist_inner(&mut self) -> Result<()> {
@@ -1365,10 +1362,9 @@ impl Session {
     /// the next save (a snapshot). A no-op without a library.
     pub fn flush_catalog(&mut self) -> Result<()> {
         // diagnostics (issue #1363): waiting for the log writer, listed while it runs
-        let span = lcc_diag::span_at(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "flush_catalog", lcc_diag::Class::Top, &[]);
-        let r = self.flush_catalog_inner();
-        span.done(&r);
-        r
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "flush_catalog", &[], crate::diag_outcome, |_| {
+            self.flush_catalog_inner()
+        })
     }
 
     fn flush_catalog_inner(&mut self) -> Result<()> {

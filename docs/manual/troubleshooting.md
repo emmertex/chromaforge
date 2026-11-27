@@ -17,10 +17,11 @@ Attach the log to a bug report. Set `<PREFIX>_LOG=debug` for more detail, or `RU
 ## The app hangs or quits during a long job
 
 Start it with `<PREFIX>_DIAG=normal` (or `critical,commit=trace` for more on one part) and repeat what went wrong.
-The app then keeps a record of its steps in `diag/` in the settings folder (or `<PREFIX>_DIAG_DIR`): after a hang or a
-kill, `inflight-<pid>.json` says which step was running and how far it had got. The files hold step names, counts
-and timings, never file names or paths; nothing is sent anywhere. Attach the folder to a bug report. Details:
-[diagnostics](../diagnostics.md).
+The app then keeps a record of its steps in `diag/` in the settings folder (or in `<PREFIX>_DIAG_DIR`); the log
+says where. After a hang or a kill, the `inflight-…` file says which step was running and how far it had got, and
+that the app did not end cleanly. The files hold step names, counts and timings, never file names or paths; nothing
+is sent anywhere. Attach the folder to a bug report. `<PREFIX>_DIAG=0` (or `off`, `false`, `no`) turns it off.
+Details: [diagnostics](../diagnostics.md).
 
 ## The app shows an error instead of doing something
 

@@ -1,44 +1,43 @@
 //! What was this process doing when it hung, was killed or panicked?
 //!
 //! A small diagnostics recorder (issue #1363): typed spans and events, a write-ahead in-flight file, a bounded ring
-//! that evicts routine successes first, aggregate timings (count / total / min / max per name) for high-volume leaf
-//! spans, and a text report. Off by default; nothing is sent anywhere. See `docs/diagnostics.md`.
+//! that evicts verbose records first, aggregate timings (count / failed / total / min / max per name) for high-volume
+//! leaf spans, and a text report. Off by default; nothing is sent anywhere. See `docs/diagnostics.md`.
 //!
-//! - **Top spans** are whole steps (the probe, the commit, a stage of it). Each is listed in `inflight-<pid>.json` while it
-//!   runs. A process that hangs, is killed or runs out of memory leaves the file behind: it says what was running and how
-//!   far it had got ([`note`]). A completed top span goes into the ring.
-//! - **Leaf spans** are routine per-item work (one photo applied, one file probed). They are not listed and not put
-//!   in the ring: their duration is added to `stats-<pid>.json`'s per-name count / total / min / max, with atomics and no lock.
-//! - **Events** are things that happened (a panic, a configuration entry that was not understood), with no duration.
-//! - **The ring** (`ring-<pid>.json`, [`RING_CAP`] entries) keeps the newest; when full, the most verbose [`Level`] goes
-//!   first, then a routine success, then the oldest, so a failure or a critical record outlives a burst of detail.
+//! - **Top spans** are whole steps (the probe of a batch, a commit, a stage of it). Each is listed in the in-flight
+//!   file while it runs. A process that hangs, is killed or runs out of memory leaves the file behind: it says what was
+//!   running and how far it had got ([`Span::note`]). A completed top span goes into the ring.
+//! - **Leaf spans** are routine per-item work (one photo applied, one file probed). They are not listed and not put in
+//!   the ring: their duration is added to the stats file's per-name count / failed / total / min / max.
+//! - **Events** are things that happened (the start, a panic, a configuration that was not understood), with no
+//!   duration.
+//! - **The ring** keeps the newest [`RING_CAP`] entries. When it is full, a newcomer pushes out an entry at least as
+//!   verbose as itself: the most verbose level first, within it a routine success, else the oldest. When everything in
+//!   the ring is less verbose than the newcomer, the newcomer itself is dropped. Every drop is counted.
 //!
-//! # Levels: how much to record, and where, so the recorder does not change what it watches
+//! # Levels
 //!
-//! Every call has a [`Level`] (`critical` < `normal` < `detail` < `trace`) and every [`Subsystem`] has a threshold; a call is
-//! recorded only when its level is at or below its subsystem's threshold (or the threshold is `off`). A call below the
-//! threshold costs one atomic load: no lock, no allocation, no clock read. The level also sets how durable a record is: a
-//! `critical` span or event is written to disk at once (the outermost steps and panics, which are what you need after a
-//! kill); everything else is written by a background thread at most every 250 ms (so the in-flight file of a non-critical
-//! span can be that stale), and the thread that does the work never waits for the disk.
+//! Every call has a [`Level`] (`critical` < `normal` < `detail` < `trace`) and every [`Subsystem`] has a threshold. A
+//! call is recorded when its level is at or below its subsystem's threshold; a threshold of `off` records nothing.
+//! A call that is not recorded costs one atomic load: no lock, no allocation, no clock read. A `critical` span or
+//! event is on disk before the call returns (the outermost steps and panics: what you need after a kill); everything
+//! else is written by a background thread at most every 250 ms, so the working thread never waits for the disk.
+//! Panics are recorded whenever the recorder is on, whatever the thresholds.
 //!
 //! `<PREFIX>_DIAG` takes a comma-separated list: a bare level sets every subsystem, `name=level` overrides one:
-//! `normal` (also `1`, `on`, `true`), `critical,import=trace`, `detail,probe=off`. Order does not matter, the last entry for
-//! a subsystem wins, and an entry that is not understood is ignored and reported as a `config_rejected` event.
-//! What each call site uses: `critical` for the outermost steps, `normal` for stages and slow-thing events, `detail` for work
-//! that runs on every command, `trace` for per-item work (one photo, one file).
+//! `normal` (also `1`, `on`, `true`, `yes`), `critical,import=trace`, `detail,probe=off`. Words are not case-sensitive;
+//! `0`, `off`, `false` and `no` mean off, and a list that records nothing leaves the recorder off. An entry that is not
+//! understood is ignored and counted in a `config_rejected` event. What each call site uses: `critical` for a step
+//! that runs once per user action and matters after a kill, `normal` for stages and per-batch steps, `detail` for work
+//! that runs after every command, `trace` for per-item work.
 //!
-//! # Its own cost is measured
+//! Records are typed: [`Subsystem`], [`Outcome`], [`Level`] and [`Class`] are closed enums and field keys are
+//! `&'static str`. Nothing parses a message string. A field value is a number, a flag, a length or a short text of at
+//! most [`TEXT_MAX_CHARS`] characters: callers give ids, counts and format names, **never file names, paths or tag
+//! values**. A panic is recorded with its source file's name (not its path), line and column.
 //!
-//! The time spent inside the recorder's own calls (lock waits included) and in its writer thread is counted ([`Overhead`]) and
-//! shown in the report, so a trace says how much it perturbed the thing it traced.
-//!
-//! Records are typed: [`Subsystem`], [`Outcome`], [`Level`] and [`Class`] are closed enums and field keys are `&'static str`.
-//! There is no message string anything branches on. A field value is a number, a flag, a length or a short text of at most
-//! [`TEXT_MAX_CHARS`] characters: callers give ids, counts and format names, **never file names, paths or tag values**.
-//!
-//! Off unless `<PREFIX>_DIAG` is set ([`start_from_env`]): when off, every call is one atomic load. Writing diagnostics never
-//! fails the work being diagnosed: a failed write is counted ([`Snapshot::write_failures`]) and nothing else.
+//! Its own cost on the working threads is measured ([`Overhead`]); writing diagnostics never fails the work being
+//! diagnosed: a failed write is counted ([`Snapshot::write_failures`]) and nothing else.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![deny(clippy::indexing_slicing)]
@@ -46,47 +45,49 @@
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Entries the ring keeps.
 pub const RING_CAP: usize = 512;
 /// Longest [`Val::Text`], in characters.
 pub const TEXT_MAX_CHARS: usize = 64;
-/// How many processes' files are kept when a new process starts (never our own).
-const KEEP_PROCESSES: usize = 12;
+/// Processes that ended cleanly whose files are kept when a new process starts.
+const KEEP_CLEAN: usize = 12;
+/// Processes that did not end cleanly (still running, hung, killed, crashed) whose files are kept: the evidence the
+/// recorder exists for, so more of them, and a run of clean starts never pushes them out.
+const KEEP_UNCLEAN: usize = 24;
 /// The writer thread rewrites the files at most this often.
 const FLUSH_EVERY_MS: u64 = 250;
 /// A span handle passes a [`Span::note`] at most this often (the file is written every [`FLUSH_EVERY_MS`] anyway).
 const NOTE_MIN_NS: u64 = 50_000_000;
+/// The report reads no file larger than this.
+const MAX_FILE_BYTES: u64 = 16 << 20;
+/// The format of the three files; the report says when a file has another.
 const SCHEMA: u32 = 1;
 
-/// Where a record comes from. A closed set: adding one is a code change. `Control` and `Ui` have no call sites yet
-/// (the control server and the frame loop come later); they are here so a configuration naming them is understood.
+/// Where a record comes from. A closed set: adding one is a code change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Subsystem {
     /// The recorder itself: start, panics, configuration it did not understand.
     App,
-    /// Adding files to the library: the import commit.
+    /// Adding files to the library: the import commit of each batch.
     Import,
-    /// Reading each file before an import (hash, format, metadata).
+    /// Reading files before an import, a reload or a recheck (hash, format, metadata).
     Probe,
     /// Committing a Lightroom catalog import and its stages.
     Commit,
     /// Writing the library to disk after a command (persist, flush).
     Catalog,
-    Control,
-    Ui,
 }
 
 impl Subsystem {
     /// Every subsystem, in [`Subsystem::index`] order.
-    pub const ALL: [Subsystem; 7] =
-        [Subsystem::App, Subsystem::Import, Subsystem::Probe, Subsystem::Commit, Subsystem::Catalog, Subsystem::Control, Subsystem::Ui];
+    pub const ALL: [Subsystem; 5] = [Subsystem::App, Subsystem::Import, Subsystem::Probe, Subsystem::Commit, Subsystem::Catalog];
     pub const COUNT: usize = Self::ALL.len();
 
     /// Position in [`Subsystem::ALL`]; the match is exhaustive, so a new variant cannot be forgotten here.
@@ -97,8 +98,6 @@ impl Subsystem {
             Subsystem::Probe => 2,
             Subsystem::Commit => 3,
             Subsystem::Catalog => 4,
-            Subsystem::Control => 5,
-            Subsystem::Ui => 6,
         }
     }
 
@@ -109,27 +108,24 @@ impl Subsystem {
             Subsystem::Probe => "probe",
             Subsystem::Commit => "commit",
             Subsystem::Catalog => "catalog",
-            Subsystem::Control => "control",
-            Subsystem::Ui => "ui",
         }
     }
 
-    /// The subsystem called `name` (the [`Subsystem::as_str`] spelling).
+    /// The subsystem called `name` (the [`Subsystem::as_str`] spelling, any case).
     pub fn parse(name: &str) -> Option<Subsystem> {
-        Self::ALL.iter().copied().find(|s| s.as_str() == name)
+        Self::ALL.iter().copied().find(|s| s.as_str().eq_ignore_ascii_case(name))
     }
 }
 
 /// How much a record matters, and so how verbose a recorder must be set to keep it: `Critical` is the least verbose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
-    /// The outermost steps and panics: written to disk at once.
+    /// Steps that run once per user action and matter after a kill, and panics: written to disk at once.
     Critical = 1,
-    /// Stages of a step and slow-thing events.
-    #[default]
+    /// Stages of a step, per-batch steps.
     Normal = 2,
-    /// Work that runs on every command.
+    /// Work that runs after every command.
     Detail = 3,
     /// Per-item work (one photo, one file).
     Trace = 4,
@@ -147,8 +143,9 @@ impl Level {
         }
     }
 
+    /// The level called `name`, any case.
     pub fn parse(name: &str) -> Option<Level> {
-        Self::ALL.iter().copied().find(|l| l.as_str() == name)
+        Self::ALL.iter().copied().find(|l| l.as_str().eq_ignore_ascii_case(name))
     }
 }
 
@@ -161,11 +158,12 @@ fn level_of(threshold: u8) -> Option<Level> {
     Level::ALL.iter().copied().find(|l| *l as u8 == threshold)
 }
 
-/// A threshold word: `off`/`0`, a level name, or `on`/`true`/`1` (= `normal`, what a plain "on" meant before levels).
+/// A threshold word, any case: `off`/`0`/`false`/`no`, a level name, or `on`/`1`/`true`/`yes` (= `normal`). The one
+/// list of on and off words: [`start_from_env`] decides "off" through it too.
 fn parse_threshold(word: &str) -> Option<u8> {
-    match word {
-        "off" | "0" => Some(0),
-        "on" | "true" | "1" => Some(Level::Normal as u8),
+    match word.to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "no" => Some(0),
+        "on" | "1" | "true" | "yes" => Some(Level::Normal as u8),
         other => Level::parse(other).map(|l| l as u8),
     }
 }
@@ -249,12 +247,19 @@ impl Config {
         level_of(self.threshold(subsystem))
     }
 
+    /// Whether any subsystem records anything: a configuration that records nothing leaves the recorder off.
+    pub fn records_anything(&self) -> bool {
+        Subsystem::ALL.iter().any(|s| self.threshold(*s) > 0)
+    }
+
     fn threshold(&self, subsystem: Subsystem) -> u8 {
         self.per.get(subsystem.index()).copied().flatten().unwrap_or(self.default)
     }
 }
 
-/// How a span ended. `Abandoned` is a guard dropped without a result (an early return); `Panicked` one dropped while unwinding.
+/// How a span ended. `Abandoned`: the guard was dropped without a result, i.e. its code left by an early return (an
+/// error passed up with `?`, usually); the enclosing step's outcome says what the error was. `Panicked`: dropped while
+/// unwinding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
@@ -302,6 +307,14 @@ pub enum Kind {
     Event,
 }
 
+/// How a process ended, as far as it could say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ended {
+    /// [`finish`] ran: the process was ending on purpose.
+    Clean,
+}
+
 /// A field value. Nothing arbitrary: a number, a flag, a byte length or a short text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "v", rename_all = "snake_case")]
@@ -323,7 +336,7 @@ impl Val {
             Val::U64(n) => n.to_string(),
             Val::Bool(b) => b.to_string(),
             Val::Len(n) => format!("{n} B"),
-            Val::Text(t) => t.clone(),
+            Val::Text(t) => printable(t),
         }
     }
 }
@@ -335,7 +348,6 @@ pub struct Entry {
     pub ts_ms: u64,
     pub kind: Kind,
     pub subsystem: Subsystem,
-    #[serde(default)]
     pub level: Level,
     pub op: String,
     pub outcome: Option<Outcome>,
@@ -351,6 +363,7 @@ pub struct OpenView {
     pub ts_ms: u64,
     pub age_ms: u64,
     pub subsystem: Subsystem,
+    pub level: Level,
     pub op: String,
     pub thread: u64,
     pub fields: Vec<(String, Val)>,
@@ -362,6 +375,8 @@ pub struct StatRow {
     pub subsystem: Subsystem,
     pub op: String,
     pub count: u64,
+    /// Of `count`, the ones that ended other than `ok`.
+    pub failed: u64,
     pub total_us: u64,
     pub min_us: u64,
     pub max_us: u64,
@@ -370,11 +385,12 @@ pub struct StatRow {
 /// What the recorder itself cost.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Overhead {
-    /// Recorded calls (spans begun, spans ended, events, notes). Calls below the threshold are not counted: they cost one load.
+    /// Recorded top spans, events and notes. Leaf spans are counted in the stats, not here, and their cost is not
+    /// measured on each call (`examples/bench.rs` measures it).
     pub calls: u64,
     /// Time spent inside those calls on the calling threads, lock waits included, in nanoseconds.
     pub recorder_ns: u64,
-    /// Time the writer thread spent serialising and writing, in nanoseconds (not on any working thread).
+    /// Time spent serialising and writing the files, in nanoseconds.
     pub writer_ns: u64,
     /// Time since the recorder started, in milliseconds.
     pub uptime_ms: u64,
@@ -388,14 +404,17 @@ pub struct LevelRow {
     pub level: Option<Level>,
 }
 
-/// Everything in memory, for a control command or a test.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Everything in memory, for tests and the benchmark.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub pid: u32,
     pub open: Vec<OpenView>,
     pub ring: Vec<Entry>,
     pub stats: Vec<StatRow>,
     pub write_failures: u64,
+    pub panics_lost: u64,
+    pub evicted: u64,
+    pub ended: Option<Ended>,
     pub overhead: Overhead,
     pub levels: Vec<LevelRow>,
 }
@@ -407,7 +426,8 @@ struct InflightFile {
     started_ms: u64,
     written_ms: u64,
     write_failures: u64,
-    #[serde(default)]
+    panics_lost: u64,
+    ended: Option<Ended>,
     levels: Vec<LevelRow>,
     open: Vec<OpenView>,
 }
@@ -416,6 +436,8 @@ struct InflightFile {
 struct RingFile {
     schema: u32,
     pid: u32,
+    written_ms: u64,
+    evicted: u64,
     entries: Vec<Entry>,
 }
 
@@ -423,15 +445,62 @@ struct RingFile {
 struct StatsFile {
     schema: u32,
     pid: u32,
-    #[serde(default)]
+    written_ms: u64,
     overhead: Overhead,
     stats: Vec<StatRow>,
+}
+
+/// The three files a process writes. The one place their names are made and recognised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Inflight,
+    Ring,
+    Stats,
+}
+
+impl FileKind {
+    const ALL: [FileKind; 3] = [FileKind::Inflight, FileKind::Ring, FileKind::Stats];
+
+    const fn stem(self) -> &'static str {
+        match self {
+            FileKind::Inflight => "inflight",
+            FileKind::Ring => "ring",
+            FileKind::Stats => "stats",
+        }
+    }
+
+    /// `<stem>-<pid>-<started ms>.json`: the start time keeps a later process that reuses the pid from overwriting an
+    /// earlier one's files.
+    fn name(self, run: RunId) -> String {
+        format!("{}-{}-{}.json", self.stem(), run.pid, run.started_ms)
+    }
+}
+
+/// One process run: its pid and when its recorder started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RunId {
+    pid: u32,
+    started_ms: u64,
+}
+
+/// A file name this recorder writes, and nothing else: exactly `<stem>-<digits>-<digits>.json`, or the same with
+/// `.tmp` (a write that never finished). Anything else in the folder is not ours.
+fn parse_name(name: &str) -> Option<(FileKind, RunId)> {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    FileKind::ALL.iter().copied().find_map(|kind| {
+        let rest = name.strip_prefix(kind.stem())?.strip_prefix('-')?;
+        let rest = rest.strip_suffix(".json.tmp").or_else(|| rest.strip_suffix(".json"))?;
+        let (pid, ms) = rest.split_once('-')?;
+        (digits(pid) && digits(ms)).then_some(())?;
+        Some((kind, RunId { pid: pid.parse().ok()?, started_ms: ms.parse().ok()? }))
+    })
 }
 
 struct Open {
     seq: u64,
     ts_ms: u64,
     subsystem: Subsystem,
+    level: Level,
     op: &'static str,
     thread: u64,
     started: Instant,
@@ -441,126 +510,108 @@ struct Open {
 #[derive(Default)]
 struct State {
     open: Vec<Open>,
-    /// Ring entries by level (index = level - 1), each with its push number, so the ring reads back in push order and
-    /// the most verbose level is found without a scan.
-    ring: [VecDeque<(u64, Entry)>; 4],
-    pushed: u64,
+    /// Completed spans and events, in push order.
+    ring: VecDeque<Entry>,
+    /// Entries pushed out of the ring, or not let in, because it was full.
+    evicted: u64,
+    /// How many ring entries each level has (index: level number - 1), so eviction scans only levels that are there.
+    per_level: [usize; 4],
+    ended: Option<Ended>,
+    /// Bumped by every render: the files on disk never go back to an older render ([`Diag::put`]).
+    generation: u64,
     last_flush: Option<Instant>,
 }
 
-impl State {
-    fn ring_len(&self) -> usize {
-        self.ring.iter().map(VecDeque::len).sum()
-    }
+/// Stripes per leaf name: a thread writes the stripe its number picks, so threads rarely share a cache line, and the
+/// memory per name is fixed however many threads come and go.
+const STRIPES: usize = 16;
 
-    /// The ring, oldest push first.
-    fn ring_entries(&self) -> Vec<Entry> {
-        let mut all: Vec<&(u64, Entry)> = self.ring.iter().flatten().collect();
-        all.sort_by_key(|(n, _)| *n);
-        all.into_iter().map(|(_, e)| e.clone()).collect()
-    }
-}
-
-/// One leaf name's totals as one thread keeps them. Each thread has its own cell per name and is its only writer (plain
-/// load and store, no locked instruction, no line shared with another thread); the reader sums the cells. A `shared` cell
-/// (the fallback when thread-local storage is gone) is written with read-modify-write instead.
+/// One stripe of a leaf name's totals, on its own cache line.
+#[repr(align(128))]
 struct AtomicStat {
-    shared: bool,
     count: AtomicU64,
+    failed: AtomicU64,
     total_us: AtomicU64,
     min_us: AtomicU64,
     max_us: AtomicU64,
-    /// Every [`LEAF_SAMPLE_EVERY`]th end is timed from the start of its bookkeeping: how many, and their total ns.
-    sample_n: AtomicU64,
-    sample_ns: AtomicU64,
 }
 
 impl AtomicStat {
-    fn new(shared: bool) -> AtomicStat {
+    fn new() -> AtomicStat {
         AtomicStat {
-            shared,
             count: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
             total_us: AtomicU64::new(0),
             min_us: AtomicU64::new(u64::MAX),
             max_us: AtomicU64::new(0),
-            sample_n: AtomicU64::new(0),
-            sample_ns: AtomicU64::new(0),
         }
     }
 
-    fn record(&self, us: u64) {
-        if self.shared {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            self.total_us.fetch_add(us, Ordering::Relaxed);
-            self.min_us.fetch_min(us, Ordering::Relaxed);
-            self.max_us.fetch_max(us, Ordering::Relaxed);
-        } else {
-            self.count.store(self.count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-            self.total_us.store(self.total_us.load(Ordering::Relaxed).saturating_add(us), Ordering::Relaxed);
-            if us < self.min_us.load(Ordering::Relaxed) {
-                self.min_us.store(us, Ordering::Relaxed);
-            }
-            if us > self.max_us.load(Ordering::Relaxed) {
-                self.max_us.store(us, Ordering::Relaxed);
-            }
+    fn record(&self, us: u64, failed: bool) {
+        self.total_us.fetch_add(us, Ordering::Relaxed);
+        self.min_us.fetch_min(us, Ordering::Relaxed);
+        self.max_us.fetch_max(us, Ordering::Relaxed);
+        if failed {
+            self.failed.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    fn sample(&self, ns: u64) {
-        self.sample_n.fetch_add(1, Ordering::Relaxed);
-        self.sample_ns.fetch_add(ns, Ordering::Relaxed);
+        // last, with Release: a reader that sees the count sees the rest
+        self.count.fetch_add(1, Ordering::Release);
     }
 }
 
-/// FNV-1a: a leaf name is hashed on every call, so it should cost a few ns, not SipHash's tens.
-struct FnvHasher(u64);
-
-impl Default for FnvHasher {
-    fn default() -> FnvHasher {
-        FnvHasher(0xcbf2_9ce4_8422_2325)
-    }
+/// A leaf name's totals: [`STRIPES`] stripes, summed when read.
+struct LeafStats {
+    stripes: [AtomicStat; STRIPES],
 }
 
-impl Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
+impl LeafStats {
+    fn new() -> LeafStats {
+        LeafStats { stripes: std::array::from_fn(|_| AtomicStat::new()) }
     }
 
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+    fn record(&self, us: u64, failed: bool) {
+        let i = (thread_num() as usize) % STRIPES;
+        if let Some(stripe) = self.stripes.get(i) {
+            stripe.record(us, failed);
         }
+    }
+
+    /// (count, failed, total, min, max) over every stripe; min is `u64::MAX` when nothing was recorded.
+    fn totals(&self) -> (u64, u64, u64, u64, u64) {
+        self.stripes.iter().fold((0, 0, 0, u64::MAX, 0), |(n, f, t, lo, hi), s| {
+            let count = s.count.load(Ordering::Acquire);
+            if count == 0 {
+                return (n, f, t, lo, hi);
+            }
+            (
+                n.saturating_add(count),
+                f.saturating_add(s.failed.load(Ordering::Relaxed)),
+                t.saturating_add(s.total_us.load(Ordering::Relaxed)),
+                lo.min(s.min_us.load(Ordering::Relaxed)),
+                hi.max(s.max_us.load(Ordering::Relaxed)),
+            )
+        })
     }
 }
 
 type StatKey = (Subsystem, &'static str);
-/// A thread's stat cells: the recorder's id (tests run several recorders), then the name.
-type LeafCells = HashMap<(u64, Subsystem, &'static str), Arc<AtomicStat>, BuildHasherDefault<FnvHasher>>;
-
-/// Every this-many leaf-span ends on a thread is timed, to estimate what leaf recording costs without reading the clock twice
-/// more on every call.
-const LEAF_SAMPLE_EVERY: u64 = 32;
-
-struct Local {
-    ends: u64,
-    cells: LeafCells,
-}
 
 thread_local! {
-    /// Per thread, its own stat cells: after the first call of a name on a thread, recording a leaf span takes no lock and
-    /// touches no line another thread writes.
-    static LOCAL: RefCell<Local> = RefCell::new(Local { ends: 0, cells: HashMap::default() });
+    /// Per thread, the shared cell of each leaf name it has used (keyed by recorder id too: tests run several), so
+    /// after the first call of a name a leaf span takes no lock.
+    static LOCAL: RefCell<HashMap<(u64, Subsystem, &'static str), Arc<LeafStats>>> = RefCell::new(HashMap::new());
+    static THREAD: u64 = NEXT_THREAD.fetch_add(1, Ordering::Relaxed);
 }
+
+static NEXT_THREAD: AtomicU64 = AtomicU64::new(1);
 
 pub fn unix_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+/// The recorder's number for the calling thread; `0` once its thread-local storage is gone (never a panic).
 fn thread_num() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    thread_local! { static ID: u64 = NEXT.fetch_add(1, Ordering::Relaxed); }
-    ID.with(|id| *id)
+    THREAD.try_with(|id| *id).unwrap_or(0)
 }
 
 fn own_fields(fields: &[(&'static str, Val)]) -> Vec<(String, Val)> {
@@ -574,62 +625,71 @@ fn set_field(fields: &mut Vec<(String, Val)>, key: &str, v: Val) {
     }
 }
 
+/// Bytes of the three files, made under the state lock, written outside it.
+struct Rendered {
+    generation: u64,
+    files: Vec<(FileKind, Vec<u8>)>,
+}
+
 /// The recorder. One process-wide instance ([`start`]); tests build their own.
 pub struct Diag {
     id: u64,
     dir: Option<PathBuf>,
-    pid: u32,
-    started_ms: u64,
+    run: RunId,
     started: Instant,
     seq: AtomicU64,
     cap: usize,
-    flush_every_ms: AtomicU64,
+    flush_every_ms: u64,
     thresholds: [AtomicU8; Subsystem::COUNT],
-    /// Every thread's cells per leaf name (see [`AtomicStat`]).
-    stats: Mutex<HashMap<StatKey, Vec<Arc<AtomicStat>>>>,
-    /// Something changed since the files were last written.
+    stats: Mutex<HashMap<StatKey, Arc<LeafStats>>>,
+    /// Something changed since the files were last rendered.
     dirty: AtomicBool,
     /// A writer thread is running (see [`Diag::tick`]); without one, a change writes the files itself, rate-limited.
     writer: AtomicBool,
     write_failures: AtomicU64,
+    /// Panics the hook could not record because another thread held the state lock.
+    panics_lost: AtomicU64,
     calls: AtomicU64,
     recorder_ns: AtomicU64,
     writer_ns: AtomicU64,
     state: Mutex<State>,
+    /// Serialises file writes; holds the generation of the files on disk.
+    io: Mutex<u64>,
 }
 
 impl Diag {
-    /// A recorder that keeps every level, writing into `dir` (created if needed; `None` keeps everything in memory) and
+    /// A recorder that keeps every level, writing into `dir` (`None` keeps everything in memory, for tests) and
     /// keeping `cap` ring entries.
     pub fn new(dir: Option<PathBuf>, cap: usize) -> Diag {
         Diag::with_config(dir, cap, &Config::all(Some(Level::Trace)))
     }
 
+    /// `dir` must exist (see [`start`]); old processes' files in it are pruned.
     pub fn with_config(dir: Option<PathBuf>, cap: usize, config: &Config) -> Diag {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let pid = std::process::id();
-        let dir = dir.filter(|d| std::fs::create_dir_all(d).is_ok());
+        let run = RunId { pid: std::process::id(), started_ms: unix_ms() };
         if let Some(d) = &dir {
-            prune(d, pid);
+            prune(d, run);
         }
         Diag {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             dir,
-            pid,
-            started_ms: unix_ms(),
+            run,
             started: Instant::now(),
             seq: AtomicU64::new(1),
-            cap: cap.max(8),
-            flush_every_ms: AtomicU64::new(FLUSH_EVERY_MS),
+            cap: cap.max(1),
+            flush_every_ms: FLUSH_EVERY_MS,
             thresholds: std::array::from_fn(|i| AtomicU8::new(Subsystem::ALL.get(i).map_or(0, |s| config.threshold(*s)))),
             stats: Mutex::new(HashMap::new()),
             dirty: AtomicBool::new(false),
             writer: AtomicBool::new(false),
             write_failures: AtomicU64::new(0),
+            panics_lost: AtomicU64::new(0),
             calls: AtomicU64::new(0),
             recorder_ns: AtomicU64::new(0),
             writer_ns: AtomicU64::new(0),
             state: Mutex::new(State::default()),
+            io: Mutex::new(0),
         }
     }
 
@@ -670,15 +730,28 @@ impl Diag {
         self.calls.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Something changed. With a writer thread that is all (flag it, without touching the shared line when it is already set);
-    /// without one, write the files now if the interval is up.
-    fn changed(&self, st: &mut State) {
+    fn mark_dirty(&self) {
         if !self.dirty.load(Ordering::Relaxed) {
-            self.dirty.store(true, Ordering::Relaxed);
+            self.dirty.store(true, Ordering::Release);
         }
-        if !self.writer.load(Ordering::Relaxed) {
-            self.flush_if_due(st);
+    }
+
+    /// After a change under `st`: a `Critical` record is rendered now and written before returning (the state lock is
+    /// released first, so other threads never wait for this disk write); anything else is left to the writer thread,
+    /// or, without one, written here at most every [`FLUSH_EVERY_MS`].
+    fn after_change(&self, mut st: MutexGuard<'_, State>, level: Level) {
+        if self.dir.is_none() {
+            return;
         }
+        let due = level == Level::Critical
+            || (!self.writer.load(Ordering::Relaxed) && st.last_flush.is_none_or(|t| t.elapsed().as_millis() as u64 >= self.flush_every_ms));
+        if !due {
+            self.mark_dirty();
+            return;
+        }
+        let rendered = self.render(&mut st);
+        drop(st);
+        self.put(rendered);
     }
 
     /// Begin a span at the class's default level ([`Class::default_level`]). A [`Class::Leaf`] span only times itself (its
@@ -693,230 +766,160 @@ impl Diag {
         if !self.wants(subsystem, level) {
             return Span::none();
         }
-        if class == Class::Leaf {
-            // routine per-item work: no sequence number, no lock, no counter shared with other threads; one clock read
-            return Span {
-                diag: Some(self),
-                seq: 0,
-                subsystem,
-                op,
-                level,
-                class,
-                started: Some(Instant::now()),
-                extra: Vec::new(),
-                note_next_ns: AtomicU64::new(0),
-            };
-        }
         let t0 = Instant::now();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        if class == Class::Top {
-            let mut st = self.lock();
-            st.open.push(Open { seq, ts_ms: unix_ms(), subsystem, op, thread: thread_num(), started: t0, fields: own_fields(fields) });
-            if level == Level::Critical {
-                self.write_all(&mut st);
-            } else {
-                self.changed(&mut st);
-            }
+        if class == Class::Leaf {
+            // routine per-item work: no sequence number, no lock, one clock read
+            return Span::active(self, 0, subsystem, op, level, class, t0);
         }
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let mut st = self.lock();
+        st.open.push(Open { seq, ts_ms: unix_ms(), subsystem, level, op, thread: thread_num(), started: t0, fields: own_fields(fields) });
+        self.after_change(st, level);
         self.charge(t0);
         // The span's own clock starts after the bookkeeping above, so its duration does not include the recorder's cost.
-        Span { diag: Some(self), seq, subsystem, op, level, class, started: Some(Instant::now()), extra: Vec::new(), note_next_ns: AtomicU64::new(0) }
-    }
-
-    /// Record something that happened, at [`Level::Normal`].
-    pub fn event(&self, subsystem: Subsystem, op: &str, fields: &[(&'static str, Val)]) {
-        self.event_at(Level::Normal, subsystem, op, fields);
+        Span::active(self, seq, subsystem, op, level, class, Instant::now())
     }
 
     /// Record something that happened, if `subsystem`'s threshold admits `level`. A `Critical` event is on disk before this
     /// returns.
-    pub fn event_at(&self, level: Level, subsystem: Subsystem, op: &str, fields: &[(&'static str, Val)]) {
+    pub fn event_at(&self, level: Level, subsystem: Subsystem, op: &'static str, fields: &[(&'static str, Val)]) {
         if !self.wants(subsystem, level) {
             return;
         }
         let t0 = Instant::now();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let mut st = self.lock();
-        self.push_ring(
-            &mut st,
-            Entry {
-                seq,
-                ts_ms: unix_ms(),
-                kind: Kind::Event,
-                subsystem,
-                level,
-                op: op.to_string(),
-                outcome: None,
-                dur_us: None,
-                thread: thread_num(),
-                fields: own_fields(fields),
-            },
-        );
-        if level == Level::Critical {
-            self.write_all(&mut st);
-        } else {
-            self.changed(&mut st);
-        }
-        drop(st);
+        let e = self.event_entry(level, subsystem, op, own_fields(fields));
+        self.push_ring(&mut st, e);
+        self.after_change(st, level);
         self.charge(t0);
     }
 
-    /// Set a field on the calling thread's innermost open top span (how far it has got).
-    pub fn note(&self, key: &'static str, v: Val) {
-        let t0 = Instant::now();
-        let me = thread_num();
-        let mut st = self.lock();
-        if let Some(o) = st.open.iter_mut().rev().find(|o| o.thread == me) {
-            set_field(&mut o.fields, key, v);
-            self.changed(&mut st);
-            drop(st);
-            self.charge(t0);
+    fn event_entry(&self, level: Level, subsystem: Subsystem, op: &str, fields: Vec<(String, Val)>) -> Entry {
+        Entry {
+            seq: self.seq.fetch_add(1, Ordering::Relaxed),
+            ts_ms: unix_ms(),
+            kind: Kind::Event,
+            subsystem,
+            level,
+            op: op.to_string(),
+            outcome: None,
+            dur_us: None,
+            thread: thread_num(),
+            fields,
         }
     }
 
     fn note_seq(&self, seq: u64, key: &'static str, v: Val) {
         let t0 = Instant::now();
         let mut st = self.lock();
-        if let Some(o) = st.open.iter_mut().find(|o| o.seq == seq) {
-            set_field(&mut o.fields, key, v);
-            self.changed(&mut st);
-            drop(st);
-            self.charge(t0);
-        }
-    }
-
-    fn end(&self, span: &Span<'_>, outcome: Outcome, dur_us: u64) {
-        if span.class == Class::Leaf {
-            // counted and (by sampling) timed in its own cell: nothing shared with other threads
-            self.record_leaf(span.subsystem, span.op, dur_us);
-            return;
-        }
-        let t0 = Instant::now();
-        match span.class {
-            Class::Leaf => {}
-            Class::Top => {
-                let mut st = self.lock();
-                let Some(i) = st.open.iter().position(|o| o.seq == span.seq) else { return };
-                let o = st.open.remove(i);
-                let mut fields = o.fields;
-                for (k, v) in &span.extra {
-                    set_field(&mut fields, k, v.clone());
-                }
-                self.push_ring(
-                    &mut st,
-                    Entry {
-                        seq: o.seq,
-                        ts_ms: o.ts_ms,
-                        kind: Kind::Span,
-                        subsystem: o.subsystem,
-                        level: span.level,
-                        op: o.op.to_string(),
-                        outcome: Some(outcome),
-                        dur_us: Some(dur_us),
-                        thread: o.thread,
-                        fields,
-                    },
-                );
-                if span.level == Level::Critical {
-                    self.write_all(&mut st);
-                } else {
-                    self.changed(&mut st);
-                }
-            }
-        }
+        let Some(o) = st.open.iter_mut().find(|o| o.seq == seq) else { return };
+        set_field(&mut o.fields, key, v);
+        self.after_change(st, Level::Normal);
         self.charge(t0);
     }
 
-    /// Add one leaf duration to this thread's cell for the name: no lock after the first call of that name on the thread.
-    fn record_leaf(&self, subsystem: Subsystem, op: &'static str, dur_us: u64) {
-        if !self.dirty.load(Ordering::Relaxed) {
-            self.dirty.store(true, Ordering::Relaxed);
+    fn end(&self, span: &mut Span<'_>, outcome: Outcome, dur_us: u64) {
+        if span.class == Class::Leaf {
+            self.record_leaf(span.subsystem, span.op, dur_us, outcome != Outcome::Ok);
+            return;
         }
-        let key = (self.id, subsystem, op);
-        let done = LOCAL.try_with(|local| {
-            let mut local = local.try_borrow_mut().ok()?;
-            local.ends = local.ends.wrapping_add(1);
-            let t0 = (local.ends % LEAF_SAMPLE_EVERY == 0).then(Instant::now);
-            let cell = local.cells.entry(key).or_insert_with(|| self.new_cell(subsystem, op, false));
-            cell.record(dur_us);
-            if let Some(t0) = t0 {
-                cell.sample(t0.elapsed().as_nanos() as u64);
-            }
-            Some(())
-        });
-        if !matches!(done, Ok(Some(()))) {
-            self.shared_cell(subsystem, op).record(dur_us);
+        let t0 = Instant::now();
+        let mut st = self.lock();
+        let Some(i) = st.open.iter().position(|o| o.seq == span.seq) else { return };
+        let o = st.open.remove(i);
+        let mut fields = o.fields;
+        for (k, v) in std::mem::take(&mut span.extra) {
+            set_field(&mut fields, k, v);
         }
-    }
-
-    fn new_cell(&self, subsystem: Subsystem, op: &'static str, shared: bool) -> Arc<AtomicStat> {
-        let cell = Arc::new(AtomicStat::new(shared));
-        let mut map = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
-        map.entry((subsystem, op)).or_default().push(Arc::clone(&cell));
-        cell
-    }
-
-    /// The cell for a thread that can't have its own (thread-local storage already torn down).
-    fn shared_cell(&self, subsystem: Subsystem, op: &'static str) -> Arc<AtomicStat> {
-        let found = {
-            let map = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
-            map.get(&(subsystem, op)).and_then(|cells| cells.iter().find(|c| c.shared).cloned())
+        let e = Entry {
+            seq: o.seq,
+            ts_ms: o.ts_ms,
+            kind: Kind::Span,
+            subsystem: o.subsystem,
+            level: o.level,
+            op: o.op.to_string(),
+            outcome: Some(outcome),
+            dur_us: Some(dur_us),
+            thread: o.thread,
+            fields,
         };
-        found.unwrap_or_else(|| self.new_cell(subsystem, op, true))
+        self.push_ring(&mut st, e);
+        self.after_change(st, span.level);
+        self.charge(t0);
     }
 
-    /// Make room for `e`: the most verbose level present loses one entry, a routine success if it has one, else its oldest.
+    /// Add one leaf duration to the name's shared cell: no lock after this thread's first call of that name.
+    fn record_leaf(&self, subsystem: Subsystem, op: &'static str, dur_us: u64, failed: bool) {
+        let key = (self.id, subsystem, op);
+        // recorded through a reference: cloning the `Arc` per call would make its count one line every thread writes
+        let recorded = LOCAL
+            .try_with(|local| {
+                let mut local = local.try_borrow_mut().ok()?;
+                local.entry(key).or_insert_with(|| self.cell(subsystem, op)).record(dur_us, failed);
+                Some(())
+            })
+            .ok()
+            .flatten();
+        if recorded.is_none() {
+            self.cell(subsystem, op).record(dur_us, failed);
+        }
+        // after the update: a tick that sees the flag sees the new totals
+        self.mark_dirty();
+    }
+
+    fn cell(&self, subsystem: Subsystem, op: &'static str) -> Arc<LeafStats> {
+        let mut map = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(map.entry((subsystem, op)).or_insert_with(|| Arc::new(LeafStats::new())))
+    }
+
+    /// Make room for `e` (see the module docs): an entry at least as verbose as `e` goes, the most verbose level first,
+    /// within it a routine success, else the oldest; if every entry is less verbose than `e`, `e` itself is dropped.
     fn push_ring(&self, st: &mut State, e: Entry) {
-        if st.ring_len() >= self.cap
-            && let Some(q) = st.ring.iter_mut().rev().find(|q| !q.is_empty())
-        {
-            let i = q.iter().position(|(_, x)| x.kind == Kind::Span && x.outcome == Some(Outcome::Ok)).unwrap_or(0);
-            q.remove(i);
+        if st.ring.len() >= self.cap {
+            let routine = |x: &Entry| x.kind == Kind::Span && x.outcome == Some(Outcome::Ok);
+            let present = |st: &State, l: Level| st.per_level.get(l as usize - 1).is_some_and(|n| *n > 0);
+            let victim = Level::ALL.iter().rev().filter(|l| **l >= e.level && present(st, **l)).find_map(|l| {
+                let at = |x: &&Entry| x.level == *l;
+                st.ring.iter().position(|x| at(&x) && routine(x)).or_else(|| st.ring.iter().position(|x| at(&x)))
+            });
+            st.evicted = st.evicted.saturating_add(1);
+            match victim.and_then(|i| st.ring.remove(i)) {
+                Some(gone) => {
+                    if let Some(n) = st.per_level.get_mut(gone.level as usize - 1) {
+                        *n = n.saturating_sub(1);
+                    }
+                }
+                None => return,
+            }
         }
-        st.pushed += 1;
-        let n = st.pushed;
-        let slot = (e.level as usize).saturating_sub(1);
-        if let Some(q) = st.ring.get_mut(slot) {
-            q.push_back((n, e));
+        if let Some(n) = st.per_level.get_mut(e.level as usize - 1) {
+            *n += 1;
         }
+        st.ring.push_back(e);
     }
 
     pub fn overhead(&self) -> Overhead {
-        let (leaf_calls, leaf_ns) = self.leaf_totals();
         Overhead {
-            calls: self.calls.load(Ordering::Relaxed) + leaf_calls,
-            recorder_ns: self.recorder_ns.load(Ordering::Relaxed) + leaf_ns,
+            calls: self.calls.load(Ordering::Relaxed),
+            recorder_ns: self.recorder_ns.load(Ordering::Relaxed),
             writer_ns: self.writer_ns.load(Ordering::Relaxed),
             uptime_ms: self.started.elapsed().as_millis() as u64,
         }
     }
 
-    /// Leaf spans recorded, and an estimate of the time their recording took (from the sampled ends).
-    fn leaf_totals(&self) -> (u64, u64) {
-        let map = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
-        let (mut calls, mut ns) = (0u64, 0u64);
-        for cell in map.values().flatten() {
-            let count = cell.count.load(Ordering::Relaxed);
-            calls = calls.saturating_add(count);
-            let n = cell.sample_n.load(Ordering::Relaxed);
-            if n > 0 {
-                ns = ns.saturating_add((u128::from(cell.sample_ns.load(Ordering::Relaxed)) * u128::from(count) / u128::from(n)) as u64);
-            }
-        }
-        (calls, ns)
-    }
-
     /// What is in memory now (`tail` newest ring entries).
     pub fn snapshot(&self, tail: usize) -> Snapshot {
         let st = self.lock();
-        let all = st.ring_entries();
-        let skip = all.len().saturating_sub(tail);
+        let skip = st.ring.len().saturating_sub(tail);
         Snapshot {
-            pid: self.pid,
+            pid: self.run.pid,
             open: self.open_views(&st),
-            ring: all.into_iter().skip(skip).collect(),
+            ring: st.ring.iter().skip(skip).cloned().collect(),
             stats: self.stat_rows(),
             write_failures: self.write_failures.load(Ordering::Relaxed),
+            panics_lost: self.panics_lost.load(Ordering::Relaxed),
+            evicted: st.evicted,
+            ended: st.ended,
             overhead: self.overhead(),
             levels: self.levels(),
         }
@@ -930,6 +933,7 @@ impl Diag {
                 ts_ms: o.ts_ms,
                 age_ms: o.started.elapsed().as_millis() as u64,
                 subsystem: o.subsystem,
+                level: o.level,
                 op: o.op.to_string(),
                 thread: o.thread,
                 fields: o.fields.clone(),
@@ -941,22 +945,9 @@ impl Diag {
         let map = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows: Vec<StatRow> = map
             .iter()
-            .map(|((subsystem, op), cells)| {
-                let mut row = StatRow { subsystem: *subsystem, op: (*op).to_string(), count: 0, total_us: 0, min_us: u64::MAX, max_us: 0 };
-                for c in cells {
-                    let count = c.count.load(Ordering::Relaxed);
-                    if count == 0 {
-                        continue;
-                    }
-                    row.count = row.count.saturating_add(count);
-                    row.total_us = row.total_us.saturating_add(c.total_us.load(Ordering::Relaxed));
-                    row.min_us = row.min_us.min(c.min_us.load(Ordering::Relaxed));
-                    row.max_us = row.max_us.max(c.max_us.load(Ordering::Relaxed));
-                }
-                if row.count == 0 {
-                    row.min_us = 0;
-                }
-                row
+            .filter_map(|((subsystem, op), c)| {
+                let (count, failed, total_us, min_us, max_us) = c.totals();
+                (count > 0).then(|| StatRow { subsystem: *subsystem, op: (*op).to_string(), count, failed, total_us, min_us, max_us })
             })
             .collect();
         rows.sort_by(|a, b| b.total_us.cmp(&a.total_us).then_with(|| a.op.cmp(&b.op)));
@@ -966,125 +957,169 @@ impl Diag {
     /// Write every file now, on this thread.
     pub fn flush(&self) {
         let mut st = self.lock();
-        self.write_all(&mut st);
+        let rendered = self.render(&mut st);
+        drop(st);
+        self.put(rendered);
     }
 
-    /// What the writer thread does every [`FLUSH_EVERY_MS`]: if anything changed, serialise under the lock and write the
-    /// files outside it.
+    /// Mark the process as ending on purpose and write every file: the report then says "ended cleanly".
+    pub fn finish(&self) {
+        let mut st = self.lock();
+        st.ended = Some(Ended::Clean);
+        let rendered = self.render(&mut st);
+        drop(st);
+        self.put(rendered);
+    }
+
+    /// What the writer thread does every [`FLUSH_EVERY_MS`]: if anything changed, render under the lock and write
+    /// outside it.
     pub fn tick(&self) {
-        if !self.dirty.swap(false, Ordering::Relaxed) {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
             return;
         }
+        let mut st = self.lock();
+        let rendered = self.render(&mut st);
+        drop(st);
+        self.put(rendered);
+    }
+
+    /// The three files' bytes, with a new generation number. A file that can't be serialised is counted as a failed
+    /// write.
+    fn render(&self, st: &mut State) -> Rendered {
         let t0 = Instant::now();
-        let files = {
-            let mut st = self.lock();
-            st.last_flush = Some(Instant::now());
-            self.render(&st)
+        st.generation = st.generation.saturating_add(1);
+        st.last_flush = Some(Instant::now());
+        let written_ms = unix_ms();
+        let pid = self.run.pid;
+        let mut files = Vec::with_capacity(3);
+        let mut add = |kind: FileKind, bytes: serde_json::Result<Vec<u8>>| match bytes {
+            Ok(b) => files.push((kind, b)),
+            Err(_) => {
+                self.write_failures.fetch_add(1, Ordering::Relaxed);
+            }
         };
-        self.put(files);
-        self.writer_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    }
-
-    fn flush_if_due(&self, st: &mut State) {
-        let every = self.flush_every_ms.load(Ordering::Relaxed);
-        let due = st.last_flush.is_none_or(|t| t.elapsed().as_millis() as u64 >= every);
-        if due {
-            self.write_all(st);
-        }
-    }
-
-    /// The three files' bytes. A file that can't be serialised is counted as a failed write.
-    fn render(&self, st: &State) -> Vec<(String, Vec<u8>)> {
         let inflight = InflightFile {
             schema: SCHEMA,
-            pid: self.pid,
-            started_ms: self.started_ms,
-            written_ms: unix_ms(),
+            pid,
+            started_ms: self.run.started_ms,
+            written_ms,
             write_failures: self.write_failures.load(Ordering::Relaxed),
+            panics_lost: self.panics_lost.load(Ordering::Relaxed),
+            ended: st.ended,
             levels: self.levels(),
             open: self.open_views(st),
         };
-        let ring = RingFile { schema: SCHEMA, pid: self.pid, entries: st.ring_entries() };
-        let stats = StatsFile { schema: SCHEMA, pid: self.pid, overhead: self.overhead(), stats: self.stat_rows() };
-        let mut files = Vec::with_capacity(3);
-        for (name, bytes) in [
-            (format!("inflight-{}.json", self.pid), serde_json::to_vec(&inflight)),
-            (format!("ring-{}.json", self.pid), serde_json::to_vec(&ring)),
-            (format!("stats-{}.json", self.pid), serde_json::to_vec(&stats)),
-        ] {
-            match bytes {
-                Ok(b) => files.push((name, b)),
-                Err(_) => {
-                    self.write_failures.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        }
-        files
+        add(FileKind::Inflight, serde_json::to_vec(&inflight));
+        let ring = RingFile { schema: SCHEMA, pid, written_ms, evicted: st.evicted, entries: st.ring.iter().cloned().collect() };
+        add(FileKind::Ring, serde_json::to_vec(&ring));
+        let stats = StatsFile { schema: SCHEMA, pid, written_ms, overhead: self.overhead(), stats: self.stat_rows() };
+        add(FileKind::Stats, serde_json::to_vec(&stats));
+        self.writer_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        Rendered { generation: st.generation, files }
     }
 
-    /// Write rendered files (temp file + rename). A failed write is counted.
-    fn put(&self, files: Vec<(String, Vec<u8>)>) {
+    /// Write rendered files, one writer at a time, never older than what is on disk: a render that lost the race to a
+    /// newer one is dropped, so a critical write or the final [`Diag::finish`] is never overwritten by an older tick.
+    fn put(&self, rendered: Rendered) {
         let Some(dir) = &self.dir else { return };
-        for (name, bytes) in files {
-            let tmp = dir.join(format!("{name}.tmp"));
-            if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, dir.join(&name))).is_err() {
+        let t0 = Instant::now();
+        let mut on_disk = self.io.lock().unwrap_or_else(PoisonError::into_inner);
+        if rendered.generation <= *on_disk {
+            return;
+        }
+        for (kind, bytes) in rendered.files {
+            if write_atomic(dir, &kind.name(self.run), &bytes).is_err() {
                 self.write_failures.fetch_add(1, Ordering::Relaxed);
             }
         }
+        *on_disk = rendered.generation;
+        drop(on_disk);
+        self.writer_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    fn write_all(&self, st: &mut State) {
-        st.last_flush = Some(Instant::now());
-        let files = self.render(st);
-        self.put(files);
-    }
-
-    /// For the panic hook: never waits for the lock (a panic on a thread that holds it would wait for itself).
+    /// For the panic hook: records the panic if the state lock is free (a poisoned lock is used as it is), and otherwise
+    /// counts it as lost instead of waiting (the panicking thread may hold the lock itself).
     fn panic_event(&self, location: &str) {
-        let Ok(mut st) = self.state.try_lock() else { return };
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.push_ring(
-            &mut st,
-            Entry {
-                seq,
-                ts_ms: unix_ms(),
-                kind: Kind::Event,
-                subsystem: Subsystem::App,
-                level: Level::Critical,
-                op: "panic".into(),
-                outcome: None,
-                dur_us: None,
-                thread: thread_num(),
-                fields: vec![("location".into(), Val::text(location))],
-            },
-        );
-        self.write_all(&mut st);
+        let mut st = match self.state.try_lock() {
+            Ok(st) => st,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                self.panics_lost.fetch_add(1, Ordering::Relaxed);
+                self.mark_dirty();
+                return;
+            }
+        };
+        let e = self.event_entry(Level::Critical, Subsystem::App, "panic", vec![("location".into(), Val::text(location))]);
+        self.push_ring(&mut st, e);
+        self.after_change(st, Level::Critical);
     }
 }
 
-/// Keep the newest [`KEEP_PROCESSES`] processes' files (by modification time), never `own`'s.
-fn prune(dir: &Path, own: u32) {
+/// `name` in `dir`, written through a temp file that is created fresh (never through a link or file someone left
+/// at that name) and renamed into place. On failure the temp file is removed.
+fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = dir.join(format!("{name}.tmp"));
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let result = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes))
+        .and_then(|()| std::fs::rename(&tmp, dir.join(name)));
+    if result.is_err() {
+        // best effort: the next write removes it, and prune removes it with its process
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// The panic's source file name (not its path), line and column: `lib.rs:12:5`.
+fn panic_location(file: &str, line: u32, column: u32) -> String {
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    format!("{name}:{line}:{column}")
+}
+
+/// Read a file the recorder wrote, refusing one larger than [`MAX_FILE_BYTES`].
+fn read_capped(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let len = std::fs::metadata(path).map_err(|_| "unreadable")?.len();
+    if len > MAX_FILE_BYTES {
+        return Err("too large");
+    }
+    std::fs::read(path).map_err(|_| "unreadable")
+}
+
+/// Keep the newest [`KEEP_CLEAN`] processes that ended cleanly and the newest [`KEEP_UNCLEAN`] that did not (a hung
+/// process never ended, so it stays however many clean runs follow), never `own`'s; only files [`parse_name`]
+/// recognises are ever removed.
+fn prune(dir: &Path, own: RunId) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
-    let mut by_pid: HashMap<u32, (std::time::SystemTime, Vec<PathBuf>)> = HashMap::new();
+    let mut runs: HashMap<RunId, Vec<PathBuf>> = HashMap::new();
     for entry in read.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let pid = ["inflight-", "ring-", "stats-"]
-            .iter()
-            .find_map(|p| name.strip_prefix(p))
-            .and_then(|rest| rest.split('.').next())
-            .and_then(|n| n.parse::<u32>().ok());
-        let Some(pid) = pid else { continue };
-        let mtime = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-        let slot = by_pid.entry(pid).or_insert((mtime, Vec::new()));
-        slot.0 = slot.0.max(mtime);
-        slot.1.push(entry.path());
+        if let Some((_, run)) = parse_name(&name)
+            && run != own
+        {
+            runs.entry(run).or_default().push(entry.path());
+        }
     }
-    let mut all: Vec<_> = by_pid.into_iter().filter(|(pid, _)| *pid != own).collect();
-    all.sort_by_key(|(_, (t, _))| std::cmp::Reverse(*t));
-    for (_, (_, files)) in all.into_iter().skip(KEEP_PROCESSES) {
-        for f in files {
-            // best effort: a file that can't be removed now is tried again by the next process
-            let _ = std::fs::remove_file(f);
+    let ended_clean = |run: RunId| {
+        read_capped(&dir.join(FileKind::Inflight.name(run)))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<InflightFile>(&b).ok())
+            .is_some_and(|f| f.ended == Some(Ended::Clean))
+    };
+    let (mut clean, mut unclean): (Vec<RunId>, Vec<RunId>) = runs.keys().copied().partition(|r| ended_clean(*r));
+    for (list, keep) in [(&mut clean, KEEP_CLEAN), (&mut unclean, KEEP_UNCLEAN)] {
+        list.sort_by_key(|r| std::cmp::Reverse((r.started_ms, r.pid)));
+        for run in list.iter().skip(keep) {
+            for f in runs.get(run).into_iter().flatten() {
+                // best effort: a file that can't be removed now is tried again by the next process
+                let _ = std::fs::remove_file(f);
+            }
         }
     }
 }
@@ -1099,16 +1134,15 @@ pub struct Span<'a> {
     op: &'static str,
     level: Level,
     class: Class,
-    /// `None` for a span that records nothing.
+    /// `None` for a span that records nothing (no clock read: `Instant::now` panics on the web build).
     started: Option<Instant>,
-    extra: Vec<(String, Val)>,
+    extra: Vec<(&'static str, Val)>,
     /// Earliest time (since the recorder started) a [`Span::note`] from this handle is passed on.
     note_next_ns: AtomicU64,
 }
 
 impl<'a> Span<'a> {
-    /// A span that records nothing: what the code gets when diagnostics are off or the level is below the threshold. It
-    /// reads no clock.
+    /// A span that records nothing: what the code gets when diagnostics are off or the level is below the threshold.
     pub fn none() -> Span<'a> {
         Span {
             diag: None,
@@ -1123,6 +1157,10 @@ impl<'a> Span<'a> {
         }
     }
 
+    fn active(diag: &'a Diag, seq: u64, subsystem: Subsystem, op: &'static str, level: Level, class: Class, started: Instant) -> Span<'a> {
+        Span { diag: Some(diag), seq, subsystem, op, level, class, started: Some(started), extra: Vec::new(), note_next_ns: AtomicU64::new(0) }
+    }
+
     /// Whether this span is being recorded.
     pub fn recording(&self) -> bool {
         self.diag.is_some()
@@ -1130,15 +1168,19 @@ impl<'a> Span<'a> {
 }
 
 impl Span<'_> {
-    /// Set a field of this span, kept in the entry when it ends (and visible in the in-flight file for a top span, via [`note`]).
+    /// Set a field of this span, kept in the ring entry when it ends (a final count, say: [`Span::note`] passes values
+    /// on at most every 50 ms, so the last one noted may not be the last one).
     pub fn set(&mut self, key: &'static str, v: Val) {
         if self.diag.is_some() {
-            set_field(&mut self.extra, key, v);
+            match self.extra.iter_mut().find(|(k, _)| *k == key) {
+                Some(slot) => slot.1 = v,
+                None => self.extra.push((key, v)),
+            }
         }
     }
 
-    /// Set a field of this open top span from any thread (how far it has got). Passed on at most every 50 ms per span
-    /// handle (the in-flight file is rewritten every 250 ms anyway), so calling it per item is cheap.
+    /// Set a field of this open top span from any thread (how far it has got), shown in the in-flight file. Passed on
+    /// at most every 50 ms per span handle (the file is rewritten every 250 ms anyway), so calling it per item is cheap.
     pub fn note(&self, key: &'static str, v: Val) {
         if let (Some(d), Class::Top) = (self.diag, self.class) {
             let now = d.started.elapsed().as_nanos() as u64;
@@ -1169,79 +1211,155 @@ impl Span<'_> {
 
 impl Drop for Span<'_> {
     fn drop(&mut self) {
+        if self.diag.is_none() {
+            return;
+        }
         let outcome = if std::thread::panicking() { Outcome::Panicked } else { Outcome::Abandoned };
         self.end(outcome);
     }
 }
 
+/// Times one item of routine work as a leaf span that ends `ok` when dropped (`panicked` while unwinding): for a loop
+/// body with `continue`s, where an item has no failure of its own to report.
+#[must_use = "the timer measures until it is dropped; binding it to _ ends it at once"]
+pub struct ItemTimer<'a>(Span<'a>);
+
+impl Drop for ItemTimer<'_> {
+    fn drop(&mut self) {
+        let outcome = if std::thread::panicking() { Outcome::Panicked } else { Outcome::Ok };
+        self.0.end(outcome);
+    }
+}
+
+/// An [`ItemTimer`] at `trace` (nothing but one load when that level is not recorded).
+pub fn item_timer(subsystem: Subsystem, op: &'static str) -> ItemTimer<'static> {
+    ItemTimer(span(subsystem, op, Class::Leaf, &[]))
+}
+
+/// Run `f` inside a top span that ends with `f`'s outcome: `Ok`, or what `on_error` says an error is (`Failed`, or
+/// `Cancelled` for a cancel). Every return path of `f`, `?` included, ends the span with its real outcome.
+pub fn traced<T, E>(
+    level: Level,
+    subsystem: Subsystem,
+    op: &'static str,
+    fields: &[(&'static str, Val)],
+    on_error: impl FnOnce(&E) -> Outcome,
+    f: impl FnOnce(&Span<'static>) -> Result<T, E>,
+) -> Result<T, E> {
+    end_traced(span_at(level, subsystem, op, Class::Top, fields), on_error, f)
+}
+
+fn end_traced<'a, T, E>(span: Span<'a>, on_error: impl FnOnce(&E) -> Outcome, f: impl FnOnce(&Span<'a>) -> Result<T, E>) -> Result<T, E> {
+    let r = f(&span);
+    let outcome = match &r {
+        Ok(_) => Outcome::Ok,
+        Err(e) => on_error(e),
+    };
+    span.finish(outcome);
+    r
+}
+
 static GLOBAL: OnceLock<Diag> = OnceLock::new();
 
-/// Start the process-wide recorder with `config`, install the panic hook (chained after the existing one), start the writer
-/// thread and record a `start` event. `false` when one is already running, and always on the web build (no clock,
-/// threads or files there).
-pub fn start(dir: Option<PathBuf>, config: &Config) -> bool {
+/// What [`start`] / [`start_from_env`] did, for the host to log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartStatus {
+    /// `<PREFIX>_DIAG` unset, empty, or a configuration that records nothing.
+    Off,
+    /// Recording into this folder.
+    Started(PathBuf),
+    /// Asked for, but there is no folder to write to (`<PREFIX>_DIAG_DIR` empty, or no settings folder in this run).
+    NoFolder,
+    /// Asked for, but the folder can't be created.
+    FolderUnavailable(PathBuf, std::io::ErrorKind),
+    /// A recorder is already running in this process.
+    AlreadyRunning,
+    /// Not on this platform (the web build: no clock, threads or files).
+    Unsupported,
+}
+
+/// Start the process-wide recorder in `dir` (created if needed) with `config`: install the panic hook (after the
+/// existing one), start the writer thread and record a `start` event.
+pub fn start(dir: PathBuf, config: &Config) -> StartStatus {
     if cfg!(target_arch = "wasm32") {
-        return false;
+        return StartStatus::Unsupported;
     }
-    let first = GLOBAL.set(Diag::with_config(dir, RING_CAP, config)).is_ok();
-    if first {
-        install_panic_hook();
-        if let Some(d) = GLOBAL.get()
-            && d.dir.is_some()
-            && std::thread::Builder::new().name("lcc-diag-writer".into()).spawn(writer_loop).is_ok()
-        {
-            d.writer.store(true, Ordering::Relaxed);
-        }
-        event_at(Level::Critical, Subsystem::App, "start", &[("pid", Val::U64(u64::from(std::process::id())))]);
+    if GLOBAL.get().is_some() {
+        return StartStatus::AlreadyRunning;
     }
-    first
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return StartStatus::FolderUnavailable(dir, e.kind());
+    }
+    if GLOBAL.set(Diag::with_config(Some(dir.clone()), RING_CAP, config)).is_err() {
+        return StartStatus::AlreadyRunning;
+    }
+    install_panic_hook();
+    let writer = GLOBAL.get().is_some_and(|d| {
+        let ok = std::thread::Builder::new().name("lcc-diag-writer".into()).spawn(writer_loop).is_ok();
+        d.writer.store(ok, Ordering::Relaxed);
+        ok
+    });
+    event_at(Level::Critical, Subsystem::App, "start", &[("pid", Val::U64(u64::from(std::process::id()))), ("writer_thread", Val::Bool(writer))]);
+    StartStatus::Started(dir)
 }
 
 fn writer_loop() {
     loop {
         let Some(d) = GLOBAL.get() else { return };
         d.tick();
-        std::thread::sleep(Duration::from_millis(d.flush_every_ms.load(Ordering::Relaxed).max(10)));
+        std::thread::sleep(Duration::from_millis(d.flush_every_ms.max(10)));
     }
 }
 
-/// [`start`] when `<PREFIX>_DIAG` is set (and not `0`/`off`), in `<PREFIX>_DIAG_DIR` or `<settings>/diag`. The value is a
-/// [`Config`] string; entries that are not understood are ignored and recorded as `config_rejected` events.
-pub fn start_from_env() -> bool {
-    let value = match lcc_brand::env("DIAG") {
-        Some(v) if !matches!(v.trim(), "" | "0" | "off") => v,
-        _ => return false,
+/// What `<PREFIX>_DIAG` and `<PREFIX>_DIAG_DIR` ask for: the configuration, what it did not understand and the folder;
+/// or why nothing starts. `diag` is the `<PREFIX>_DIAG` value, `dir_override` the `<PREFIX>_DIAG_DIR` value (empty: no
+/// folder), `default_dir` the host's folder for this run (`None` when the run keeps no settings).
+fn plan_start(
+    diag: Option<&str>,
+    dir_override: Option<&std::ffi::OsStr>,
+    default_dir: Option<PathBuf>,
+) -> Result<(Config, Vec<ConfigIssue>, PathBuf), StartStatus> {
+    let value = diag.map(str::trim).filter(|v| !v.is_empty()).ok_or(StartStatus::Off)?;
+    let (config, issues) = Config::parse(value);
+    if !config.records_anything() {
+        return Err(StartStatus::Off);
+    }
+    let dir = match dir_override {
+        Some(d) if d.is_empty() => None,
+        Some(d) => Some(PathBuf::from(d)),
+        None => default_dir,
     };
-    let (config, issues) = Config::parse(&value);
-    let dir = lcc_brand::env_os("DIAG_DIR").map(PathBuf::from).or_else(|| lcc_brand::settings_dir().map(|d| d.join("diag")));
-    let first = start(dir, &config);
-    if first {
-        for issue in issues.iter().take(8) {
-            event_at(
-                Level::Critical,
-                Subsystem::App,
-                "config_rejected",
-                &[("entry", Val::text(&issue.entry)), ("problem", Val::text(issue.problem.as_str()))],
-            );
-        }
-    }
-    first
+    let dir = dir.ok_or(StartStatus::NoFolder)?;
+    Ok((config, issues, dir))
 }
 
-pub fn enabled() -> bool {
-    GLOBAL.get().is_some()
+/// [`start`] as `<PREFIX>_DIAG` asks (a [`Config`] string), in `<PREFIX>_DIAG_DIR` or else `default_dir`: the host's
+/// settings folder's `diag/`, or `None` for a run that keeps no settings (`--memory`, `<PREFIX>_NO_PREFS`). Entries
+/// that are not understood are counted in a `config_rejected` event. The host logs the returned status.
+pub fn start_from_env(default_dir: Option<PathBuf>) -> StartStatus {
+    let diag = lcc_brand::env("DIAG");
+    let dir_override = lcc_brand::env_os("DIAG_DIR");
+    let (config, issues, dir) = match plan_start(diag.as_deref(), dir_override.as_deref(), default_dir) {
+        Ok(plan) => plan,
+        Err(status) => return status,
+    };
+    let status = start(dir, &config);
+    if matches!(status, StartStatus::Started(_))
+        && let Some(first) = issues.first()
+    {
+        event_at(
+            Level::Critical,
+            Subsystem::App,
+            "config_rejected",
+            &[("entries", Val::U64(issues.len() as u64)), ("first_problem", Val::text(first.problem.as_str()))],
+        );
+    }
+    status
 }
 
 /// Whether a call at `level` in `subsystem` would be recorded now: false when diagnostics are off.
 pub fn wants(subsystem: Subsystem, level: Level) -> bool {
     GLOBAL.get().is_some_and(|d| d.wants(subsystem, level))
-}
-
-/// [`Diag::set_level`] on the process-wide recorder.
-pub fn set_level(subsystem: Option<Subsystem>, level: Option<Level>) {
-    if let Some(d) = GLOBAL.get() {
-        d.set_level(subsystem, level);
-    }
 }
 
 pub fn span(subsystem: Subsystem, op: &'static str, class: Class, fields: &[(&'static str, Val)]) -> Span<'static> {
@@ -1255,20 +1373,9 @@ pub fn span_at(level: Level, subsystem: Subsystem, op: &'static str, class: Clas
     }
 }
 
-pub fn event(subsystem: Subsystem, op: &str, fields: &[(&'static str, Val)]) {
-    event_at(Level::Normal, subsystem, op, fields);
-}
-
-pub fn event_at(level: Level, subsystem: Subsystem, op: &str, fields: &[(&'static str, Val)]) {
+pub fn event_at(level: Level, subsystem: Subsystem, op: &'static str, fields: &[(&'static str, Val)]) {
     if let Some(d) = GLOBAL.get() {
         d.event_at(level, subsystem, op, fields);
-    }
-}
-
-/// [`Diag::note`] on the process-wide recorder.
-pub fn note(key: &'static str, v: Val) {
-    if let Some(d) = GLOBAL.get() {
-        d.note(key, v);
     }
 }
 
@@ -1276,9 +1383,18 @@ pub fn snapshot(tail: usize) -> Option<Snapshot> {
     GLOBAL.get().map(|d| d.snapshot(tail))
 }
 
+/// Write every file now (no-op when diagnostics are off).
 pub fn flush() {
     if let Some(d) = GLOBAL.get() {
         d.flush();
+    }
+}
+
+/// The process is ending on purpose: mark it and write every file (no-op when diagnostics are off). Call it on every
+/// orderly way out, including one that ends with `std::process::exit`.
+pub fn finish() {
+    if let Some(d) = GLOBAL.get() {
+        d.finish();
     }
 }
 
@@ -1287,30 +1403,39 @@ fn install_panic_hook() {
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            // the existing hooks first (stderr, panic log, log file), as they chain theirs
+            previous(info);
             if let Some(d) = GLOBAL.get() {
-                let at = info.location().map_or_else(String::new, |l| format!("{}:{}", l.file(), l.line()));
+                let at = info.location().map_or_else(|| "unknown".to_string(), |l| panic_location(l.file(), l.line(), l.column()));
                 d.panic_event(&at);
             }
-            previous(info);
         }));
     });
 }
 
-/// Whether process `pid` is running (`ps -p`; `None` where that can't be asked).
+/// Whether process `pid` is running (`ps -p`; `None` where that can't be asked or `ps` fails).
 pub fn is_running(pid: u32) -> Option<bool> {
     if !cfg!(unix) {
         return None;
     }
     let out = std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "pid="]).output().ok()?;
-    Some(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+    let listed = String::from_utf8_lossy(&out.stdout).trim() == pid.to_string();
+    // `ps -p` exits 1 when the pid is not listed; anything else with nothing listed is `ps` failing
+    match (listed, out.status.code()) {
+        (true, _) => Some(true),
+        (false, Some(0 | 1)) => Some(false),
+        _ => None,
+    }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+/// `text` with control characters shown as `?`, so a damaged or foreign file can't split report lines or drive the
+/// terminal.
+fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
 fn show_fields(fields: &[(String, Val)]) -> String {
-    fields.iter().map(|(k, v)| format!("{k}={}", v.show())).collect::<Vec<_>>().join(" ")
+    fields.iter().map(|(k, v)| format!("{}={}", printable(k), v.show())).collect::<Vec<_>>().join(" ")
 }
 
 fn show_us(us: u64) -> String {
@@ -1323,7 +1448,7 @@ fn show_us(us: u64) -> String {
     }
 }
 
-/// `app critical, import trace, probe off`: the thresholds in effect, with equal neighbours folded to "all others".
+/// `all others critical, import trace, probe off`: the thresholds in effect, with the commonest folded to "all others".
 fn show_levels(levels: &[LevelRow]) -> String {
     let word = |l: Option<Level>| l.map_or("off", Level::as_str);
     let mut counts: Vec<(&str, usize)> = Vec::new();
@@ -1339,577 +1464,148 @@ fn show_levels(levels: &[LevelRow]) -> String {
     parts.join(", ")
 }
 
-/// A text report of every process that left files in `dir`, newest first: running or gone, what was open, what ran last,
-/// where the time went, and what the recorder itself cost.
-pub fn report(dir: &Path) -> String {
-    let mut procs: Vec<InflightFile> = Vec::new();
-    if let Ok(read) = std::fs::read_dir(dir) {
-        for e in read.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("inflight-")
-                && name.ends_with(".json")
-                && let Some(f) = read_json::<InflightFile>(&e.path())
-            {
-                procs.push(f);
-            }
+/// Parse one of the recorder's files, saying why not when it can't.
+fn read_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+    let bytes = read_capped(path)?;
+    match serde_json::from_slice::<T>(&bytes) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let schema = serde_json::from_slice::<serde_json::Value>(&bytes).ok().and_then(|v| v.get("schema").and_then(serde_json::Value::as_u64));
+            Err(match schema {
+                Some(s) if s != u64::from(SCHEMA) => format!("written by another version (format {s}; this one reads {SCHEMA})"),
+                _ => "damaged".to_string(),
+            })
         }
     }
-    procs.sort_by_key(|p| std::cmp::Reverse(p.started_ms));
-    if procs.is_empty() {
+}
+
+/// Ring entries the report prints per process, and stat rows.
+const REPORT_ENTRIES: usize = 15;
+const REPORT_STATS: usize = 10;
+
+/// A text report of every process that left files in `dir`, newest first: running, ended cleanly or not, what was
+/// open, what ran last, where the time went, and what the recorder itself cost. Files it can't read are named, not
+/// skipped.
+pub fn report(dir: &Path) -> String {
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) => return format!("can't read {}: {e}\n", dir.display()),
+    };
+    let mut runs: Vec<RunId> = Vec::new();
+    for e in read.flatten() {
+        if let Some((FileKind::Inflight, run)) = parse_name(&e.file_name().to_string_lossy())
+            && e.file_name().to_string_lossy().ends_with(".json")
+        {
+            runs.push(run);
+        }
+    }
+    runs.sort_by_key(|r| std::cmp::Reverse((r.started_ms, r.pid)));
+    if runs.is_empty() {
         return format!("no diagnostics files in {}\n", dir.display());
     }
     let mut out = String::new();
-    for p in &procs {
-        let state = match is_running(p.pid) {
-            Some(true) => "running (or hung)",
-            Some(false) => "gone (finished, killed or crashed)",
-            None => "state unknown",
+    for run in runs {
+        let name = FileKind::Inflight.name(run);
+        let p = match read_file::<InflightFile>(&dir.join(&name)) {
+            Ok(p) => p,
+            Err(why) => {
+                out.push_str(&format!("process {} (started {} ms): {name} is {why}\n", run.pid, run.started_ms));
+                continue;
+            }
+        };
+        let state = match (p.ended, is_running(p.pid)) {
+            (Some(Ended::Clean), _) => "ended cleanly",
+            (None, Some(true)) => "running (or hung)",
+            (None, Some(false)) => "ended without a clean exit (killed, crashed, or hung and stopped)",
+            (None, None) => "did not end cleanly; whether it is still running is unknown here",
         };
         out.push_str(&format!(
-            "process {} ({state}); started {} ms, last written {} ms ago (clock difference to now)\n",
+            "process {}: {state}; started {} ms, last written {} ms ago (clock difference to now)\n",
             p.pid,
             p.started_ms,
             unix_ms().saturating_sub(p.written_ms)
         ));
-        if !p.levels.is_empty() {
-            out.push_str(&format!("  levels: {}\n", show_levels(&p.levels)));
+        if p.schema != SCHEMA {
+            out.push_str(&format!("  written in format {}; this report reads {SCHEMA}\n", p.schema));
         }
+        out.push_str(&format!("  levels: {}\n", show_levels(&p.levels)));
         if p.write_failures > 0 {
             out.push_str(&format!("  {} diagnostics writes failed\n", p.write_failures));
+        }
+        if p.panics_lost > 0 {
+            out.push_str(&format!("  {} panics could not be recorded (the recorder was busy)\n", p.panics_lost));
         }
         if p.open.is_empty() {
             out.push_str("  nothing was in flight\n");
         }
         for o in &p.open {
             out.push_str(&format!(
-                "  IN FLIGHT {}:{} thread {} open {} at last write  {}\n",
+                "  IN FLIGHT {}:{} ({}) thread {} open {} at last write  {}\n",
                 o.subsystem.as_str(),
-                o.op,
+                printable(&o.op),
+                o.level.as_str(),
                 o.thread,
                 show_us(o.age_ms.saturating_mul(1000)),
                 show_fields(&o.fields)
             ));
         }
-        if let Some(r) = read_json::<RingFile>(&dir.join(format!("ring-{}.json", p.pid))) {
-            out.push_str("  last entries (oldest first):\n");
-            for e in r.entries.iter().rev().take(15).rev() {
-                let what = match e.kind {
-                    Kind::Span => format!("{} in {}", e.outcome.map_or("?", Outcome::as_str), show_us(e.dur_us.unwrap_or(0))),
-                    Kind::Event => "event".to_string(),
-                };
-                out.push_str(&format!("    {}:{} {what}  {}\n", e.subsystem.as_str(), e.op, show_fields(&e.fields)));
+        match read_file::<RingFile>(&dir.join(FileKind::Ring.name(run))) {
+            Ok(r) => {
+                let shown = r.entries.len().min(REPORT_ENTRIES);
+                let hidden = r.entries.len().saturating_sub(shown);
+                out.push_str("  last entries (oldest first):\n");
+                if hidden > 0 || r.evicted > 0 {
+                    out.push_str(&format!("    ({hidden} earlier entries not shown; {} pushed out of the full ring)\n", r.evicted));
+                }
+                for e in r.entries.iter().skip(hidden) {
+                    let what = match e.kind {
+                        Kind::Span => format!("{} in {}", e.outcome.map_or("?", Outcome::as_str), show_us(e.dur_us.unwrap_or(0))),
+                        Kind::Event => "event".to_string(),
+                    };
+                    out.push_str(&format!("    {}:{} {what}  {}\n", e.subsystem.as_str(), printable(&e.op), show_fields(&e.fields)));
+                }
             }
+            Err(why) => out.push_str(&format!("  ring file {why}\n")),
         }
-        if let Some(s) = read_json::<StatsFile>(&dir.join(format!("stats-{}.json", p.pid))) {
-            if !s.stats.is_empty() {
-                out.push_str("  where the time went (leaf spans):\n");
+        match read_file::<StatsFile>(&dir.join(FileKind::Stats.name(run))) {
+            Ok(s) => {
+                if !s.stats.is_empty() {
+                    out.push_str("  where the time went (leaf spans):\n");
+                }
+                for r in s.stats.iter().take(REPORT_STATS) {
+                    out.push_str(&format!(
+                        "    {}:{}  {} calls ({} not ok), total {}, mean {}, min {}, max {}\n",
+                        r.subsystem.as_str(),
+                        printable(&r.op),
+                        r.count,
+                        r.failed,
+                        show_us(r.total_us),
+                        show_us(r.total_us / r.count.max(1)),
+                        show_us(if r.min_us == u64::MAX { 0 } else { r.min_us }),
+                        show_us(r.max_us)
+                    ));
+                }
+                let more = s.stats.len().saturating_sub(REPORT_STATS);
+                if more > 0 {
+                    out.push_str(&format!("    ({more} more names not shown)\n"));
+                }
+                let o = &s.overhead;
+                if o.calls > 0 {
+                    let share = o.recorder_ns as f64 / (o.uptime_ms.max(1) as f64 * 1e6) * 100.0;
+                    out.push_str(&format!(
+                        "  the recorder's own cost: {} recorded steps, events and notes took {} on the working threads (about {share:.3}% of one core over {}); rendering and writing {}\n",
+                        o.calls,
+                        show_us(o.recorder_ns / 1000),
+                        show_us(o.uptime_ms.saturating_mul(1000)),
+                        show_us(o.writer_ns / 1000)
+                    ));
+                }
             }
-            for r in s.stats.iter().take(10) {
-                out.push_str(&format!(
-                    "    {}:{}  {} calls, total {}, mean {}, min {}, max {}\n",
-                    r.subsystem.as_str(),
-                    r.op,
-                    r.count,
-                    show_us(r.total_us),
-                    show_us(r.total_us / r.count.max(1)),
-                    show_us(r.min_us),
-                    show_us(r.max_us)
-                ));
-            }
-            let o = &s.overhead;
-            if o.calls > 0 {
-                let share = o.recorder_ns as f64 / (o.uptime_ms.max(1) as f64 * 1e6) * 100.0;
-                out.push_str(&format!(
-                    "  the recorder's own cost: {} recorded calls took {} on the working threads (about {share:.3}% of one core over {}); writer thread {}\n",
-                    o.calls,
-                    show_us(o.recorder_ns / 1000),
-                    show_us(o.uptime_ms.saturating_mul(1000)),
-                    show_us(o.writer_ns / 1000)
-                ));
-            }
+            Err(why) => out.push_str(&format!("  stats file {why}\n")),
         }
     }
     out
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp(tag: &str) -> PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!("lcc-diag-test-{}-{tag}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
-    }
-
-    fn top<'a>(d: &'a Diag, op: &'static str) -> Span<'a> {
-        d.span(Subsystem::Commit, op, Class::Top, &[])
-    }
-
-    fn cfg(text: &str) -> Config {
-        let (c, issues) = Config::parse(text);
-        assert!(issues.is_empty(), "{issues:?}");
-        c
-    }
-
-    fn inflight(dir: &Path, d: &Diag) -> InflightFile {
-        read_json(&dir.join(format!("inflight-{}.json", d.pid))).unwrap()
-    }
-
-    #[test]
-    fn a_text_is_cut_on_a_character_boundary() {
-        let long = "é".repeat(TEXT_MAX_CHARS * 3);
-        let Val::Text(t) = Val::text(&long) else { return };
-        assert_eq!(t.chars().count(), TEXT_MAX_CHARS);
-        assert_eq!(Val::text("abc"), Val::Text("abc".into()));
-        assert_eq!(Val::text(""), Val::Text(String::new()));
-    }
-
-    #[test]
-    fn a_span_that_records_nothing_is_harmless() {
-        let mut s = Span::none();
-        assert!(!s.recording());
-        s.set("a", Val::U64(1));
-        s.note("a", Val::U64(1));
-        s.finish(Outcome::Ok);
-    }
-
-    #[test]
-    fn subsystem_and_level_tables_agree_with_their_names() {
-        for (i, s) in Subsystem::ALL.iter().enumerate() {
-            assert_eq!(s.index(), i);
-            assert_eq!(Subsystem::parse(s.as_str()), Some(*s));
-        }
-        let mut names: Vec<_> = Subsystem::ALL.iter().map(|s| s.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), Subsystem::COUNT, "names are distinct");
-        for l in Level::ALL {
-            assert_eq!(Level::parse(l.as_str()), Some(l));
-            assert_eq!(level_of(l as u8), Some(l));
-        }
-        assert_eq!(level_of(0), None);
-        assert_eq!(Subsystem::parse("Import"), None, "names are lower case");
-        assert_eq!(Subsystem::parse(""), None);
-        assert_eq!(Level::parse(""), None);
-    }
-
-    #[test]
-    fn a_call_is_recorded_at_the_threshold_and_below_but_not_above() {
-        let d = Diag::new(None, 8);
-        for t in [None, Some(Level::Critical), Some(Level::Normal), Some(Level::Detail), Some(Level::Trace)] {
-            d.set_level(Some(Subsystem::Ui), t);
-            for l in Level::ALL {
-                let expected = t.is_some_and(|t| l <= t);
-                assert_eq!(d.wants(Subsystem::Ui, l), expected, "threshold {t:?}, call {l:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn config_entries_set_the_default_and_overrides_in_any_order() {
-        let a = cfg("critical,import=trace");
-        let b = cfg("import=trace,critical");
-        assert_eq!(a, b);
-        assert_eq!(a.level_of(Subsystem::Import), Some(Level::Trace));
-        assert_eq!(a.level_of(Subsystem::Ui), Some(Level::Critical));
-        let c = cfg("  normal , probe=off ,, probe=detail ");
-        assert_eq!(c.level_of(Subsystem::Probe), Some(Level::Detail), "the last entry for a subsystem wins");
-        assert_eq!(c.level_of(Subsystem::App), Some(Level::Normal));
-        assert_eq!(cfg("off").level_of(Subsystem::App), None);
-        assert_eq!(cfg("detail,commit=off").level_of(Subsystem::Commit), None);
-        for on in ["1", "on", "true"] {
-            assert_eq!(cfg(on), Config::default(), "{on} means normal");
-        }
-        assert_eq!(cfg(""), Config::default());
-    }
-
-    #[test]
-    fn config_entries_that_are_not_understood_are_reported_and_the_rest_still_applies() {
-        let (c, issues) = Config::parse("loud,import=trace,imprt=trace,ui=2,commit=");
-        assert_eq!(c.level_of(Subsystem::Import), Some(Level::Trace));
-        assert_eq!(c.level_of(Subsystem::Ui), Some(Level::Normal), "a bad value leaves the subsystem as it was");
-        assert_eq!(
-            issues,
-            vec![
-                ConfigIssue { entry: "loud".into(), problem: ConfigProblem::UnknownLevel },
-                ConfigIssue { entry: "imprt=trace".into(), problem: ConfigProblem::UnknownSubsystem },
-                ConfigIssue { entry: "ui=2".into(), problem: ConfigProblem::UnknownLevel },
-                ConfigIssue { entry: "commit=".into(), problem: ConfigProblem::UnknownLevel },
-            ]
-        );
-    }
-
-    #[test]
-    fn import_at_trace_and_everything_else_at_critical_records_only_what_each_admits() {
-        let d = Diag::with_config(None, 64, &cfg("critical,import=trace"));
-        d.span(Subsystem::Import, "item", Class::Leaf, &[]).finish(Outcome::Ok);
-        top(&d, "commit_stage").finish(Outcome::Ok);
-        d.event(Subsystem::Ui, "slow_frame", &[]);
-        d.event_at(Level::Critical, Subsystem::Ui, "freeze", &[]);
-        d.event_at(Level::Trace, Subsystem::Import, "detail_event", &[]);
-        let snap = d.snapshot(100);
-        assert_eq!(snap.stats.iter().map(|r| r.op.as_str()).collect::<Vec<_>>(), ["item"]);
-        let ops: Vec<_> = snap.ring.iter().map(|e| e.op.as_str()).collect();
-        assert_eq!(ops, ["freeze", "detail_event"], "the commit stage (normal) and the slow frame (normal) were not recorded");
-    }
-
-    #[test]
-    fn a_call_below_the_threshold_leaves_no_trace_and_is_not_counted() {
-        let d = Diag::with_config(None, 8, &cfg("off"));
-        let mut s = d.span(Subsystem::Commit, "x", Class::Top, &[("k", Val::U64(1))]);
-        s.set("a", Val::U64(1));
-        s.note("n", Val::U64(1));
-        s.finish(Outcome::Ok);
-        d.event(Subsystem::Ui, "e", &[]);
-        d.span(Subsystem::Probe, "leaf", Class::Leaf, &[]).finish(Outcome::Ok);
-        let snap = d.snapshot(10);
-        assert!(snap.ring.is_empty() && snap.open.is_empty() && snap.stats.is_empty());
-        assert_eq!(snap.overhead.calls, 0);
-        assert_eq!(d.seq.load(Ordering::Relaxed), 1, "not even a sequence number was taken");
-    }
-
-    #[test]
-    fn a_threshold_can_be_changed_while_running() {
-        let d = Diag::with_config(None, 8, &cfg("critical"));
-        d.event(Subsystem::Ui, "before", &[]);
-        d.set_level(Some(Subsystem::Ui), Some(Level::Normal));
-        d.event(Subsystem::Ui, "after", &[]);
-        d.set_level(None, None);
-        d.event(Subsystem::Ui, "off", &[]);
-        let ring = d.snapshot(10).ring;
-        assert_eq!(ring.iter().map(|e| e.op.as_str()).collect::<Vec<_>>(), ["after"]);
-    }
-
-    #[test]
-    fn recorded_calls_are_counted_in_the_overhead() {
-        let d = Diag::new(None, 8);
-        top(&d, "a").finish(Outcome::Ok); // begin + end: two calls
-        d.event(Subsystem::Ui, "e", &[]);
-        d.span(Subsystem::Probe, "leaf", Class::Leaf, &[]).finish(Outcome::Ok); // a leaf span is one call
-        let o = d.snapshot(0).overhead;
-        assert_eq!(o.calls, 4);
-        assert_eq!(o.writer_ns, 0);
-        for _ in 0..LEAF_SAMPLE_EVERY * 4 {
-            d.span(Subsystem::Probe, "leaf", Class::Leaf, &[]).finish(Outcome::Ok);
-        }
-        let o = d.snapshot(0).overhead;
-        assert_eq!(o.calls, 4 + LEAF_SAMPLE_EVERY * 4);
-        assert!(o.recorder_ns > 0, "sampled ends give a cost estimate");
-    }
-
-    #[test]
-    fn the_ring_never_holds_more_than_its_cap_and_keeps_a_failure() {
-        let d = Diag::new(None, 8);
-        top(&d, "bad").finish(Outcome::Failed);
-        for _ in 0..50 {
-            top(&d, "routine").finish(Outcome::Ok);
-        }
-        let snap = d.snapshot(1000);
-        assert!(snap.ring.len() <= 8, "{}", snap.ring.len());
-        assert!(snap.ring.iter().any(|e| e.op == "bad"), "the failure outlived 50 routine successes");
-        assert_eq!(snap.ring.iter().filter(|e| e.op == "routine").count(), snap.ring.len() - 1);
-    }
-
-    #[test]
-    fn at_the_cap_the_oldest_goes_when_nothing_is_routine() {
-        let d = Diag::new(None, 8);
-        for i in 0..8u64 {
-            d.event(Subsystem::Ui, "e", &[("i", Val::U64(i))]);
-        }
-        d.event(Subsystem::Ui, "e", &[("i", Val::U64(8))]);
-        let ring = d.snapshot(100).ring;
-        assert_eq!(ring.len(), 8);
-        assert_eq!(ring[0].fields[0].1, Val::U64(1));
-        assert_eq!(ring[7].fields[0].1, Val::U64(8));
-    }
-
-    #[test]
-    fn a_more_verbose_record_is_evicted_before_a_less_verbose_one_whatever_their_age() {
-        let d = Diag::new(None, 8);
-        d.event_at(Level::Critical, Subsystem::App, "oldest_critical", &[]);
-        d.event_at(Level::Trace, Subsystem::Ui, "trace_failure_like", &[]);
-        for _ in 0..6 {
-            d.event_at(Level::Normal, Subsystem::Ui, "normal", &[]);
-        }
-        // Full (8). Each further normal event must push out the trace one first, then a normal one, never the critical one.
-        for _ in 0..20 {
-            d.event_at(Level::Normal, Subsystem::Ui, "normal", &[]);
-        }
-        let ring = d.snapshot(100).ring;
-        assert_eq!(ring.len(), 8);
-        assert!(ring.iter().any(|e| e.op == "oldest_critical"), "a critical record outlives 20 normal ones");
-        assert!(!ring.iter().any(|e| e.op == "trace_failure_like"));
-    }
-
-    #[test]
-    fn the_ring_reads_back_in_push_order_across_levels() {
-        let d = Diag::new(None, 16);
-        let order = [Level::Trace, Level::Critical, Level::Detail, Level::Normal, Level::Critical, Level::Trace];
-        for (i, l) in order.iter().enumerate() {
-            d.event_at(*l, Subsystem::Ui, "e", &[("i", Val::U64(i as u64))]);
-        }
-        let got: Vec<_> = d.snapshot(100).ring.iter().map(|e| e.fields[0].1.clone()).collect();
-        assert_eq!(got, (0..6).map(Val::U64).collect::<Vec<_>>());
-        let tail: Vec<_> = d.snapshot(2).ring.iter().map(|e| e.fields[0].1.clone()).collect();
-        assert_eq!(tail, vec![Val::U64(4), Val::U64(5)]);
-    }
-
-    #[test]
-    fn leaf_spans_are_counted_and_timed_not_listed_or_kept() {
-        let d = Diag::new(None, 8);
-        for _ in 0..3 {
-            d.span(Subsystem::Commit, "apply_photo", Class::Leaf, &[]).finish(Outcome::Ok);
-        }
-        let snap = d.snapshot(10);
-        assert!(snap.ring.is_empty() && snap.open.is_empty());
-        let row = &snap.stats[0];
-        assert_eq!((row.op.as_str(), row.count), ("apply_photo", 3));
-        assert!(row.min_us <= row.max_us && row.total_us >= row.max_us);
-    }
-
-    #[test]
-    fn a_leaf_name_seen_by_two_recorders_on_one_thread_keeps_separate_totals() {
-        let a = Diag::new(None, 8);
-        let b = Diag::new(None, 8);
-        a.span(Subsystem::Commit, "x", Class::Leaf, &[]).finish(Outcome::Ok);
-        b.span(Subsystem::Commit, "x", Class::Leaf, &[]).finish(Outcome::Ok);
-        b.span(Subsystem::Commit, "x", Class::Leaf, &[]).finish(Outcome::Ok);
-        assert_eq!((a.snapshot(0).stats[0].count, b.snapshot(0).stats[0].count), (1, 2));
-    }
-
-    #[test]
-    fn a_span_dropped_without_a_result_is_abandoned_and_one_unwinding_is_panicked() {
-        let d = Diag::new(None, 8);
-        drop(top(&d, "early_return"));
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _s = top(&d, "boom");
-            std::panic::resume_unwind(Box::new("x"));
-        }));
-        assert!(r.is_err());
-        let ring = d.snapshot(10).ring;
-        assert_eq!(ring[0].outcome, Some(Outcome::Abandoned));
-        assert_eq!(ring[1].outcome, Some(Outcome::Panicked));
-        assert!(d.snapshot(10).open.is_empty());
-    }
-
-    #[test]
-    fn done_maps_a_result_to_an_outcome_and_extra_fields_reach_the_entry() {
-        let d = Diag::new(None, 8);
-        let mut s = top(&d, "x");
-        s.set("photos", Val::U64(7));
-        s.done(&Err::<(), ()>(()));
-        let e = d.snapshot(1).ring.remove(0);
-        assert_eq!(e.outcome, Some(Outcome::Failed));
-        assert_eq!(e.fields, vec![("photos".to_string(), Val::U64(7))]);
-        assert_eq!(e.level, Level::Normal);
-    }
-
-    #[test]
-    fn a_critical_top_span_is_on_disk_at_once_and_a_normal_one_only_after_a_tick() {
-        let dir = temp("inflight");
-        let d = Diag::new(Some(dir.clone()), 8);
-        d.writer.store(true, Ordering::Relaxed); // as if the writer thread ran: changes no longer write inline
-        let critical = d.span_at(Level::Critical, Subsystem::Commit, "commit", Class::Top, &[("photos", Val::U64(5))]);
-        let file = inflight(&dir, &d);
-        assert_eq!((file.open.len(), file.open[0].op.as_str(), file.open[0].fields[0].1.clone()), (1, "commit", Val::U64(5)));
-        let normal = top(&d, "stage");
-        assert_eq!(inflight(&dir, &d).open.len(), 1, "the normal span is not in the file yet");
-        d.tick();
-        assert_eq!(inflight(&dir, &d).open.len(), 2);
-        normal.finish(Outcome::Ok);
-        assert_eq!(inflight(&dir, &d).open.len(), 2, "its end is not written yet either");
-        critical.finish(Outcome::Ok);
-        let file = inflight(&dir, &d);
-        assert!(file.open.is_empty(), "a critical end writes everything, the normal span's end included");
-        let ring: RingFile = read_json(&dir.join(format!("ring-{}.json", d.pid))).unwrap();
-        assert_eq!(ring.entries.iter().map(|e| e.op.as_str()).collect::<Vec<_>>(), ["stage", "commit"]);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_tick_writes_only_when_something_changed() {
-        let dir = temp("tick");
-        let d = Diag::new(Some(dir.clone()), 8);
-        d.writer.store(true, Ordering::Relaxed);
-        d.tick();
-        assert!(!dir.join(format!("ring-{}.json", d.pid)).exists(), "nothing happened yet");
-        d.event(Subsystem::Ui, "e", &[]);
-        d.tick();
-        let path = dir.join(format!("ring-{}.json", d.pid));
-        assert!(path.exists());
-        std::fs::remove_file(&path).unwrap();
-        d.tick();
-        assert!(!path.exists(), "no change, no write");
-        d.span(Subsystem::Probe, "leaf", Class::Leaf, &[]).finish(Outcome::Ok);
-        d.tick();
-        assert!(path.exists(), "a leaf span counts as a change (its stats moved)");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn without_a_writer_thread_a_change_writes_inline_but_rate_limited() {
-        let dir = temp("inline");
-        let d = Diag::new(Some(dir.clone()), 8);
-        d.flush_every_ms.store(1_000_000, Ordering::Relaxed);
-        d.event(Subsystem::Ui, "first", &[]);
-        let path = dir.join(format!("ring-{}.json", d.pid));
-        assert!(path.exists(), "the first change is due at once");
-        let size = std::fs::metadata(&path).unwrap().len();
-        d.event(Subsystem::Ui, "second", &[]);
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), size, "inside the interval the file is not rewritten");
-        d.flush();
-        assert!(std::fs::metadata(&path).unwrap().len() > size);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_note_reaches_the_in_flight_file_and_one_handle_passes_at_most_one_in_fifty_ms() {
-        let dir = temp("note");
-        let d = Diag::new(Some(dir.clone()), 8);
-        d.writer.store(true, Ordering::Relaxed);
-        let s = top(&d, "apply");
-        s.note("done", Val::U64(1));
-        s.note("done", Val::U64(2)); // inside the window: dropped
-        d.tick();
-        assert_eq!(inflight(&dir, &d).open[0].fields, vec![("done".to_string(), Val::U64(1))]);
-        // The thread-level note is not rate limited by a handle.
-        d.note("done", Val::U64(3));
-        d.tick();
-        assert_eq!(inflight(&dir, &d).open[0].fields, vec![("done".to_string(), Val::U64(3))]);
-        drop(s);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_note_goes_to_the_calling_threads_innermost_span_only() {
-        let d = Diag::new(None, 8);
-        let _outer = top(&d, "outer");
-        let _inner = top(&d, "inner");
-        d.note("k", Val::U64(1));
-        let open = d.snapshot(0).open;
-        assert!(open[0].fields.is_empty());
-        assert_eq!(open[1].fields.len(), 1);
-        std::thread::scope(|s| {
-            s.spawn(|| d.note("other", Val::U64(2)));
-        });
-        assert!(d.snapshot(0).open.iter().all(|o| o.fields.iter().all(|(k, _)| k != "other")), "another thread has no open span of its own");
-    }
-
-    #[test]
-    fn a_failed_write_is_counted_and_never_fails_the_work() {
-        let dir = temp("blocked");
-        std::fs::write(&dir, b"a file where the directory should be").unwrap();
-        let d = Diag::new(Some(dir.clone()), 8);
-        top(&d, "x").finish(Outcome::Ok);
-        assert_eq!(d.snapshot(1).ring.len(), 1);
-        let d = Diag { dir: Some(dir.join("gone")), ..Diag::new(None, 8) };
-        top(&d, "y").finish(Outcome::Ok);
-        d.flush();
-        assert!(d.snapshot(1).write_failures > 0);
-        let _ = std::fs::remove_file(dir);
-    }
-
-    #[test]
-    fn many_threads_recording_leaf_spans_lose_none() {
-        let d = Diag::new(None, 8);
-        std::thread::scope(|s| {
-            for _ in 0..8 {
-                s.spawn(|| {
-                    for _ in 0..1000 {
-                        d.span(Subsystem::Probe, "probe_file", Class::Leaf, &[]).finish(Outcome::Ok);
-                    }
-                });
-            }
-        });
-        let row = &d.snapshot(0).stats[0];
-        assert_eq!(row.count, 8000);
-        assert!(row.min_us <= row.max_us && row.total_us >= row.max_us);
-    }
-
-    #[test]
-    fn old_processes_files_are_pruned_but_not_our_own() {
-        let dir = temp("prune");
-        std::fs::create_dir_all(&dir).unwrap();
-        for pid in 1000..1000 + (KEEP_PROCESSES as u32 + 5) {
-            std::fs::write(dir.join(format!("inflight-{pid}.json")), b"{}").unwrap();
-        }
-        let own = std::process::id();
-        std::fs::write(dir.join(format!("ring-{own}.json")), b"{}").unwrap();
-        std::fs::write(dir.join("unrelated.txt"), b"x").unwrap();
-        prune(&dir, own);
-        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(names.contains(&format!("ring-{own}.json")) && names.contains(&"unrelated.txt".to_string()));
-        assert_eq!(names.iter().filter(|n| n.starts_with("inflight-")).count(), KEEP_PROCESSES);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn the_report_names_what_was_in_flight_the_levels_and_the_recorders_cost() {
-        let dir = temp("report");
-        let d = Diag::with_config(Some(dir.clone()), 8, &cfg("normal,import=trace,probe=off"));
-        let _open = d.span(Subsystem::Commit, "lightroom_commit", Class::Top, &[("stage", Val::text("apply"))]);
-        d.span(Subsystem::Import, "apply_photo", Class::Leaf, &[]).finish(Outcome::Ok);
-        d.event(Subsystem::Ui, "slow_frame", &[("ms", Val::U64(105_936))]);
-        d.flush();
-        let gone = InflightFile {
-            schema: SCHEMA,
-            pid: 4_000_000,
-            started_ms: 1,
-            written_ms: 2,
-            write_failures: 0,
-            levels: Vec::new(),
-            open: vec![OpenView {
-                seq: 1,
-                ts_ms: 1,
-                age_ms: 5000,
-                subsystem: Subsystem::Probe,
-                op: "probe_all".into(),
-                thread: 1,
-                fields: vec![("done".into(), Val::U64(10))],
-            }],
-        };
-        std::fs::write(dir.join("inflight-4000000.json"), serde_json::to_vec(&gone).unwrap()).unwrap();
-        let text = report(&dir);
-        assert!(text.contains("IN FLIGHT commit:lightroom_commit") && text.contains("stage=apply"), "{text}");
-        assert!(text.contains("slow_frame") && text.contains("ms=105936") && text.contains("apply_photo"), "{text}");
-        assert!(text.contains("process 4000000 (gone") && text.contains("IN FLIGHT probe:probe_all") && text.contains("done=10"), "{text}");
-        assert!(text.contains(&format!("process {} (running", d.pid)), "{text}");
-        assert!(text.contains("levels: all others normal, import trace, probe off"), "{text}");
-        assert!(text.contains("the recorder's own cost:") && text.contains("recorded calls"), "{text}");
-        assert!(report(&temp("none")).starts_with("no diagnostics files"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_corrupt_file_is_skipped_by_the_report_not_a_panic() {
-        let dir = temp("corrupt");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("inflight-77.json"), b"{not json").unwrap();
-        assert!(report(&dir).starts_with("no diagnostics files"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn hostile_files_in_the_directory_never_panic_the_report_or_the_pruning() {
-        let dir = temp("hostile");
-        std::fs::create_dir_all(&dir).unwrap();
-        let cases: &[(&str, &[u8])] = &[
-            ("inflight-1.json", b""),
-            ("inflight-2.json", b"null"),
-            ("inflight-3.json", br#"{"schema":1,"pid":3,"started_ms":1,"written_ms":2,"write_failures":0,"open":[{"seq":1}]}"#),
-            ("inflight-4.json", br#"{"schema":1,"pid":4,"started_ms":18446744073709551615,"written_ms":18446744073709551615,"write_failures":0,"open":[{"seq":1,"ts_ms":1,"age_ms":18446744073709551615,"subsystem":"commit","op":"x","thread":1,"fields":[["k",{"t":"len","v":18446744073709551615}]]}]}"#),
-            ("ring-4.json", b"\xff\xfe not utf-8"),
-            ("stats-4.json", br#"{"schema":1,"pid":4,"overhead":{"calls":1,"recorder_ns":18446744073709551615,"writer_ns":0,"uptime_ms":0},"stats":[{"subsystem":"probe","op":"x","count":0,"total_us":18446744073709551615,"min_us":0,"max_us":0}]}"#),
-            ("inflight-5.json", br#"{"schema":1,"pid":5,"started_ms":1,"written_ms":2,"write_failures":0,"open":[{"seq":1,"ts_ms":1,"age_ms":1,"subsystem":"no_such","op":"x","thread":1,"fields":[]}]}"#),
-            ("inflight-x.json", b"{}"),
-            ("inflight-99999999999999999999.json", b"{}"),
-        ];
-        for (name, bytes) in cases {
-            std::fs::write(dir.join(name), bytes).unwrap();
-        }
-        let text = report(&dir);
-        assert!(text.contains("process 4 "), "the one well-formed file is still reported: {text}");
-        prune(&dir, 0);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-}
+mod tests;
