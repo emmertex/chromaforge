@@ -218,6 +218,14 @@ messages at the bottom of the window. Each kind has a **Test** button that shows
 - Profiles are saved with the app's settings. Scripts and agents: `view.toolProfile {id}` picks one (without an id it
   lists them); `view.toolProfileEdit {op, …}` changes your own. The Modern layout's cards show their sections whole.
 
+### Tool Row and Masking
+- **Tool Row**: show or hide each button under the histogram (Crop, Remove, Red Eye, Masking, Browse Profiles, and
+  the Compact layout's Reset). Edit always stays. Right-click the row to do the same, or to move a button left or
+  right (`panel.show`, `panel.order`).
+- **Detach the mask list** (off by default): the masks show in a window of their own over the photo, which you can
+  move and resize. Feather, Refine Edges and the mask's sliders stay in the panel. Right-click the window, or a mask,
+  to dock it again (`view.masksDetached {on}`).
+
 ## AI Denoise
 - The denoiser in use (the built-in one needs nothing installed), where it runs (**Automatic**, graphics card or
   processor), **Make the denoised picture of the photos I am looking at**, **Denoise all photos with an Amount**, and

@@ -126,12 +126,17 @@ verbatim develop settings, history, snapshots and collection content to compress
 `Interop/lightroom-import-N.lca` recovery archives in the app's library. Archiving is
 best-effort: a size limit or write failure produces a warning and does not prevent photo import.
 Unchanged source data reuses its existing archive. History-step and snapshot settings that Lightroom
-Classic 13 and later store compressed are decoded into it; one that can't be decoded, or past 32 MiB
-of them in one table, is left out with a warning (a row past that limit is marked
-`_overDecodeBudget`). Other opaque SQL BLOBs are skipped. Each archive is capped at 32 MiB
-(uncompressed and on disk); one past that with its history-step and snapshot settings is saved
-without them, with a warning, and skipped only when still too big. At most eight archives and
-128 MiB total are retained. Oldest managed archives are retired; legacy `.json` archives remain
+Classic 13 and later store compressed are decoded into it. Each table may decode up to a budget derived
+from the catalog and the computer: 32 times the catalog's size on disk, no more than a quarter of the
+computer's memory or half of what is free, and never less than 32 MiB. A table past that budget is
+spent on every photo's newest steps first, then every photo's second newest and so on, so each photo
+keeps its latest history instead of the first photos in the table taking all of it; the rest are
+left out with one warning (marked `_overDecodeBudget`). A value that can't be decoded is left out
+with a warning naming the photo. Other opaque SQL BLOBs are skipped. Each archive may take up to a
+quarter of the free space on the library's drive (at least 32 MiB; its JSON up to 64 times that);
+one past that with its history-step and snapshot settings is saved without them, with a warning,
+and skipped only when still too big. At most eight archives and 128 MiB total are retained, and the
+newest is kept even when it alone is bigger. Oldest managed archives are retired; legacy `.json` archives remain
 untouched. When an archive is saved but cleanup afterwards fails (a temporary file or an old archive that
 can't be removed), the report still names the archive and a separate warning names what was left
 behind; the folder is synced once the archive is saved.

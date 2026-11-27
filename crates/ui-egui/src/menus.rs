@@ -77,6 +77,9 @@ pub fn language_from_command(id: &str) -> Option<crate::i18n::Locale> {
 /// they always match.
 pub const PIXEL_SHIFT_ID: &str = "merge.pixelShiftNow";
 pub const PIXEL_SHIFT_LABEL: &str = "Pixel Shift…";
+/// The same series merged on the camera's own pattern, without registration (no measurement, no reconstruction).
+pub const PIXEL_SHIFT_PLAIN_ID: &str = "merge.pixelShiftPlainNow";
+pub const PIXEL_SHIFT_PLAIN_LABEL: &str = "Pixel Shift, Plain Merge…";
 
 /// Photo Merge ▸ Delete Merge Sources: the same one definition for the menu bar, the command palette and the grid's
 /// context menu.
@@ -391,6 +394,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // the frames of one Nikon pixel-shift series (no dialog: a selection that is not a complete series is refused
     // with the reason)
     (PIXEL_SHIFT_ID, PIXEL_SHIFT_LABEL, None, "Photo>Photo Merge"),
+    (PIXEL_SHIFT_PLAIN_ID, PIXEL_SHIFT_PLAIN_LABEL, None, "Photo>Photo Merge"),
     // a merged pixel-shift photo's other frames go to Recently Deleted (frame 01 and the merged photo stay)
     (DELETE_SOURCES_ID, DELETE_SOURCES_LABEL, None, "Photo>Photo Merge"),
     ("file.addPhotos", "Import Photos…", None, "File"),
@@ -2002,6 +2006,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             json!({"soloSections": app.ui.single_panel})
         }),
         "view.filterBar" => {
+            // Develop's loupe has its own bar above the photo (#1317): the photo stays
+            if app.ui.develop_filter_shown_here() {
+                app.ui.develop_filter_bar = !app.ui.develop_filter_bar;
+                return Some(Ok(json!({"filterBar": app.ui.develop_filter_bar})));
+            }
             app.ui.filter_bar = !app.ui.filter_bar;
             if app.ui.filter_bar && !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid) {
                 app.ui.view = app.ui.grid_style;
@@ -2594,6 +2603,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "merge.pixelShiftNow" => {
             let r = crate::merge::start_last(app, "merge.pixelShift");
+            crate::merge::reported(app, r)
+        }
+        "merge.pixelShiftPlainNow" => {
+            let r = crate::merge::start_pixel_shift_plain(app);
             crate::merge::reported(app, r)
         }
         "merge.deleteSourcesNow" => {

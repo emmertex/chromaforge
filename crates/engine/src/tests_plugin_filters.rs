@@ -529,3 +529,20 @@ fn untagged_16bit_tiff_and_raw_propagate_source_provenance_to_filter_and_analyze
     s.execute("plugin.uninstall", &json!({"id": "test.engine.echo"})).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A Display-stage filter is measured on the developed photo it will filter, sRGB-encoded; a Source-stage one on
+/// the linear source (#1396).
+#[test]
+fn a_display_filter_measures_the_developed_photo() {
+    let mut s = Session::with_demo();
+    install_bytes(&mut s, "test.engine.echo", &echo_analyze_module("test.engine.echo"));
+    let shown = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.echo", "stage": "display"})).unwrap()["uid"].as_u64().unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": shown, "wait": true})).unwrap();
+    assert_eq!(r["analysis"]["encoding"], "srgb");
+    let w = r["analysis"]["_image"]["width"].as_u64().unwrap();
+    assert!(w > 0 && w <= 1024, "{w}");
+    let source = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.echo", "stage": "source"})).unwrap()["uid"].as_u64().unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": source, "wait": true})).unwrap();
+    assert_eq!(r["analysis"]["encoding"], "linear");
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.echo"})).unwrap();
+}

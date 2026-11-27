@@ -123,6 +123,8 @@ icons! {
     Book,
     Slideshow,
     Globe,
+    /// A photo with a GPS position: a map marker (Lucide `map-pin`).
+    MapPin,
     /// Colour grading, all three wheels: three small circles.
     GradeAll,
     /// Colour grading, shadows wheel: a filled circle.
@@ -796,6 +798,16 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             pen.rect(2.5, 3.5, 17.5, 14.5, 1.5);
             pen.closed(&[(8.5, 6.5), (13.0, 9.0), (8.5, 11.5)]);
             pen.line(&[(7.0, 17.5), (13.0, 17.5)]);
+        }
+        MapPin => {
+            // Lucide `map-pin`
+            lucide!(
+                pen,
+                [
+                    "M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0",
+                    "M15 10a3 3 0 1 1-6 0a3 3 0 1 1 6 0"
+                ]
+            );
         }
         Globe => {
             pen.circle(10.0, 10.0, 7.0);

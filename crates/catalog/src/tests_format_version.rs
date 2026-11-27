@@ -240,8 +240,9 @@ fn op_variants_are_versioned() {
             Op::SetMergeSources { .. } => 19,
         }
     }
-    /// v20: `Analysis.quality` (the Image Quality Scanner's scores); v21: `QualityScan.rating_written`.
-    const NEWEST_FIELDS: u32 = 21;
+    /// v20: `Analysis.quality` (the Image Quality Scanner's scores); v21: `QualityScan.rating_written`; v22:
+    /// `MergeSources.registration`.
+    const NEWEST_FIELDS: u32 = 22;
     let map = lcc_develop::EmbeddedVignettingMap::from_ev([4, 4], [2, 2], None, Default::default(), &[0.0; 4]).unwrap();
     let id = lcc_develop::VignettingMapId::of(&map);
     let _vignetting = since(&Op::AddVignettingMap {
@@ -438,6 +439,7 @@ fn merge_sources_round_trip_and_old_libraries_load() {
                 counter: u32::from(i),
             })
             .collect(),
+        registration: None,
     };
     let undo_set = c.apply(Op::SetMergeSources { id, sources: Some(Box::new(sources.clone())) }).unwrap();
     assert_eq!(c.photo(id).unwrap().merge_sources.as_deref(), Some(&sources));
@@ -459,4 +461,38 @@ fn merge_sources_round_trip_and_old_libraries_load() {
     let (_, loaded, r) = Journal::open(Box::new(m)).unwrap();
     assert!(loaded.photo(id).unwrap().merge_sources.is_none());
     assert_eq!(r.upgraded_from, Some(18));
+}
+
+/// How a merge was made (format 22): written when set, absent otherwise, and a library from format 21 (merge sources
+/// without it) opens with it unset and is upgraded.
+#[test]
+fn how_a_merge_was_made_round_trips_and_older_merge_sources_load() {
+    let (base, _, _) = legacy_parts();
+    let id = base.photos().next().unwrap().id;
+    let frames = vec![MergeSource { photo: None, index: 1, file_name: "a".into(), captured: String::new(), counter: 1 }];
+    let plain = MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: frames.clone(), registration: None };
+    let mut c = base.clone();
+    c.apply(Op::SetMergeSources { id, sources: Some(Box::new(plain)) }).unwrap();
+    assert!(!c.to_snapshot().contains("registration"), "unset, it is not written");
+    let made = MergeRegistration { registered: false, verdict: None, reason: Some("noTexture".into()), gains: false };
+    let with = MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames, registration: Some(made.clone()) };
+    c.apply(Op::SetMergeSources { id, sources: Some(Box::new(with)) }).unwrap();
+    let snap = c.to_snapshot();
+    assert!(snap.contains("registration") && snap.contains("noTexture") && !snap.contains("verdict"));
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(VERSION, &c, ""));
+    let (_, loaded, _) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(loaded.photo(id).unwrap().merge_sources.as_ref().and_then(|s| s.registration.clone()), Some(made));
+    // format 21 wrote merge sources without it
+    let mut old = base.clone();
+    old.apply(Op::SetMergeSources {
+        id,
+        sources: Some(Box::new(MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: vec![], registration: None })),
+    })
+    .unwrap();
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(21, &old, ""));
+    let (_, loaded, r) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(loaded.photo(id).unwrap().merge_sources.as_ref().map(|s| s.registration.clone()), Some(None));
+    assert_eq!(r.upgraded_from, Some(21));
 }
