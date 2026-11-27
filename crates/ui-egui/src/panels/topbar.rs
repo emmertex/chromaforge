@@ -218,7 +218,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let fresp = ui.interact(fr, egui::Id::new("filter-btn"), Sense::click());
             crate::widgets::announce(&fresp, crate::i18n::tr("Filters"));
             register(ui.ctx(), "icon:filter", fr);
-            let filtering = app.session.filter != Default::default() || app.ui.filter_bar;
+            let filtering = app.session.filter != Default::default() || app.ui.filter_bar_shown();
             paint(
                 ui.painter(),
                 fr.shrink(6.0),
