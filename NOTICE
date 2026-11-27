@@ -232,6 +232,16 @@ downloads cities15000.zip, admin1CodesASCII.txt and countryInfo.txt from GeoName
 under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/);
 attribution: "GeoNames, geonames.org". The lookup code (crates/geocode) is our own.
 
+Lossy WebP export (native builds)
+---------------------------------
+Desktop builds encode lossy WebP with libwebp 1.3.1 with the CVE-2023-4863 fix
+(https://chromium.googlesource.com/webm/libwebp),
+Copyright (c) 2010, Google Inc., licensed under the BSD 3-Clause License with Google's additional
+patent grant (crates/codecs/LICENSE-libwebp.txt). It is compiled from the C sources vendored in the
+libwebp-sys crate 0.9.6 (MIT License, https://github.com/NoXF/libwebp-sys) and called through the
+webp crate 0.3.1 (MIT OR Apache-2.0, https://github.com/jaredforth/webp). libwebp is a C library, used under the
+Rust-first rule (AGENTS.md) behind the codecs crate's `webp-lossy` feature. Web and Android builds leave it out and export lossless WebP only.
+
 ONNX Runtime (AI models on the graphics card)
 ---------------------------------------------
 Desktop releases (Windows x64 and ARM64, Linux x86-64 and ARM64, macOS on Apple silicon) ship

@@ -160,6 +160,7 @@ fn picture_opts(o: &ExportOptions) -> ExportOptions {
         bit_depth: o.bit_depth,
         hdr: o.hdr,
         jxl_lossless: o.jxl_lossless,
+        webp_lossless: o.webp_lossless,
         ..Default::default()
     }
 }

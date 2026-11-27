@@ -885,6 +885,9 @@ pub struct ExportOptions {
     pub hdr_transfer: HdrCurve,
     /// JPEG XL: mathematically lossless instead of lossy (`quality` is then unused).
     pub jxl_lossless: bool,
+    /// WebP: lossless instead of lossy at `quality` (#1482). Builds without lossy WebP ([`lcc_codecs::WEBP_LOSSY`]:
+    /// the web, Android) always write lossless.
+    pub webp_lossless: bool,
     /// JPEG XL: encoder effort (time spent for a smaller file).
     pub jxl_effort: JxlEffort,
     /// JPEG XL: progressive file (a coarse image first, refined as it loads).
@@ -932,6 +935,7 @@ impl Default for ExportOptions {
             hdr_mode: HdrMode::SingleLayer,
             hdr_transfer: HdrCurve::Pq,
             jxl_lossless: false,
+            webp_lossless: false,
             jxl_effort: JxlEffort::Normal,
             jxl_progressive: false,
             add_to_photos: false,
@@ -983,6 +987,7 @@ pub const OPTION_PARAMS: &[&str] = &[
     "hdrMode",
     "hdrTransfer",
     "jxlLossless",
+    "webpLossless",
     "jxlEffort",
     "jxlProgressive",
     "addToPhotos",
@@ -1057,7 +1062,16 @@ fn watermark_from_json(v: &serde_json::Value) -> serde_json::Result<Watermark> {
     serde_json::from_value(v)
 }
 
+/// Whether this build can write lossy WebP ([`lcc_codecs::WEBP_LOSSY`]; never the web or Android build), for the UI,
+/// which doesn't link the codecs on every target.
+pub const WEBP_LOSSY: bool = lcc_codecs::WEBP_LOSSY;
+
 impl ExportOptions {
+    /// Whether a WebP export is lossy: asked for, and this build has the encoder ([`lcc_codecs::WEBP_LOSSY`]).
+    pub fn webp_lossy(&self) -> bool {
+        !self.webp_lossless && lcc_codecs::WEBP_LOSSY
+    }
+
     /// Stored export settings (a saved preset, `prefs.json ▸ lastExport`) with the keys an older or
     /// newer version may have written and this one doesn't know dropped, also inside `watermark`.
     /// [`ExportOptions::validate`] is strict about what a caller types; settings saved on disk are
@@ -1204,7 +1218,7 @@ impl ExportOptions {
                     }
                     serde_json::from_value::<Resize>(v.clone()).map_err(|e| bad(format!("`{k}`: {e}")))?;
                 }
-                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "jxlProgressive" => {
+                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "webpLossless" | "jxlProgressive" => {
                     boolean(k, v)?;
                 }
                 "addToPhotos" => {
@@ -1428,6 +1442,7 @@ impl ExportOptions {
             hdr_mode: s("hdrMode").and_then(HdrMode::parse).unwrap_or(d.hdr_mode),
             hdr_transfer: s("hdrTransfer").and_then(HdrCurve::parse).unwrap_or(d.hdr_transfer),
             jxl_lossless: p.get("jxlLossless").and_then(Value::as_bool).unwrap_or(d.jxl_lossless),
+            webp_lossless: p.get("webpLossless").and_then(Value::as_bool).unwrap_or(d.webp_lossless),
             jxl_effort: s("jxlEffort").and_then(JxlEffort::parse).unwrap_or(d.jxl_effort),
             jxl_progressive: p.get("jxlProgressive").and_then(Value::as_bool).unwrap_or(d.jxl_progressive),
             add_to_photos: p.get("addToPhotos").and_then(Value::as_bool).unwrap_or(d.add_to_photos),
@@ -1800,6 +1815,7 @@ fn encode_8bit(img: &Rgba8, o: &ExportOptions, meta: Option<&Metadata>) -> Resul
         ExportFormat::Png => encode::encode_png(&e, &meta),
         ExportFormat::Tiff => encode::encode_tiff_associated(&e, o.tiff_compression, &meta),
         ExportFormat::Psd => encode::encode_psd(&e, &meta),
+        ExportFormat::Webp if o.webp_lossy() => encode::encode_webp_lossy(&e, o.quality, &meta),
         ExportFormat::Webp => encode::encode_webp_lossless(&e, &meta),
         ExportFormat::Avif => encode::encode_avif(&e, o.quality, 8, &meta),
         ExportFormat::Jxl => lcc_codecs::encode_jxl(&e, &o.jxl(space, false), &meta),
@@ -4103,7 +4119,7 @@ mod tests {
         let metadata = Metadata { copyright: Some("Synthetic export test".into()), ..Default::default() };
         for format in [ExportFormat::Png, ExportFormat::Tiff, ExportFormat::Webp] {
             for compression in [TiffCompression::None, TiffCompression::Lzw, TiffCompression::Deflate, TiffCompression::PackBits] {
-                let options = ExportOptions { format, tiff_compression: compression, ..Default::default() };
+                let options = ExportOptions { format, tiff_compression: compression, webp_lossless: true, ..Default::default() };
                 let bytes = encode_with_metadata(&img, &options, Some(&metadata)).unwrap();
                 let decoded = lcc_codecs::decode(&bytes, Default::default()).unwrap();
                 assert!(!decoded.has_alpha, "{format:?}/{compression:?} must be RGB");
@@ -4126,11 +4142,36 @@ mod tests {
         let mut img = test_image();
         img.data[0][3] = 128;
         for format in [ExportFormat::Png, ExportFormat::Tiff, ExportFormat::Webp] {
-            let bytes = encode_image(&img, &ExportOptions { format, ..Default::default() }).unwrap();
+            let bytes = encode_image(&img, &ExportOptions { format, webp_lossless: true, ..Default::default() }).unwrap();
             let decoded = lcc_codecs::decode(&bytes, Default::default()).unwrap();
             assert!(decoded.has_alpha, "{format:?} must retain real alpha");
             assert_eq!(decoded.to_srgb8().data, img.data, "{format:?} samples");
         }
+    }
+
+    /// WebP is lossy at the export quality unless Lossless is on (#1482): smaller than the lossless file, close to
+    /// the picture, with its profile and transparency; a build without the encoder writes lossless.
+    #[test]
+    fn webp_exports_lossy_at_the_quality_or_lossless() {
+        let mut img = test_image();
+        let lossless = encode_image(&img, &ExportOptions { format: ExportFormat::Webp, webp_lossless: true, ..Default::default() }).unwrap();
+        let o = ExportOptions { format: ExportFormat::Webp, quality: 80, ..Default::default() };
+        assert_eq!(o.webp_lossy(), lcc_codecs::WEBP_LOSSY);
+        let lossy = encode_image(&img, &o).unwrap();
+        let d = lcc_codecs::decode(&lossy, Default::default()).unwrap();
+        assert_eq!((d.width, d.height), (96, 64));
+        assert_eq!(d.icc.as_deref(), Some(icc::write_named(NamedSpace::Srgb).as_slice()));
+        if lcc_codecs::WEBP_LOSSY {
+            assert!(lossy.len() < lossless.len(), "{} vs {}", lossy.len(), lossless.len());
+            let got = d.to_srgb8();
+            let err = got.data.iter().zip(&img.data).map(|(a, b)| (a[0] as i32 - b[0] as i32).abs()).sum::<i32>() as f64 / got.data.len() as f64;
+            assert!(err < 8.0, "mean error {err}");
+        } else {
+            assert_eq!(d.to_srgb8().data, img.data, "lossless without the encoder");
+        }
+        img.data[0][3] = 128;
+        let d = lcc_codecs::decode(&encode_image(&img, &o).unwrap(), Default::default()).unwrap();
+        assert!(d.has_alpha, "transparency kept");
     }
 
     /// Issue #2976: on a transparent area of an export that keeps alpha, the watermark composites
