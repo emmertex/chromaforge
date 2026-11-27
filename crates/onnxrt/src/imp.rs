@@ -122,6 +122,11 @@ fn register_webgpu(env: &ort::environment::Environment, library: &Path) -> Resul
     }
     let mut why = Vec::new();
     for p in candidates {
+        // a plug-in known to end the process is never handed to ONNX Runtime
+        if let Some(refused) = crate::webgpu_refusal(&p, cfg!(windows), crate::webgpu_untested_allowed()) {
+            why.push(refused);
+            continue;
+        }
         match catch_unwind(AssertUnwindSafe(|| env.register_ep_library("webgpu", &p))) {
             Ok(Ok(())) => {
                 if webgpu_devices(env).next().is_none() {
