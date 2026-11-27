@@ -165,6 +165,9 @@ pub struct MapUi {
     pub menu_at: Option<LatLon>,
     /// Pins as drawn last frame: (screen centre, photo ids) — for `map.inspect`-style queries and tests.
     pub drawn: Vec<(egui::Pos2, Vec<u64>)>,
+    /// The card over a hovered pin (Lightroom Classic's): stays while the pointer is on the pin or
+    /// the card, so its arrows can step through the pin's photos.
+    pub hover_card: Option<HoverCard>,
     /// The selection the map last saw (sorted ids): a filmstrip selection change reveals the new
     /// pins when they lie off screen (fork #741). `None` before the first frame.
     pub last_selection: Option<Vec<u64>>,
@@ -175,6 +178,16 @@ pub struct MapUi {
     /// The place named for the centre last looked up: (centre, name).
     centre_name: Option<(LatLon, Option<String>)>,
     pins_cache: Option<(u64, usize, String, i64, std::sync::Arc<Vec<lcc_geo::Cluster<u64>>>)>,
+}
+
+/// The card over a hovered pin: the pin's photos, the one shown, where the pin is and where the
+/// card was drawn last frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverCard {
+    pub ids: Vec<u64>,
+    pub index: usize,
+    pub anchor: egui::Pos2,
+    pub rect: Option<egui::Rect>,
 }
 
 impl Default for MapUi {
@@ -198,6 +211,7 @@ impl Default for MapUi {
             dragging_pin: None,
             menu_at: None,
             drawn: Vec::new(),
+            hover_card: None,
             last_selection: None,
             canvas: None,
             names: None,

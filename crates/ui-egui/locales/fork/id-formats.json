@@ -273,6 +273,7 @@
   "{indexed} indexed": "{indexed} terindeks",
   "{indexed} indexed, {unindexed} remaining": "{indexed} terindeks, {unindexed} tersisa",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} dari {n}",
   "{label} (camera default)": "{label} (bawaan kamera)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: rata-rata ΔE {mean:.2}, terbesar {max:.2} ({n} petak)",
   "{module} Shortcuts": "Pintasan {module}",

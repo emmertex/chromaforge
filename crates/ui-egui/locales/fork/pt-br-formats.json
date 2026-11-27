@@ -252,6 +252,7 @@
   "{indexed} indexed": "{indexed} indexadas",
   "{indexed} indexed, {unindexed} remaining": "{indexed} indexadas, {unindexed} restantes",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} de {n}",
   "{label} (camera default)": "{label} (padrão da câmera)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: ΔE médio {mean:.2}, maior {max:.2} ({n} amostras)",
   "{module} Shortcuts": "Atalhos de {module}",

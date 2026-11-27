@@ -252,6 +252,7 @@
   "{indexed} indexed": "{indexed} indexadas",
   "{indexed} indexed, {unindexed} remaining": "{indexed} indexadas, {unindexed} pendientes",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} de {n}",
   "{label} (camera default)": "{label} (predeterminado de la cámara)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: ΔE medio {mean:.2}, máximo {max:.2} ({n} parches)",
   "{module} Shortcuts": "Métodos abreviados de {module}",

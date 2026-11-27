@@ -244,6 +244,7 @@
   "{indexed} indexed": "Indexées : {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Indexées : {indexed}, restantes : {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} sur {n}",
   "{label} (camera default)": "{label} (profil par défaut de l’appareil)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light} : ΔE moyen {mean:.2}, maximal {max:.2} ({n} plages)",
   "{module} Shortcuts": "Raccourcis de {module}",

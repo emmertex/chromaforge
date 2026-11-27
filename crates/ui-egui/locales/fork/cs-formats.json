@@ -261,6 +261,7 @@
   "{indexed} indexed": "Indexováno: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "Indexováno: {indexed}, zbývá: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} z {n}",
   "{label} (camera default)": "{label} (výchozí fotoaparátu)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: průměrné ΔE {mean:.2}, největší {max:.2} (polí: {n})",
   "{module} Shortcuts": "Zkratky: {module}",

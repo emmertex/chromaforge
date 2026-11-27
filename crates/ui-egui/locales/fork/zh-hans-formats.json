@@ -252,6 +252,7 @@
   "{indexed} indexed": "已索引 {indexed}",
   "{indexed} indexed, {unindexed} remaining": "已索引 {indexed}，剩余 {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "第 {i} 张，共 {n} 张",
   "{label} (camera default)": "{label}（相机默认值）",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}：平均 ΔE {mean:.2}，最大 {max:.2}（{n} 个色块）",
   "{module} Shortcuts": "{module} 快捷键",

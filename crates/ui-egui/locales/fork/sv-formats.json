@@ -278,6 +278,7 @@
   "{indexed} indexed": "{indexed} indexerade",
   "{indexed} indexed, {unindexed} remaining": "{indexed} indexerade, {unindexed} återstår",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} av {n}",
   "{label} (camera default)": "{label} (kamerans standard)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: medel-ΔE {mean:.2}, störst {max:.2} ({n} rutor)",
   "{module} Shortcuts": "{module}-genvägar",

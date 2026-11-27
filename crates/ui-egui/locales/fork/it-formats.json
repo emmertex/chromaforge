@@ -262,6 +262,7 @@
   "{indexed} indexed": "indicizzate: {indexed}",
   "{indexed} indexed, {unindexed} remaining": "indicizzate: {indexed}, rimanenti: {unindexed}",
   "{info} · {size}": "{info} · {size}",
+  "{i} of {n}": "{i} di {n}",
   "{label} (camera default)": "{label} (predefinito della fotocamera)",
   "{light}: mean ΔE {mean:.2}, largest {max:.2} ({n} patches)": "{light}: ΔE medio {mean:.2}, massimo {max:.2} ({n} campioni)",
   "{module} Shortcuts": "Scorciatoie di {module}",
