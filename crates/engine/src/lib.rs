@@ -135,8 +135,8 @@ pub mod profile_edits;
 pub mod profile_refs;
 pub mod proof;
 pub mod quality_scan;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod raw_decoder;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
