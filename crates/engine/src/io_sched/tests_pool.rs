@@ -237,6 +237,45 @@ fn a_stall_fails_every_calls_jobs_on_the_volume() {
     latch.release();
 }
 
+/// One stall abandons every call's running jobs on the volume on the same tick, not one call's
+/// now and the rest at a later tick. The pool here ticks only when woken (its tick is an hour),
+/// and nothing wakes it after the stall: a call whose jobs weren't abandoned on that tick would
+/// never hear of them.
+#[test]
+fn one_stall_abandons_every_calls_running_jobs_on_the_same_tick() {
+    let clock = Arc::new(super::clock::FakeClock::default());
+    clock.advance(1000 * super::clock::SEC);
+    let ctx = Arc::new(super::IoContext::new(clock.clone(), super::tests::list(&["/", "/a", "/b"]), Duration::from_secs(3600)));
+    let h = H { clock, ctx };
+    let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut a: Stream<R> = Stream::open(&h.ctx, 4, Result::is_ok);
+    let mut b: Stream<R> = Stream::open(&h.ctx, 4, Result::is_ok);
+    a.submit(hanging("/a", 2, &latch, &started, true)).unwrap();
+    b.submit(hanging("/a", 2, &latch, &started, true)).unwrap();
+    wait_until(|| started.load(Ordering::SeqCst) == 4, "both calls' jobs running");
+    // one step to see their bytes (the 30 s rule applies), then the stall
+    let mut waker: Stream<R> = Stream::open(&h.ctx, 1, Result::is_ok);
+    let step = |waker: &mut Stream<R>| {
+        let t = h.ctx.ticks.load(Ordering::SeqCst);
+        waker.cancel();
+        wait_until(|| h.ctx.ticks.load(Ordering::SeqCst) > t, "one step");
+    };
+    step(&mut waker);
+    h.advance(STALL_WITH_BYTES);
+    step(&mut waker);
+    for (name, s) in [("A", &mut a), ("B", &mut b)] {
+        for _ in 0..2 {
+            let got = s.recv_timeout(Duration::from_secs(2));
+            assert!(
+                matches!(got, Some((_, JobOutcome::VolumeNotResponding { abandoned: true, .. }, _))),
+                "{name}: abandoned on the stall's own tick, got {:?}",
+                got.map(|g| g.1)
+            );
+        }
+    }
+    latch.release();
+}
+
 /// Calls on one volume take turns: a 5-job call starts within one round while a 256-job call is
 /// running (its jobs alternate with the big call's, in input order).
 #[test]
