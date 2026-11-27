@@ -759,12 +759,14 @@ fn load_bytes_now(
             Err(Err(e)) => return Err(e),
         };
         let decode_ms = t_decode.elapsed().as_secs_f64() * 1e3;
+        lcc_pipeline::meter::add("raw decode", t_decode.elapsed());
         // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
-        let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
+        let pixels = lcc_pipeline::meter::time("raw defects", || repair_pixels(&mut raw, &RawOptions::of(&options)));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
         if options.outliers {
             let t = std::time::Instant::now();
             let n = raw.suppress_hot_pixels();
+            lcc_pipeline::meter::add("raw hot pixels", t.elapsed());
             if lcc_pipeline::profiling() {
                 eprintln!("[profile] raw outliers: {n} photosites replaced in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
             }
@@ -827,6 +829,7 @@ fn load_bytes_now(
             || dng_mattes(&bytes, &info),
         );
         drop(bytes);
+        lcc_pipeline::meter::add("raw starting colour", t_colour.elapsed());
         if lcc_pipeline::profiling() {
             eprintln!(
                 "[profile] raw load: decode {decode_ms:.1} ms, repair + outliers + profile {:.1} ms, starting colour {:.1} ms",
@@ -884,6 +887,15 @@ fn load_bytes_now(
             (img, stages)
         };
         let (img, stages) = finish(img);
+        if lcc_pipeline::meter::on() {
+            // (`develop` is the binning or the demosaic, the rest the colour finish of the camera RGB)
+            let mut prev = std::time::Duration::ZERO;
+            for (n, t) in &stages {
+                let stage = if *n == "develop" { if factor > 1 { "raw binning" } else { "raw demosaic" } } else { "raw finish" };
+                lcc_pipeline::meter::add(stage, t.saturating_sub(prev));
+                prev = *t;
+            }
+        }
         if lcc_pipeline::profiling() {
             let mut prev = std::time::Duration::ZERO;
             let parts: Vec<String> = stages
@@ -1623,11 +1635,12 @@ fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<
     let weight = len.saturating_mul(if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 });
     let gate = crate::memory::work_gate();
     let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
-    let bytes =
-        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = lcc_pipeline::meter::time("file read", || {
+        crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES).map_err(|e| format!("{path}: {e}"))
+    })?;
     let r = load(bytes);
     // the file, the samples and the intermediate images are gone: give their pages back
-    crate::memory::release();
+    lcc_pipeline::meter::time("memory release", crate::memory::release);
     r
 }
 
