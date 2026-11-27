@@ -51,6 +51,7 @@ steps; a version 1 file may not use them.
 | `output` | What the last step returns: `display-linear` (a linear value, 1 = SDR white). |
 | `extension` | What happens above x = 1: `clamp` (hold the last value, default), `linear` (continue with the last segment's slope), `rolloff` (close the gap to 1 exponentially at the last segment's slope). |
 | `channel_share` | Optional, version 2, 0 to 1 (default 0). How much of the curve acts on each colour channel on its own: the render blends the luminance result (colour follows by ratio, today's behaviour) with the result of running the curve on each channel in linear Rec.709, `share` of the way towards the per-channel result. 0 leaves rendering exactly as without the field. See "Channel share". |
+| `colour_map` | Optional, version 2. A post-tone colour map: a chroma gain and a hue shift on a grid of hue x lightness x chroma knots, applied after the tone stage. Absent, or a map that changes nothing, renders exactly as without it. See "Colour map". |
 | `curves` | 1 to 8 named curves (letters, digits, `-` and `_`, up to 32 characters). Each has `interpolation` (`linear`, `monotone-cubic`, or from version 2 `natural-cubic-spline`) and 2 to 256 `points` `[x, y]`: x strictly increasing from 0 to 1, y non-decreasing within 0 to 1. |
 | `apply` | 1 to 8 steps run in order; each step's output is the next step's x. |
 | `notes` | Free-form; ignored. Unknown fields anywhere are ignored. |
@@ -59,6 +60,11 @@ Channel share:
 - With `channel_share` s above 0 the tone table (the whole `apply` list, applied to a luminance-like value) is also evaluated on each of the three channels of the colour in linear Rec.709. The final colour is `(1 - s) · ratio result + s · per-channel result`, both in the working space, before the hue-preserving clip that keeps highlights in range.
 - Grey is unchanged for any s (equal channels give the same result both ways). Negative Rec.709 channels (colours outside that gamut) enter the per-channel evaluation as 0; the luminance part keeps them.
 - A per-channel curve raises saturation in the midtones and rolls saturated highlights towards white; the share sets how much of that a curve wants.
+
+Colour map:
+- `colour_map` has `hues` (3 to 36 knots, evenly spaced round the OkLab hue circle starting at 0 degrees), `lightness` (2 to 8 ascending OkLab L knots within 0 to 1), `chroma` (1 to 4 ascending OkLab chroma knots, above 0 and up to 0.5) and two arrays of `chroma x lightness x hues` values, ordered chroma first, then lightness, then hue: `gain` (a multiplier of the chroma, 0.5 to 1.5, 1 = no change) and `hue_shift` (degrees, within plus or minus 30, 0 = none).
+- After the tone map and the hue-preserving highlight clip, and before the colour tools, each colour is taken to OkLab. Its lightness, chroma and hue are looked up in the grid by linear interpolation (the hue circle wraps; lightness and chroma hold their end values outside the knots). The chroma is multiplied by the gain and the hue turned by the shift, both faded to nothing for colours of very low chroma (below about 0.008, fully applied from about 0.035), so greys and near-greys are untouched. The OkLab lightness is not changed.
+- The map is a look: it says nothing about how the curve was made, and a file without it renders as before. A file that carries one is fitted for the camera and curve it names.
 
 Interpolations:
 - `linear`: straight lines between the points.

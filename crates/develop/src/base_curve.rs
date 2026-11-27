@@ -152,6 +152,68 @@ enum RawStep {
     },
 }
 
+/// The post-tone colour map as the file writes it.
+#[derive(Deserialize)]
+struct RawColourMap {
+    hues: usize,
+    lightness: Vec<f64>,
+    chroma: Vec<f64>,
+    gain: Vec<f64>,
+    hue_shift: Vec<f64>,
+}
+
+/// A validated post-tone colour map: knots over hue (`hues` of them, evenly spaced from 0 degrees round the OkLab hue circle),
+/// lightness (OkLab L, ascending, in 0..=1) and chroma (OkLab chroma, ascending). `gain` (a multiplier of the chroma, 1 = no
+/// change) and `shift` (the hue shift in degrees, 0 = none) hold one value per knot, ordered chroma, then lightness, then hue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourMap {
+    pub hues: usize,
+    pub lightness: Vec<f64>,
+    pub chroma: Vec<f64>,
+    pub gain: Vec<f64>,
+    pub shift: Vec<f64>,
+}
+
+pub const COLOUR_MAP_GAIN: (f64, f64) = (0.5, 1.5);
+pub const COLOUR_MAP_SHIFT: f64 = 30.0;
+
+impl RawColourMap {
+    fn validate(self) -> Result<ColourMap, String> {
+        let ascending = |v: &[f64], lo: f64, hi: f64| v.iter().all(|x| x.is_finite() && *x >= lo && *x <= hi) && v.windows(2).all(|w| w[1] > w[0]);
+        if !(3..=36).contains(&self.hues) {
+            return Err(format!("colour_map: {} hue knots (3 to 36)", self.hues));
+        }
+        if !(2..=8).contains(&self.lightness.len()) || !ascending(&self.lightness, 0.0, 1.0) {
+            return Err("colour_map: lightness needs 2 to 8 ascending knots within 0 to 1".into());
+        }
+        if !(1..=4).contains(&self.chroma.len()) || !ascending(&self.chroma, 1e-4, 0.5) {
+            return Err("colour_map: chroma needs 1 to 4 ascending knots within 0 to 0.5".into());
+        }
+        let n = self.hues * self.lightness.len() * self.chroma.len();
+        if self.gain.len() != n || self.hue_shift.len() != n {
+            return Err(format!(
+                "colour_map: gain and hue_shift need {n} values (chroma x lightness x hues), not {} and {}",
+                self.gain.len(),
+                self.hue_shift.len()
+            ));
+        }
+        if !self.gain.iter().all(|g| g.is_finite() && *g >= COLOUR_MAP_GAIN.0 && *g <= COLOUR_MAP_GAIN.1) {
+            return Err(format!("colour_map: gains must lie within {} to {}", COLOUR_MAP_GAIN.0, COLOUR_MAP_GAIN.1));
+        }
+        if !self.hue_shift.iter().all(|s| s.is_finite() && s.abs() <= COLOUR_MAP_SHIFT) {
+            return Err(format!("colour_map: hue shifts must lie within ±{COLOUR_MAP_SHIFT} degrees"));
+        }
+        Ok(ColourMap { hues: self.hues, lightness: self.lightness, chroma: self.chroma, gain: self.gain, shift: self.hue_shift })
+    }
+}
+
+impl ColourMap {
+    /// Whether the map changes nothing (every gain 1, every shift 0).
+    pub fn is_identity(&self) -> bool {
+        self.gain.iter().all(|g| *g == 1.0) && self.shift.iter().all(|s| *s == 0.0)
+    }
+}
+
 #[derive(Deserialize)]
 struct RawFile {
     format: String,
@@ -168,6 +230,8 @@ struct RawFile {
     extension: Extension,
     #[serde(default)]
     channel_share: f64,
+    #[serde(default)]
+    colour_map: Option<RawColourMap>,
     curves: BTreeMap<String, RawCurve>,
     apply: Vec<RawStep>,
 }
@@ -262,6 +326,9 @@ pub struct BaseCurve {
     /// How much of the curve acts on each colour channel on its own instead of on luminance, 0..=1 (0: luminance only, the
     /// default). See `docs/base-curve-format.md`.
     pub channel_share: f64,
+    /// An optional post-tone colour map (hue x lightness x chroma, a chroma gain and a hue shift per knot); `None`: none, or
+    /// one that changes nothing. See `docs/base-curve-format.md`.
+    pub colour_map: Option<ColourMap>,
     pub curves: BTreeMap<String, Curve>,
     pub apply: Vec<Step>,
 }
@@ -495,6 +562,15 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
     if f.channel_share != 0.0 && f.version < 2 {
         return Err("channel_share needs format version 2".into());
     }
+    let colour_map = match f.colour_map {
+        None => None,
+        Some(m) => {
+            if f.version < 2 {
+                return Err("colour_map needs format version 2".into());
+            }
+            Some(m.validate()?).filter(|m| !m.is_identity())
+        }
+    };
     let name: String = f.name.chars().filter(|c| !c.is_control()).take(120).collect();
     let camera: String = f.camera.chars().filter(|c| !c.is_control()).take(80).collect();
     Ok(BaseCurve {
@@ -503,6 +579,7 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
         input: Input { gain: f.input.gain, white: f.input.white },
         extension: f.extension,
         channel_share: f.channel_share,
+        colour_map,
         curves,
         apply,
     })
@@ -865,6 +942,46 @@ mod tests {
             assert!(with(2, bad.clone()).is_err(), "{bad}");
         }
         assert!(with(1, json!(0.5)).is_err(), "version 1 has no channel share");
+    }
+
+    fn map_doc(gain: f64, shift: f64) -> serde_json::Value {
+        json!({ "hues": 4, "lightness": [0.0, 1.0], "chroma": [0.1], "gain": vec![gain; 8], "hue_shift": vec![shift; 8] })
+    }
+
+    #[test]
+    fn the_colour_map_is_optional_validated_and_needs_version_2() {
+        let with = |version: u32, map: serde_json::Value| {
+            let mut d = doc();
+            d["version"] = json!(version);
+            d["colour_map"] = map;
+            parse(d.to_string().as_bytes())
+        };
+        assert!(parse(doc().to_string().as_bytes()).unwrap().colour_map.is_none());
+        let m = with(2, map_doc(1.1, 2.0)).unwrap().colour_map.expect("a map");
+        assert_eq!((m.hues, m.lightness.len(), m.chroma.len(), m.gain.len()), (4, 2, 1, 8));
+        // a map that changes nothing is dropped, so it renders exactly as no map
+        assert!(with(2, map_doc(1.0, 0.0)).unwrap().colour_map.is_none());
+        assert!(with(1, map_doc(1.1, 2.0)).is_err(), "version 1 has no colour map");
+        let bad = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut m = map_doc(1.1, 2.0);
+            f(&mut m);
+            assert!(with(2, m.clone()).is_err(), "{m}");
+        };
+        bad(&|m| m["hues"] = json!(2));
+        bad(&|m| m["hues"] = json!(40));
+        bad(&|m| m["lightness"] = json!([0.5]));
+        bad(&|m| m["lightness"] = json!([0.6, 0.4]));
+        bad(&|m| m["lightness"] = json!([0.0, 1.5]));
+        bad(&|m| m["chroma"] = json!([]));
+        bad(&|m| m["chroma"] = json!([0.2, 0.1]));
+        bad(&|m| m["chroma"] = json!([0.0]));
+        bad(&|m| m["gain"] = json!([1.1, 1.1]));
+        bad(&|m| m["hue_shift"] = json!(vec![2.0; 7]));
+        bad(&|m| m["gain"] = json!(vec![1.6; 8]));
+        bad(&|m| m["gain"] = json!(vec![0.4; 8]));
+        bad(&|m| m["hue_shift"] = json!(vec![31.0; 8]));
+        bad(&|m| m["gain"] = json!("many"));
+        bad(&|m| m["hues"] = json!(-1));
     }
 
     #[test]
