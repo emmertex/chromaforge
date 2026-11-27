@@ -142,7 +142,11 @@ Native import reads MAIN database pages on demand; no whole-file size cutoff or 
 allocation is used. Committed WAL validation is streamed into a compact page index; WAL remains
 capped at 1 GiB and 4,000,000 frames. MAIN is structurally bounded to 16,777,216 pages (up to
 1 TiB logical size with 64 KiB pages); each table B-tree walk is bounded to 4,000,000 visited
-pages. A record is capped at 64 MiB and XMP packets at 16 MiB. A record past the cap, or one that
+pages. A record is capped at 64 MiB and XMP packets at 16 MiB, except in `Adobe_AdditionalMetadata`:
+a record there past the cap is read a page at a time, and a packet past 16 MiB (compressed or not)
+is inflated as a stream with its `crs:Table_<digest>` attributes (a camera profile's table data,
+up to about 120 MB each) left out, so the photo keeps its creator, copyright and other fields; only
+a packet still over 16 MiB without them is dropped. Any other record past the cap, or one that
 is malformed, is left out on its own and counted in a warning naming the table ("N records could not
 be read and were left out"); the rest of the table imports. Text that is not valid UTF-8 is read with
 replacement characters and counted in a warning. The in-tree, read-only Rust SQLite
