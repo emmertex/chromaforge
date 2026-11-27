@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-25 · **Change:** minor (OpenEXR scene-linear export, plan 7.5); minor (HDR gain map export for AVIF and JPEG XL, `hdrMode: gainMap`; readiness unchanged); minor (AVIF import; Render to DNG command and export format; lossy DNG export; HEIC / HEIF and AVIF metadata read from the container, #693) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last updated:** 2026-11-25 · **Change:** minor (OpenEXR scene-linear export, plan 7.5); minor (HDR gain map export for AVIF and JPEG XL, `hdrMode: gainMap`; readiness unchanged); minor (AVIF import; Render to DNG command and export format; lossy DNG export; HEIC / HEIF and AVIF metadata read from the container, #693) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every format Lightroom reads or writes, with our support, fidelity and tests. Camera raw formats are
 deep enough to have their own document: [raw-parity.md](raw-parity.md).

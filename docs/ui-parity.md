@@ -1,6 +1,6 @@
 | 2026-10-25 | minor | Shortcuts: Shift+Up / Shift+Down and Ctrl+Shift+arrows extend the selection in the two library grids, with keyboard tests |# UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** patch (upstream merge: context menus move instead of flashing, issue #1877); minor (upstream: diagnostic overlays noted as the zoom row's remainder; brush A / B presets; zoom row: overlays and soft proofing sharp at 1:1; gap closed; canvas tools by keyboard; focus-order test; ~50 unnamed hand-drawn widgets named) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last updated:** 2026-10-23 · **Change:** patch (upstream merge: context menus move instead of flashing, issue #1877); minor (upstream: diagnostic overlays noted as the zoom row's remainder; brush A / B presets; zoom row: overlays and soft proofing sharp at 1:1; gap closed; canvas tools by keyboard; focus-order test; ~50 unnamed hand-drawn widgets named) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 How the app's interaction compares with Lightroom's: views, panels, tools and handles, modifier
 keys, shortcuts, zoom, context menus and feel. Rows for individual menu items and shortcuts live in
