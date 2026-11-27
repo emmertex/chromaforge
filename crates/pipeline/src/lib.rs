@@ -782,7 +782,11 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         film_dust_key(info, s),
     ));
     // a generated patch whose file appears (or goes) changes the image
-    let shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
+    let mut shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
+    // and so does the fill of a crop extended past the photo (issue #861)
+    let edge_fill = genpatch::edge_fill(s, info.generated.as_ref());
+    shown.push(edge_fill.is_some());
+    let edge_fill_key = format!("{:?}", s.shown_edge_fill());
     // (what makes the linear image besides the window: the window's own geometry and red-eye
     // positions are left out, so every window of the frame shares it)
     let frame_lin_key = hash_of((
@@ -796,10 +800,10 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         src_long,
         source_filters.key,
         film_dust_key(info, s),
-        &shown,
+        (&shown, &edge_fill_key),
         format!("{:?}", info.avoid),
     ));
-    let pre_nr_key = hash_of((pre_nr_key, shown, format!("{:?}", info.avoid)));
+    let pre_nr_key = hash_of((pre_nr_key, shown, edge_fill_key, format!("{:?}", info.avoid)));
     // a draft's colour NR may take the half-resolution blur: its result is never a final render's
     // (the joint colour NR of V8 has no draft form)
     let joint_nr = local::joint_colour_nr(s);
@@ -969,7 +973,7 @@ pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
     // defringe and Clone / Heal / sourced Remove / Even Out spots have GPU kernels; spots rebuilt
     // from their surroundings (Fill, Generate, a Remove without a source) and the camera's local
     // tone map don't
-    s.spots.iter().any(spots::synthesises) || local_tone::enabled(info, s)
+    s.spots.iter().any(spots::synthesises) || local_tone::enabled(info, s) || genpatch::edge_fill(s, info.generated.as_ref()).is_some()
 }
 
 /// The white-balanced, defringed, retouched image (before noise reduction): the CPU part of the
@@ -977,6 +981,10 @@ pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     let s = &*p.settings;
     // generated patches are source pixels: before anything else touches them
+    // the fill of a crop extended past the photo first: generated spots may reach into it
+    if let (Some(layer), Some(e)) = (genpatch::edge_fill(s, info.generated.as_ref()), s.shown_edge_fill()) {
+        genpatch::apply_edge_fill(img, &layer, &p.frame, genpatch::seed_of(&e.fill.id, e.fill.variant));
+    }
     let patches = genpatch::shown(&s.spots, info.generated.as_ref());
     for (sp, layer) in s.spots.iter().zip(&patches) {
         if let (Some(g), Some(layer)) = (sp.shown_gen(), layer) {
@@ -1260,6 +1268,8 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             });
         }
     }
+    // the canvas a fill covers past the photo's edge (issue #861) counts as the photo
+    let filled_past_edge = genpatch::edge_fill(s, info.generated.as_ref()).is_some();
     let display_filters = plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Display);
     let post = finish::Post { stack: &display_filters, frame: plan.filter_frame.clone(), warnings: std::cell::RefCell::new(&mut warnings) };
     if req.depth != OutputDepth::U8 {
@@ -1270,7 +1280,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             None => deep,
         };
         let image = deep.to_rgba8();
-        let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(|c| match plan.keep {
+        let coverage = frame.coverage(src_img.width, src_img.height, w, h).filter(|_| !filled_past_edge).map(|c| match plan.keep {
             Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
             None => Arc::new(c),
         });
@@ -1285,7 +1295,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         None => i.clone(),
     };
     // the blank border past the photo's edge is shown but isn't part of the photo (issue #211)
-    let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(|c| match plan.keep {
+    let coverage = frame.coverage(src_img.width, src_img.height, w, h).filter(|_| !filled_past_edge).map(|c| match plan.keep {
         Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
         None => Arc::new(c),
     });

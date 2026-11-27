@@ -82,6 +82,7 @@ pub(super) fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if ui.checkbox(&mut c, crate::i18n::tr("Constrain to Image")).changed() {
             let _ = app.run("develop.merge", json!({"settings": {"geometry": {"constrain_crop": c}}, "label": "Constrain to Image"}));
         }
+        extend_controls(app, ui, &d);
     });
     padded(ui, |ui| {
         // one row at the right edge, as the drawer's buttons sit in Lightroom Classic
@@ -94,6 +95,48 @@ pub(super) fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 let _ = app.run("crop.reset", json!({}));
             }
         });
+    });
+}
+
+/// Extend Past the Edge and Fill Edges (issue #861): the crop may reach past the photo, and what it shows there is
+/// filled content-aware or with a generative fill service.
+fn extend_controls(app: &mut LccApp, ui: &mut egui::Ui, d: &lcc_develop::DevelopSettings) {
+    let mut e = d.crop.extend;
+    let r = ui.checkbox(&mut e, crate::i18n::tr("Extend Past the Edge"));
+    crate::widgets::register(ui.ctx(), "check:cropExtend", r.rect);
+    if r.changed() {
+        let _ = app.run("crop.extend", json!({"on": e}));
+    }
+    if !d.crop.extend {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    if app.session.edge_fill.running() {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(12.0));
+            ui.label(egui::RichText::new(crate::i18n::tr("Filling edges…")).size(11.0).color(t.text_label));
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        return;
+    }
+    ui.label(egui::RichText::new(crate::i18n::tr("Fill Edges")).size(11.0).color(t.text_label));
+    ui.horizontal_wrapped(|ui| {
+        if text_button(ui, "fillEdgesContentAware", crate::i18n::tr("Content-Aware"), false)
+            .on_hover_text(crate::i18n::tr("Fill the area past the photo from the photo itself, on this computer"))
+            .clicked()
+            && let Err(e) = app.run("crop.fillEdges", json!({"mode": "contentAware"}))
+        {
+            app.toast_error(ui.ctx(), crate::i18n::tr_format!("Fill Edges failed: {e}", e = e));
+        }
+        if text_button(ui, "fillEdgesGenerative", crate::i18n::tr("Generative"), false)
+            .on_hover_text(crate::i18n::tr("Fill the area past the photo with your generative fill service (Settings → Generative Fill)"))
+            .clicked()
+        {
+            super::super::genfill::fill_edges(app, ui.ctx());
+        }
+        if d.edge_fill.is_some() && text_button(ui, "fillEdgesClear", crate::i18n::tr("Clear Fill"), false).clicked() {
+            let _ = app.run("crop.clearFill", json!({}));
+        }
     });
 }
 

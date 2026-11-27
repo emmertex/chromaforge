@@ -266,9 +266,12 @@ impl CropView {
 
 /// Lay the crop tool's view out in `area`: held as `layout` says while the crop is being changed,
 /// otherwise the turned photo at `zoom` (fitted into `area` unless a percentage) and `pan`. `frame` is the uncropped frame the loupe renders.
+/// A crop that may `extend` past the photo (issue #861) is fitted with room around the photo and the crop to drag into.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn crop_view(
     frame: &Frame,
     crop: lcc_geom::CropGeometry,
+    extend: bool,
     area: Rect,
     layout: Option<CropLayout>,
     zoom: Zoom,
@@ -291,6 +294,13 @@ pub(crate) fn crop_view(
                     // scaled to the zoom asked for (or to fit the area) and placed as `pan` says
                     let unit = CanvasMap::new(&cf, Rect::from_center_size(Pos2::ZERO, vec2(nw, nh)));
                     let b = Rect::from_points(&corners.map(|c| unit.screen(c)));
+                    let b = if extend {
+                        // the crop where it reaches past the photo, and a margin to drag it further
+                        let b = b.union(Rect::from_points(&cf.crop_quad_norm().map(|c| unit.screen(c))));
+                        b.expand2(b.size() * 0.12)
+                    } else {
+                        b
+                    };
                     let k = match zoom {
                         Zoom::Percent(p) if finite(p) && finite(ppp) => p / 100.0 / ppp,
                         _ => (area.width() / b.width()).min(area.height() / b.height()),
@@ -1119,7 +1129,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view = crop_tool.then(|| crop_view(&frame, shown_crop(&d, &frame), main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
+    let crop_view =
+        crop_tool.then(|| crop_view(&frame, shown_crop(&d, &frame), d.crop.extend, main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -4228,6 +4239,11 @@ fn outside_crop_mesh(photo: &[Pos2; 4], quad: &[Pos2; 4], color: Color32) -> egu
 /// The crop the photo gets: shrunk into the warped photo's valid area as the render does it (lens
 /// corrections always, perspective with Constrain Crop).
 fn shown_crop(d: &DevelopSettings, frame: &Frame) -> lcc_geom::CropGeometry {
+    // (a crop extended past the photo keeps the canvas a lens correction shows, as the render does: issue #861)
+    if d.crop.extend {
+        let (w, h) = (frame.ow, frame.oh);
+        return d.crop.geometry.bounded_extended(w, h);
+    }
     frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop)
 }
 

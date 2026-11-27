@@ -8,7 +8,7 @@ fn crop_on(w: f64, h: f64, shape: f64, frac: f64, c: (f64, f64), angle: f64, asp
     let f = lcc_geom::crop_fit_angle(w, h, angle, Some(shape)).rect_px(w, h);
     let r = lcc_geom::Rect::from_center(lcc_geom::Point::new(c.0 * w, c.1 * h), f.width() * frac, f.height() * frac);
     let g = lcc_geom::CropGeometry { rect: r.scale(1.0 / w, 1.0 / h), angle }.constrained(w, h);
-    lcc_develop::Crop { geometry: g, aspect, flip_h: flips.0, flip_v: flips.1 }
+    lcc_develop::Crop { geometry: g, aspect, flip_h: flips.0, flip_v: flips.1, extend: false }
 }
 
 /// Test notes 2026-10-25 note 15: a crop synced from a vertical to a landscape (and back) keeps its
