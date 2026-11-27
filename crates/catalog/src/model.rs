@@ -431,10 +431,7 @@ pub struct Photo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_baseline: Option<u64>,
     /// SHA-1 of the original file's bytes (hex), as remote services such as Immich identify
-    /// assets by it. Catalog format 4. Set once, from the first read that hashes the file (import,
-    /// Read Originals, Reload, a relink, the background back-fill) and kept: device sync keys the
-    /// photo by it, so a later change of the file's bytes (an external editor, a relink to another
-    /// export) doesn't replace it; [`Photo::content_hash`] follows the bytes instead.
+    /// assets by it. Catalog format 4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha1: Option<String>,
     /// The state at the last read from / write to the XMP sidecar (see [`crate::xmp_state`]).

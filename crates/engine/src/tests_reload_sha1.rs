@@ -352,7 +352,7 @@ fn relinking_a_virtual_copy_gives_no_one_else_the_new_files_facts() {
 }
 
 /// [`crate::cmd::convert::reload_ops`] directly: the ids given only a SHA-1 are reported in `hashed`,
-/// never in `changed`; a photo that already has one keeps it.
+/// never in `changed`; a photo whose file still matches the SHA-1 it has keeps it.
 #[test]
 fn reload_ops_reports_hashed_photos_apart_from_changed_ones() {
     use crate::cmd::convert::{Reach, reload_ops};
@@ -369,21 +369,9 @@ fn reload_ops_reports_hashed_photos_apart_from_changed_ones() {
         reload_ops(&cat, PhotoId(id), &info_for(path), Reach::Family, &mut ops, &mut changed, &mut hashed);
     }
     assert_eq!(changed, [PhotoId(3)], "only the photo whose file facts changed");
-    assert_eq!(hashed, [PhotoId(1), PhotoId(3)], "an existing SHA-1 is never replaced");
+    assert_eq!(hashed, [PhotoId(1), PhotoId(3)], "a photo whose file still matches its SHA-1 keeps it");
     cat.apply(Op::Batch { ops }).unwrap();
     assert_eq!(cat.photo(PhotoId(2)).unwrap().sha1, Some("a".repeat(40)));
-    // nor when the file's bytes changed (an external editor saved it): the content hash follows the
-    // file, the SHA-1 stays the photo's identity (`Photo::sha1`; spec finding F1 decides otherwise)
-    let mut edited = photo(4, "/x/d.jpg");
-    edited.sha1 = Some("b".repeat(40));
-    edited.content_hash = Some("hash-before-the-edit".into());
-    cat.apply(Op::AddPhoto { photo: Box::new(edited) }).unwrap();
-    let (mut ops, mut changed, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
-    reload_ops(&cat, PhotoId(4), &info_for("/x/d.jpg"), Reach::Family, &mut ops, &mut changed, &mut hashed);
-    assert_eq!((changed.as_slice(), hashed.as_slice()), ([PhotoId(4)].as_slice(), [].as_slice()));
-    cat.apply(Op::Batch { ops }).unwrap();
-    let p = cat.photo(PhotoId(4)).unwrap();
-    assert_eq!((p.content_hash.as_deref(), p.sha1.clone()), (Some("hash-/x/d.jpg"), Some("b".repeat(40))));
     // master and copy of one file in the same run (the commands' planners group them today): the
     // master is given its SHA-1 once
     let master = photo(10, "/x/m.jpg");
