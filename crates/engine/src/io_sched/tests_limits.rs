@@ -112,13 +112,16 @@ fn steps_up_by_a_quarter_rounded_up_and_down_by_half() {
     assert_eq!((r.phase(), r.limit()), (Some(Phase::Hold), 1));
 }
 
-/// The probe must beat the mean of the baselines by 15 %: at, just below, just above.
+/// The probe must beat the mean of the baselines by 15 %: at, just below, just above. Baselines
+/// of 80, where the threshold is exactly 92 in f64 (with baselines of 100 it is 114.999…, so a
+/// probe of 115 lay above it and `>` in place of `>=` went unseen).
 #[test]
 fn up_gain_threshold() {
     assert_eq!(UP_GAIN, 0.15);
-    for (p, want) in [(115.0, true), (114.9, false), (115.1, true)] {
-        let (r, kept) = Rig::up_probe(4, (100.0, p, 100.0), (1000.0, 1000.0 + p, 1000.0));
-        assert_eq!(kept, Some(want), "probe {p} against baselines 100");
+    assert_eq!(80.0 * (1.0 + UP_GAIN), 92.0, "the \"at\" row below is on the threshold");
+    for (p, want) in [(92.0, true), (91.9, false), (92.1, true)] {
+        let (r, kept) = Rig::up_probe(4, (80.0, p, 80.0), (1000.0, 1000.0 + p, 1000.0));
+        assert_eq!(kept, Some(want), "probe {p} against baselines 80");
         assert_eq!(r.limit(), if want { 5 } else { 4 });
     }
 }
