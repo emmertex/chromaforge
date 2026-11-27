@@ -325,7 +325,8 @@ pub(crate) struct Analyses {
 
 /// Measures `src` with `filter` for `entry` (its old analysis left out): the analysis (`Null` when the
 /// plug-in has none to give). A filter asking for `"analyzeArea": "crop"` gets the photo as `settings`
-/// frame it (crop, straighten, orientation…), else the whole uncropped photo.
+/// frame it (crop, straighten, orientation…), else the whole uncropped photo. A Source-stage entry measures the
+/// source (linear); a Display-stage one the developed photo it will filter (#1396): [`developed_input`].
 fn measure(
     filter: &lcc_filters::Filter,
     entry: &PluginFilter,
@@ -334,16 +335,54 @@ fn measure(
     settings: &DevelopSettings,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Measured {
-    let (data, w, h) = match filter.manifest().analyze_area {
-        lcc_filters::AnalyzeArea::Crop => lcc_pipeline::plugin_filters::analysis_input_framed(src, settings, ANALYZE_EDGE),
-        lcc_filters::AnalyzeArea::Frame => lcc_pipeline::plugin_filters::analysis_input(src, ANALYZE_EDGE),
+    let crop = filter.manifest().analyze_area == lcc_filters::AnalyzeArea::Crop;
+    let (data, w, h, encoding) = match (entry.stage, crop) {
+        (FilterStage::Display, _) => {
+            let (data, w, h) = developed_input(entry, src, info, settings, crop);
+            (data, w, h, "srgb")
+        }
+        (FilterStage::Source, true) => {
+            let (data, w, h) = lcc_pipeline::plugin_filters::analysis_input_framed(src, settings, ANALYZE_EDGE);
+            (data, w, h, "linear")
+        }
+        (FilterStage::Source, false) => {
+            let (data, w, h) = lcc_pipeline::plugin_filters::analysis_input(src, ANALYZE_EDGE);
+            (data, w, h, "linear")
+        }
     };
+    if data.is_empty() {
+        return Err("the photo could not be developed for measuring".into());
+    }
     let (w, h) = (u32::try_from(w).map_err(|_| "image too large")?, u32::try_from(h).map_err(|_| "image too large")?);
     let mut entry = entry.clone();
     entry.analysis = None;
-    let params = lcc_pipeline::plugin_filters::filter_params(&entry, "linear");
+    let params = lcc_pipeline::plugin_filters::filter_params(&entry, encoding);
     let source = lcc_pipeline::plugin_filters::image_source(info);
     Ok(filter.analyze_rgb_with_source(&data, w, h, source.as_ref(), &params, cancel).map_err(|e| e.to_string())?.unwrap_or(Value::Null))
+}
+
+/// What a Display-stage `entry` will filter (#1396): the photo developed as `settings` say, long edge
+/// [`ANALYZE_EDGE`], sRGB-encoded, with the plug-in filters before it run and it and the Display filters after it
+/// off; cropped when `crop`, else the whole frame. Interleaved RGB samples, width, height.
+fn developed_input(
+    entry: &PluginFilter,
+    src: &lcc_raster::Rgb32f,
+    info: &lcc_pipeline::SourceInfo,
+    settings: &DevelopSettings,
+    crop: bool,
+) -> (Vec<f32>, usize, usize) {
+    let mut s = settings.clone();
+    let at = s.plugin_filters.iter().position(|f| f.uid == entry.uid).unwrap_or(s.plugin_filters.len());
+    for f in s.plugin_filters.iter_mut().skip(at) {
+        if f.stage == FilterStage::Display {
+            f.enabled = false;
+        }
+    }
+    let mut req = lcc_pipeline::RenderRequest::fit(ANALYZE_EDGE, ANALYZE_EDGE);
+    req.apply_crop = crop;
+    let r = lcc_pipeline::render(src, info, &s, &req);
+    let data = r.image.data.iter().flat_map(|p| [p[0], p[1], p[2]].map(|v| f32::from(v) / 255.0)).collect();
+    (data, r.image.width, r.image.height)
 }
 
 /// The key a roll measurement carries: how many photos it was made from (host-reserved, like `_analysis`).

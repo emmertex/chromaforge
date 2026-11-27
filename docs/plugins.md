@@ -1231,8 +1231,12 @@ skipped: the render goes on and reports a warning (logged as `render: …`).
 **Whole-image measurement (ABI v1.1 proposal).** A module may export
 `pc_analyze(buf, len, w, h, channels, format, params, params_len) -> i64` returning
 `len << 32 | ptr` of a JSON object (0 = nothing). `develop.pluginFilter.analyze {uid}` runs it
-once on the whole uncropped photo (long edge 1024, linear sRGB primaries) and stores the result
-with the photo (`setAnalysis`). It runs in the background as an activity row (kind
+once on the whole uncropped photo (long edge 1024) and stores the result with the photo (`setAnalysis`).
+What it measures follows the entry's stage: a `source` entry the source as that stage sees it (linear, sRGB
+primaries, `"encoding": "linear"`), a `display` entry the photo developed as it will filter it (the plug-in
+filters before it applied, it and the Display filters after it off; sRGB-encoded, `"encoding": "srgb"`). A
+Display measurement is of the develop settings at the time: after changing White Balance or Exposure, say,
+measure again. It runs in the background as an activity row (kind
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
