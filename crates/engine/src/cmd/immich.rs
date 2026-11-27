@@ -562,7 +562,7 @@ fn links_of(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect();
     Ok(
-        json!({"id": id.0, "state": link::link_state(&s.catalog, id), "links": out, "linkOnly": s.catalog.photo(id).is_some_and(|p| p.preview_only.as_deref() == Some(LINK_ONLY))}),
+        json!({"id": id.0, "state": link::link_state(&s.catalog, id), "links": out, "linkOnly": s.catalog.photo(id).is_some_and(|p| remote::is_link_only(p))}),
     )
 }
 
@@ -772,7 +772,7 @@ fn fetch_original(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "immich.fetchOriginal";
     let id = s.targets(p)?.first().copied().ok_or_else(|| bad(C, "no photo"))?;
     let Some(ph) = s.catalog.photo(id) else { return Err(bad(C, "no such photo")) };
-    if ph.preview_only.as_deref() != Some(LINK_ONLY) {
+    if !remote::is_link_only(ph) {
         return Ok(json!({"started": false, "reason": "the photo's original is already here"}));
     }
     let ph_name = ph.file_name.clone();
@@ -845,18 +845,25 @@ pub fn pump(s: &mut Session, p: &Value) -> Result<Value> {
                 s.remote.sha1_busy = false;
                 for (id, path, h) in done {
                     s.remote.sha1_first.remove(&id);
-                    // the photo may have moved or been relinked meanwhile
-                    let same =
-                        s.catalog.photo(id).is_some_and(|ph| matches!(&ph.source, Source::File { path: x } if *x == path) && ph.sha1.is_none());
+                    // the photo may have moved or been relinked meanwhile, or taken its SHA-1 from a read of
+                    // its file (Reload, Read Originals): the rule is the one `sha1_pending` listed it by
+                    let same = s
+                        .catalog
+                        .photo(id)
+                        .is_some_and(|ph| matches!(&ph.source, Source::File { path: x } if *x == path) && crate::cmd::convert::takes_sha1(ph));
                     match h {
-                        Some(h) if same => {
-                            if let Err(e) = s.apply_system(Op::SetSha1 { id, sha1: Some(h) }) {
-                                log::warn!("SHA-1 of photo {}: {e}", id.0);
+                        Some(h) if same => match s.apply_system(Op::SetSha1 { id, sha1: Some(h) }) {
+                            Ok(()) => {
+                                s.remote.sha1_done += 1;
+                                // now that it has a checksum: does a connected server have it?
+                                crate::cmd::convert::queue_link_check(s, &[id]);
                             }
-                            s.remote.sha1_done += 1;
-                            // now that it has a checksum: does a connected server have it?
-                            s.remote.link_queue.push(id);
-                        }
+                            Err(e) => {
+                                // (not listed again this session, as an unreadable file isn't)
+                                log::warn!("SHA-1 of photo {}: {e}", id.0);
+                                s.remote.sha1_failed.insert(id);
+                            }
+                        },
                         Some(_) => {}
                         None => {
                             s.remote.sha1_failed.insert(id);
@@ -1080,7 +1087,7 @@ fn finish_import(s: &mut Session, d: Downloaded, now: &str) {
 /// so the catalog holds the photo once. → `(new id, the link-only photo that took its file)`.
 pub(crate) fn merge_into_link_only(s: &mut Session, ids: &[PhotoId]) -> Vec<(PhotoId, PhotoId)> {
     let mut by_sha1: std::collections::HashMap<String, (PhotoId, String)> = std::collections::HashMap::new();
-    for p in s.catalog.photos().filter(|p| p.preview_only.as_deref() == Some(LINK_ONLY) && !p.deleted) {
+    for p in s.catalog.photos().filter(|p| remote::is_link_only(p) && !p.deleted) {
         for r in s.catalog.remote_of(p.id).filter(|r| r.service == SERVICE) {
             if let Some(d) = r.remote_checksum.as_deref().and_then(lcc_hash::Sha1Digest::parse) {
                 by_sha1.entry(d.to_hex()).or_insert((p.id, r.account_id.clone()));
@@ -1167,7 +1174,7 @@ fn adopt_original(s: &mut Session, id: PhotoId, account: &str, path: &Path) -> R
 fn photo_folders(s: &Session, cap: usize) -> Vec<String> {
     let mut set = BTreeSet::new();
     // (link-only previews live in the app's cache, not in a library folder)
-    for p in s.catalog.photos().filter(|p| p.in_library() && p.preview_only.as_deref() != Some(LINK_ONLY)) {
+    for p in s.catalog.photos().filter(|p| p.in_library() && !remote::is_link_only(p)) {
         if let Source::File { path } = &p.source
             && let Some(parent) = Path::new(path).parent()
         {
