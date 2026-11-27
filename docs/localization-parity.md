@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-11-09 · **Change:** minor (re-measured with the translation gaps report: every language has all 5,297 interface messages and 551 formats; What's New counted apart; Czech and Swedish rows added); minor (upstream: German interface strings and formats messages reviewed, terms fixed in localization-de.md; re-measured with the fork overlays; AI Denoise screens translated; upstream: de, es, fr, ja, uk catalogs filled, Italian and Georgian interface catalogs added); upstream: Italian: every interface string translated, native-speaker corrections · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last updated:** 2026-11-09 · **Change:** minor (re-measured with the translation gaps report: every language has all 5,297 interface messages and 551 formats; What's New counted apart; Czech and Swedish rows added); minor (upstream: German interface strings and formats messages reviewed, terms fixed in localization-de.md; re-measured with the fork overlays; AI Denoise screens translated; upstream: de, es, fr, ja, uk catalogs filled, Italian and Georgian interface catalogs added); upstream: Italian: every interface string translated, native-speaker corrections · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 How far each interface language is from `full`. How to add or maintain a language is in
 [localization.md](localization.md); per-language notes are in `localization-<code>.md`
