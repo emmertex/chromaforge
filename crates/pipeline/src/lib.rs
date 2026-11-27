@@ -47,6 +47,7 @@ pub mod lut;
 pub mod mask_space;
 pub mod mask_tone;
 pub mod masks;
+pub mod meter;
 pub mod nrc_joint;
 #[cfg(test)]
 mod nrc_joint_reference;
@@ -1260,7 +1261,18 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             });
         }
     }
-    let display_filters = plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Display);
+    let mut display_filters = plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Display);
+    // a filter limited to a mask blends by the mask's coverage on this render's grid (#1397)
+    if s.active_plugin_filters(lcc_develop::FilterStage::Display).any(|f| f.mask.is_some()) {
+        display_filters.set_masks(|fm| {
+            let m = plan.settings.masks.iter().find(|m| m.id == fm.id).ok_or("its mask is gone")?;
+            if let Some(e) = prep.masks.iter().find(|e| e.id == m.id) {
+                return Ok((*e.alpha).clone());
+            }
+            let ev = plan.settings.light.exposure as f32;
+            Ok(masks::evaluate_one(m, &plan.frame, plan.w, plan.h, &prep.img, &prep.log_l, ev, plan.mattes.as_deref()))
+        });
+    }
     let post = finish::Post { stack: &display_filters, frame: plan.filter_frame.clone(), warnings: std::cell::RefCell::new(&mut warnings) };
     if req.depth != OutputDepth::U8 {
         let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, &post);

@@ -150,6 +150,9 @@ pub struct MapUi {
     /// Map ▸ Search…: the side panel's search box takes focus on the next frame.
     pub focus_search: bool,
     pub results: Vec<(String, LatLon)>,
+    /// Saved locations matching the last search when there were several: listed under the search
+    /// box until one is picked, Esc, a click elsewhere or new typing.
+    pub location_matches: Vec<String>,
     pub jobs: Vec<Job>,
     /// The Edit Location panel over the map (a new location or an existing one), while open.
     pub editor: Option<LocationEditor>,
@@ -218,6 +221,7 @@ impl Default for MapUi {
             search: String::new(),
             focus_search: false,
             results: Vec::new(),
+            location_matches: Vec::new(),
             jobs: Vec::new(),
             editor: None,
             active_location: None,
@@ -898,7 +902,7 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         "map.search" => {
             let q = s(p, "query").ok_or("missing `query`")?.to_string();
             app.map.search = q.clone();
-            side::search(app, &q)
+            if p.get("online").and_then(Value::as_bool).unwrap_or(false) { side::search_online(app, &q) } else { side::search(app, &q) }
         }
         "map.geocoder" => {
             if let Some(g) = s(p, "provider") {
