@@ -219,6 +219,24 @@
       <Component Id="AppCli">
         <File Id="AppCliExe" Source="$(var.BinDir)\{{cli_binary}}.exe" KeyPath="yes" />
       </Component>
+
+      <?ifdef OnnxRuntime ?>
+      <!-- ONNX Runtime and its WebGPU plug-in (Microsoft's builds, MIT; Dawn BSD-3-Clause; DXC NCSA) for the AI
+           features on the graphics card, beside the app, which finds them there (docs/onnxruntime.md). Builds with no
+           pinned ONNX Runtime leave them out, and the app runs its own runners. -->
+      <Component Id="OrtRuntime">
+        <File Id="OrtDll" Source="$(var.BinDir)\onnxruntime.dll" KeyPath="yes" />
+        <File Id="OrtSharedDll" Source="$(var.BinDir)\onnxruntime_providers_shared.dll" />
+      </Component>
+      <Component Id="OrtWebGpu">
+        <File Id="OrtWebGpuDll" Source="$(var.BinDir)\onnxruntime_providers_webgpu.dll" KeyPath="yes" />
+        <File Id="OrtDxcDll" Source="$(var.BinDir)\dxcompiler.dll" />
+      </Component>
+      <Component Id="OrtLicences">
+        <File Id="OrtLicence" Source="$(var.BinDir)\LICENSE-onnxruntime.txt" KeyPath="yes" />
+        <File Id="OrtNotices" Source="$(var.BinDir)\ThirdPartyNotices-onnxruntime.txt" />
+      </Component>
+      <?endif?>
     </ComponentGroup>
   </Fragment>
 </Wix>

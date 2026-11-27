@@ -53,6 +53,8 @@ modules:
       - install -Dm755 bin/{{binary}} /app/bin/{{binary}}
       # the tarball's CLI is a link to the app's executable: kept a link, not copied
       - ln -s {{binary}} /app/bin/{{cli_binary}}
+      # ONNX Runtime and its WebGPU plug-in, when the tarball has them (docs/onnxruntime.md)
+      - if [ -d lib/{{binary}} ]; then mkdir -p /app/lib && cp -R lib/{{binary}} /app/lib/; fi
       - install -Dm644 share/applications/{{app_id}}.desktop /app/share/applications/{{app_id}}.desktop
       # The same MIME definitions the deb/rpm install.
       - install -Dm644 share/mime/packages/{{app_id}}.xml /app/share/mime/packages/{{app_id}}.xml
