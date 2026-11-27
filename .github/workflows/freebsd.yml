@@ -1,16 +1,11 @@
 # FreeBSD build and package check in a QEMU VM.
 name: FreeBSD
 
-# The VM build is slow, so it runs nightly on main and on pushes to `release`, not on every pull
-# request: a drifted dependency still shows up within a day, and always before a release ships.
-# PRs that change the FreeBSD workflow or packaging itself still run it.
+# The VM build is slow, so it runs nightly on main and on pushes to `release`, not on pull
+# requests: a drifted dependency still shows up within a day, and always before a release ships.
 on:
   push:
     branches: [release]
-  pull_request:
-    paths:
-      - .github/workflows/freebsd.yml
-      - packaging/freebsd/**
   schedule:
     - cron: "7 4 * * *"
   workflow_dispatch:
