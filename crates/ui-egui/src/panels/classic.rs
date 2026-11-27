@@ -98,6 +98,8 @@ pub fn title(p: PanelId) -> &'static str {
         PanelId::Activity => "Activity",
         PanelId::Keywords => "Keywords",
         PanelId::Info => "Info",
+        PanelId::Profiles => "Browse Profiles",
+        PanelId::Reset => "Reset",
     }
 }
 
@@ -206,35 +208,41 @@ pub fn side_menu(app: &mut LccApp, resp: &egui::Response, side: &[PanelId]) {
             }
         }
         ui.separator();
-        let mut solo = app.ui.single_panel;
-        if ui.checkbox(&mut solo, crate::i18n::tr("Solo Mode")).changed() {
-            let _ = app.run("panel.solo", json!({"on": solo}));
-        }
-        if ui.button(crate::i18n::tr("Expand All Panels")).clicked() {
-            for q in side {
-                set_open(app, *q, true);
-            }
-        }
-        if ui.button(crate::i18n::tr("Collapse All Panels")).clicked() {
-            for q in side {
-                set_open(app, *q, false);
-            }
-        }
-        ui.separator();
-        let e = side_edge(side);
-        let edge = e.key();
-        let (hide, show) = (app.ui.auto_hide.get(e), app.ui.auto_show.get(e));
-        if ui.radio(!hide && !show, crate::i18n::tr("Manual")).clicked() {
-            let _ = app.run("panel.autoShow", json!({"edge": edge, "on": false}));
-            let _ = app.run("panel.autoHide", json!({"edge": edge, "on": false}));
-        }
-        if ui.radio(hide, crate::i18n::tr("Auto Hide")).clicked() {
-            let _ = app.run("panel.autoHide", json!({"edge": edge, "on": true}));
-        }
-        if ui.radio(show, crate::i18n::tr("Auto Hide & Show")).clicked() {
-            let _ = app.run("panel.autoShow", json!({"edge": edge, "on": true}));
-        }
+        side_menu_items(app, ui, side);
     });
+}
+
+/// The part of [`side_menu`] after the panels' checks: Solo Mode, expand / collapse all, and the side's hiding
+/// mode (Develop's tool row shares it under its own entries).
+pub fn side_menu_items(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId]) {
+    let mut solo = app.ui.single_panel;
+    if ui.checkbox(&mut solo, crate::i18n::tr("Solo Mode")).changed() {
+        let _ = app.run("panel.solo", json!({"on": solo}));
+    }
+    if ui.button(crate::i18n::tr("Expand All Panels")).clicked() {
+        for q in side {
+            set_open(app, *q, true);
+        }
+    }
+    if ui.button(crate::i18n::tr("Collapse All Panels")).clicked() {
+        for q in side {
+            set_open(app, *q, false);
+        }
+    }
+    ui.separator();
+    let e = side_edge(side);
+    let edge = e.key();
+    let (hide, show) = (app.ui.auto_hide.get(e), app.ui.auto_show.get(e));
+    if ui.radio(!hide && !show, crate::i18n::tr("Manual")).clicked() {
+        let _ = app.run("panel.autoShow", json!({"edge": edge, "on": false}));
+        let _ = app.run("panel.autoHide", json!({"edge": edge, "on": false}));
+    }
+    if ui.radio(hide, crate::i18n::tr("Auto Hide")).clicked() {
+        let _ = app.run("panel.autoHide", json!({"edge": edge, "on": true}));
+    }
+    if ui.radio(show, crate::i18n::tr("Auto Hide & Show")).clicked() {
+        let _ = app.run("panel.autoShow", json!({"edge": edge, "on": true}));
+    }
 }
 
 /// A small disclosure triangle (down when `open`), painted.
