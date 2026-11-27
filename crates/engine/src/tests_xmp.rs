@@ -2669,3 +2669,73 @@ fn all_metadata_gives_the_catalog_values_even_without_the_file() {
     assert!(r["note"].as_str().is_some_and(|n| n.contains("can't be read")), "{r}");
     assert!(rows(&r).iter().any(|(n, v)| n == "\"City\"" && v == "\"Paris\""), "{r}");
 }
+
+/// Every field the app edits (photo.setMeta, metadata presets: `cmd::metadata::FIELDS`) reaches a sidecar that already
+/// exists, not only a new one, and Read Metadata from File then keeps the edit. The second save is the one that
+/// merges into an existing file, so each field is saved twice with different values. A field the writer writes but
+/// the merge doesn't own (`sidecar::OWNED`) kept its first value, and the next read put it back over the edit.
+#[test]
+fn a_second_edit_of_every_metadata_field_reaches_an_existing_sidecar() {
+    let src = temp_dir("owned-src");
+    let lib = temp_dir("owned-lib");
+    write_png(&src.join("a.png"), 1);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src.join("a.png").to_string_lossy()]})).unwrap();
+    let id = only(&s);
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let lists = ["keywords", "supplementalCategories", "subjectCode"];
+    let edit = |round: &str| {
+        let mut fields = serde_json::Map::new();
+        for &f in crate::cmd::metadata::FIELDS {
+            let v = match f {
+                "copyrightStatus" => json!(if round == "first" { "copyrighted" } else { "publicDomain" }),
+                // subject codes are IPTC's eight-digit numbers
+                "subjectCode" => json!([if round == "first" { "01001000" } else { "02002000" }]),
+                f if lists.contains(&f) => json!([format!("{round}-{f}")]),
+                f => json!(format!("{round}-{f}")),
+            };
+            fields.insert(f.to_string(), v);
+        }
+        serde_json::Value::Object(fields)
+    };
+    for round in ["first", "second"] {
+        s.execute("photo.setMeta", &edit(round)).unwrap();
+        let r = s.execute("photo.saveMetadataToFile", &json!({"ids": [id.0]})).unwrap();
+        assert_eq!(r["written"].as_array().map(Vec::len), Some(1), "{round} save: {r}");
+    }
+    let xmp = std::fs::read_to_string(src.join("a.xmp")).unwrap();
+    for &f in crate::cmd::metadata::FIELDS {
+        match f {
+            "copyrightStatus" => assert!(!xmp.contains("<xmpRights:Marked>True"), "copyrightStatus kept its first value:\n{xmp}"),
+            "subjectCode" => assert!(xmp.contains("02002000") && !xmp.contains("01001000"), "subjectCode kept its first value:\n{xmp}"),
+            f => {
+                assert!(xmp.contains(&format!("second-{f}")), "{f}: the second edit never reached the sidecar:\n{xmp}");
+                assert!(!xmp.contains(&format!("first-{f}")), "{f}: the sidecar still holds the first value:\n{xmp}");
+            }
+        }
+    }
+    // and reading the file back keeps the edits
+    s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
+    let meta = &s.catalog.photo(id).unwrap().meta;
+    assert_eq!(meta.headline, "second-headline");
+    assert_eq!(meta.category, "second-category");
+    assert_eq!(meta.description_writer, "second-descriptionWriter");
+    assert_eq!(meta.country_code, "second-countryCode");
+    assert_eq!(meta.supplemental_categories, ["second-supplementalCategories"]);
+    assert_eq!(meta.subject_code, ["02002000"]);
+}
+
+/// Plug-in custom metadata fields (`lcpf:fields`) are the app's: a save replaces the ones an existing sidecar holds.
+#[test]
+fn a_save_replaces_the_plugin_fields_in_an_existing_sidecar() {
+    let meta = lcc_meta::Metadata::default();
+    let old = lcc_meta::write_xmp_filters(&meta, &[], &[("plug", "k", "old-value")], &[], &[]);
+    let new = lcc_meta::write_xmp_filters(&meta, &[], &[("plug", "k", "new-value")], &[], &[]);
+    let merged = crate::sidecar::merge_packet(&old, &new).unwrap();
+    assert!(merged.contains("new-value") && !merged.contains("old-value"), "{merged}");
+    // and a field the app no longer has is removed
+    let none = lcc_meta::write_xmp_filters(&meta, &[], &[], &[], &[]);
+    let cleared = crate::sidecar::merge_packet(&old, &none).unwrap();
+    assert!(!cleared.contains("old-value"), "{cleared}");
+}

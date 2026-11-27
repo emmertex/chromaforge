@@ -233,8 +233,7 @@ pub fn import_batch_done(s: &mut Session, report: crate::import::ImportReport, m
     // the previews the library builds at import (library.previewSettings atImport)
     let ids: Vec<PhotoId> = imported.iter().map(|i| PhotoId(*i)).collect();
     // connected Immich servers are asked whether they have these photos already (`remote.pump`)
-    #[cfg(not(target_arch = "wasm32"))]
-    s.remote.link_queue.extend(ids.iter().copied());
+    crate::cmd::convert::queue_link_check(s, &ids);
     crate::cmd::previews::build_after_import(s, &ids);
     // the plug-ins' afterImport hooks: a failing plug-in never fails the import (its line is in
     // the result as `pluginResults`)
