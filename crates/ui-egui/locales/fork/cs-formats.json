@@ -327,6 +327,7 @@
   "{what} merge added, but not registered: {reason}": "Přidáno sloučení {what}, ale bez registrace: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "Vybráno: {}",
   "{} faces wait under 1 person": "Čeká {} obličejů pod 1 osobou",
   "{} faces wait under {} people": "Čeká {} obličejů pod {} osobami",
   "{} fixed in this photo": "Opraveno na této fotce: {}",

@@ -343,6 +343,7 @@
   "{what} merge added, but not registered: {reason}": "{what}: yhdistetty kuva lisätty, mutta ei rekisteröitynä: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} Mt · {format}",
+  "{} chosen": "{} valittu",
   "{} faces wait under 1 person": "{} kasvoa odottaa 1 henkilön alla",
   "{} faces wait under {} people": "{} kasvoa odottaa {} henkilön alla",
   "{} fixed in this photo": "{} korjattu tässä kuvassa",

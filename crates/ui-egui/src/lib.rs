@@ -3634,6 +3634,9 @@ pub struct Caches {
     pub face_hints: Option<(u64, u64, u64, std::sync::Arc<panels::faces::Hints>)>,
     /// The open person page: (name, catalog revision, faces indexed, when it was asked for, the page).
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
+    /// The Advanced Search panel's lists of the library's cameras, lenses, formats, keywords and people, with the
+    /// catalog revision they were read at.
+    pub search_choices: Option<(u64, std::sync::Arc<advanced_search::Choices>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
     pub unnamed: Option<(u64, u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
     /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another

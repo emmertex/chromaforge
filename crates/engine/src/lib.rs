@@ -135,6 +135,7 @@ pub mod profile_edits;
 pub mod profile_refs;
 pub mod proof;
 pub mod quality_scan;
+pub mod raw_decoder;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 pub mod rename;
@@ -238,6 +239,11 @@ pub enum EngineError {
     ModelMissing { model: AiModel, msg: String },
     #[error("{0}")]
     Other(String),
+}
+
+/// The diagnostics outcome of an engine error (issue #1363): a cancel is `cancelled`, anything else `failed`.
+pub(crate) fn diag_outcome(e: &EngineError) -> lcc_diag::Outcome {
+    if matches!(e, EngineError::Cancelled(_)) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Failed }
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -770,6 +776,9 @@ pub struct Session {
     /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
     /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
     pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder per camera (library label → Auto / lcc-raw / LibRaw; persisted in prefs.json, absent =
+    /// Auto). Installed into [`raw_decoder`], which every raw decode asks.
+    pub raw_decoders: std::collections::BTreeMap<String, raw_decoder::Decoder>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -1061,6 +1070,7 @@ impl Session {
             sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),
+            raw_decoders: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),
@@ -2915,6 +2925,8 @@ mod tests_enhance;
 #[cfg(test)]
 mod tests_export;
 #[cfg(test)]
+mod tests_export_binning;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
 #[cfg(test)]
@@ -3053,6 +3065,8 @@ mod tests_profile_manager;
 mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
+#[cfg(test)]
+mod tests_reload_sha1;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]

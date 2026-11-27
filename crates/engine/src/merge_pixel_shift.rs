@@ -76,7 +76,7 @@ impl MergeJob {
         }
         // frame 01 gives the result its colour, lens data, metadata and place on the sensor
         let bytes = (self.read)(&self.sources[0].1)?;
-        let mut first = lcc_raw::decode(&bytes).map_err(|e| format!("{}: {e}", self.sources[0].1))?;
+        let mut first = crate::raw_decoder::decode(&bytes).map_err(|e| format!("{}: {e}", self.sources[0].1))?;
         let lens = first.opcodes.list3.clone();
         // the colour fit sees the raw without its lens warp, as when the photo opens
         first.opcodes.list3.retain(|op| !op.is_lens_correction());
@@ -119,7 +119,7 @@ impl MergeJob {
             }
             let path = &self.sources[i].1;
             let bytes = (self.read)(path)?;
-            lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))
+            crate::raw_decoder::decode(&bytes).map_err(|e| format!("{path}: {e}"))
         };
         let wanted = matches!(self.kind, MergeKind::PixelShift { registered: true });
         let (merged, registration, fallback) = if wanted && !plan.memory_limited {

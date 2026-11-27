@@ -59,6 +59,12 @@ quantization tables and multi-tile geometry) are translated from LibRaw's src/de
 Alex Tutubalin, LibRaw LLC, used under the GNU LGPL 2.1
 (crates/raw/src/vendor/LICENSE-LibRaw-LGPL-2.1.txt; LibRaw also offers CDDL 1.0).
 
+Desktop builds made with LibRaw (the `libraw` feature with LIBRAW_DIR or LIBRAW_SYSTEM=1, see crates/libraw)
+contain or link LibRaw itself (https://github.com/LibRaw/LibRaw), Copyright 2008-2026 LibRaw LLC, unmodified,
+used under the GNU LGPL 2.1 (crates/libraw/LICENSE-LibRaw-LGPL-2.1.txt; LibRaw also offers CDDL 1.0); such a
+binary is offered under GPL-3.0-or-later. The source of the LibRaw version built is at that address; the
+crate's C shim (crates/libraw/shim/shim.cpp) is our own work and calls LibRaw's public API only.
+
 crates/pipeline/src/tone_eq.rs (the Tone Equalizer) is translated from darktable's src/iop/toneequal.c
 (https://github.com/darktable-org/darktable), Copyright 2018-2026 Aurélien Pierre and the darktable developers,
 used under the GNU GPL 3.0 or later (LICENSE-GPL-3.0.txt): the nine-band Gaussian radial-basis correction curve
@@ -225,6 +231,16 @@ downloads cities15000.zip, admin1CodesASCII.txt and countryInfo.txt from GeoName
 (https://download.geonames.org/export/dump/) into the settings folder. GeoNames data is licensed
 under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/);
 attribution: "GeoNames, geonames.org". The lookup code (crates/geocode) is our own.
+
+Lossy WebP export (native builds)
+---------------------------------
+Desktop builds encode lossy WebP with libwebp 1.3.1 with the CVE-2023-4863 fix
+(https://chromium.googlesource.com/webm/libwebp),
+Copyright (c) 2010, Google Inc., licensed under the BSD 3-Clause License with Google's additional
+patent grant (crates/codecs/LICENSE-libwebp.txt). It is compiled from the C sources vendored in the
+libwebp-sys crate 0.9.6 (MIT License, https://github.com/NoXF/libwebp-sys) and called through the
+webp crate 0.3.1 (MIT OR Apache-2.0, https://github.com/jaredforth/webp). libwebp is a C library, used under the
+Rust-first rule (AGENTS.md) behind the codecs crate's `webp-lossy` feature. Web and Android builds leave it out and export lossless WebP only.
 
 ONNX Runtime (AI models on the graphics card)
 ---------------------------------------------

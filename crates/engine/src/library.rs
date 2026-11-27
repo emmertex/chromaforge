@@ -462,6 +462,9 @@ struct PrefsFile {
     import: crate::import::ImportDefaults,
     /// The default camera profile per camera model (`""` = every camera; issue #723).
     camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder chosen per camera (absent = Auto, see [`crate::raw_decoder`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    raw_decoders: std::collections::BTreeMap<String, crate::raw_decoder::Decoder>,
     /// Thumbnail disk cache budget (MB, 0 = default).
     cache_mb: u32,
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
@@ -938,6 +941,8 @@ impl Session {
         self.camera_profile_defaults = prefs.camera_profile_defaults;
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.raw_decoders = prefs.raw_decoders;
+        crate::raw_decoder::install_choices(&self.raw_decoders);
         self.cache_mb = prefs.cache_mb;
         self.prep.opened_library();
         // the lens database is read off this thread now, not by the first photo that needs it
@@ -1149,6 +1154,11 @@ impl Session {
     /// Called after every top-level command; cheap when nothing changed. Fails (with
     /// [`EngineError::NotSaved`]) only when the queued ops couldn't be written; they stay queued.
     pub fn persist(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): at `detail`, since it runs after every command; listed while it runs
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "persist", &[], crate::diag_outcome, |_| self.persist_inner())
+    }
+
+    fn persist_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
             let mut appended = lib.journal.append(&self.pending_log);
@@ -1358,6 +1368,13 @@ impl Session {
     /// by a thread of its own). An error: a write failed and the changes it lost are saved by
     /// the next save (a snapshot). A no-op without a library.
     pub fn flush_catalog(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): waiting for the log writer, listed while it runs
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "flush_catalog", &[], crate::diag_outcome, |_| {
+            self.flush_catalog_inner()
+        })
+    }
+
+    fn flush_catalog_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         lib.journal.flush().map_err(|e| {
             let reason = e.to_string();
@@ -1445,6 +1462,7 @@ impl Session {
             keyword_shortcuts: self.keyword_shortcut.clone(),
             import: self.import_defaults.clone(),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
+            raw_decoders: self.raw_decoders.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
             prep_unfinished: self.prep.unfinished,

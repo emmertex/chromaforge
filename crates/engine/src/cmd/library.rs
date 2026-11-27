@@ -233,8 +233,7 @@ pub fn import_batch_done(s: &mut Session, report: crate::import::ImportReport, m
     // the previews the library builds at import (library.previewSettings atImport)
     let ids: Vec<PhotoId> = imported.iter().map(|i| PhotoId(*i)).collect();
     // connected Immich servers are asked whether they have these photos already (`remote.pump`)
-    #[cfg(not(target_arch = "wasm32"))]
-    s.remote.link_queue.extend(ids.iter().copied());
+    crate::cmd::convert::queue_link_check(s, &ids);
     crate::cmd::previews::build_after_import(s, &ids);
     // the plug-ins' afterImport hooks: a failing plug-in never fails the import (its line is in
     // the result as `pluginResults`)
@@ -1034,7 +1033,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Advanced Search",
             ["Library"],
             None,
-            "{query?: AdvancedSearch | null}: run the Advanced Search panel's structured query (global words; file/album/tags; item properties: dimensions, rating, color label, aspect; caption/title; photograph info: camera, lens, focal length, ISO, shutter speed, aperture; location; audio/video duration; face count and people) and show its results in the grid; null or an absent query clears it → {count}",
+            "{query?: AdvancedSearch | null}: run the Advanced Search panel's structured query (global words; file/album/tags; item properties: dimensions, rating, color label, aspect, pick flag, file size in MB; dates: capture / import / edit spans as `{from?, to?}` (a year, month or day each end, both included) and the capture `month` and `day` whatever the year; caption/title; photograph info: camera, lens, focal length, ISO, shutter speed, aperture, exposure bias, flash; location; audio/video duration; face count and people) and show its results in the grid. `match` (all | any | none | notAll) says how the conditions combine (each word, field, keyword or people list, collection and face count is one); `groups` adds further search groups (queries of their own, each with its own `match`, no groups inside), combined as `groupsMatch` (all | any) says, at most 64 (issue #1135). Values picked from the library's lists match whole, any of them: `file.formats`, `photograph.cameras` and `photograph.lenses`; `file.untagged`, `photograph.noCamera` and `photograph.noLens` add the photos with nothing recorded there (alone, only those); null or an absent query clears it → {count}",
             always,
             |s, p| {
                 match p.get("query") {

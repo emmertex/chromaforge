@@ -311,6 +311,7 @@
   "{what} merge added, but not registered: {reason}": "{what}: об’єднання додано, але без суміщення: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} МБ · {format}",
+  "{} chosen": "Вибрано: {}",
   "{} faces wait under 1 person": "Під 1 людиною чекають обличчя: {}",
   "{} faces wait under {} people": "Під {} людьми чекають обличчя: {}",
   "{} keys": "Клавіші {}",
