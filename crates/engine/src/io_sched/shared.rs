@@ -121,11 +121,64 @@ pub(crate) struct Shared {
     next_id: AtomicU64,
     /// Entries outstanding (kept with the map, so the gate can skip the lock while there are none).
     outstanding: AtomicUsize,
+    /// Each volume's limit as the pool's controller last published it (§5.7): the import's
+    /// read-ahead grows with it; tests read it.
+    learned: Mutex<HashMap<VolumeKey, Learned>>,
+    /// Raises the tests pin, over what the controller publishes.
+    #[cfg(test)]
+    pinned: Mutex<HashMap<VolumeKey, usize>>,
+}
+
+/// A volume's limit as the controller has it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Learned {
+    pub(crate) limit: usize,
+    /// How far `limit` is above the volume's start.
+    pub(crate) raised: usize,
+    /// It holds the probing token.
+    pub(crate) probing: bool,
+    /// Windows completed on it, and windows discarded (gate waits), in this process.
+    pub(crate) windows: u64,
+    pub(crate) discarded: u64,
 }
 
 impl Shared {
     pub(crate) fn new(clock: Arc<dyn Clock>) -> Shared {
-        Shared { clock, state: Mutex::default(), last_wake: AtomicU64::new(0), next_id: AtomicU64::new(1), outstanding: AtomicUsize::new(0) }
+        Shared {
+            clock,
+            state: Mutex::default(),
+            last_wake: AtomicU64::new(0),
+            next_id: AtomicU64::new(1),
+            outstanding: AtomicUsize::new(0),
+            learned: Mutex::default(),
+            #[cfg(test)]
+            pinned: Mutex::default(),
+        }
+    }
+
+    /// Make volume `key`'s raise `n` whatever the controller publishes (tests).
+    #[cfg(test)]
+    pub(crate) fn pin_raised(&self, key: VolumeKey, n: usize) {
+        self.pinned.lock().unwrap_or_else(PoisonError::into_inner).insert(key, n);
+    }
+
+    /// Volume `key`'s limit as last published (`None`: not known, or forgotten).
+    pub(crate) fn learned(&self, key: &VolumeKey) -> Option<Learned> {
+        self.learned.lock().unwrap_or_else(PoisonError::into_inner).get(key).copied()
+    }
+
+    /// How far volume `key`'s limit is above its start (0: not raised, or not known).
+    pub(crate) fn raised(&self, key: &VolumeKey) -> usize {
+        #[cfg(test)]
+        if let Some(n) = self.pinned.lock().unwrap_or_else(PoisonError::into_inner).get(key) {
+            return *n;
+        }
+        self.learned(key).map_or(0, |l| l.raised)
+    }
+
+    /// Every volume's limit, as the controller has it now.
+    pub(crate) fn set_learned(&self, learned: HashMap<VolumeKey, Learned>) {
+        *self.learned.lock().unwrap_or_else(PoisonError::into_inner) = learned;
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

@@ -161,8 +161,9 @@ fn drain(h: &H, tokens: &Tokens, total: usize) {
     }
 }
 
-/// R2 process-wide: two calls on one volume share its limit (at the limit, never above it); the
-/// pool's cap is the largest `workers` of its calls, and each call keeps its own.
+/// R2 process-wide: two calls on one volume share its limit (at the limit, never above it); until
+/// the volume is measured its limit is the largest `workers` of its calls (§5.7), and calls have no
+/// cap of their own (PR 5 retires PR 3's per-call caps).
 #[test]
 fn two_calls_on_one_volume_share_its_limit() {
     for (wa, wb) in [(4usize, 4usize), (2, 4), (4, 2)] {
@@ -182,15 +183,32 @@ fn two_calls_on_one_volume_share_its_limit() {
         assert_eq!(ok_count(&a.join()), 12);
         assert_eq!(ok_count(&b.join()), 12);
         assert_eq!(conc.max_on("/a"), limit, "({wa}, {wb}): never above the shared limit");
-        assert!(conc.max_of('A') <= wa && conc.max_of('B') <= wb, "({wa}, {wb}): each call keeps its own cap");
+        assert!(conc.max_of('A') >= 1 && conc.max_of('B') >= 1, "({wa}, {wb}): both calls ran");
     }
 }
 
-/// R2 process-wide: two calls on two volumes share one cap (each volume one fewer, R4a), where
-/// each call alone would run its own `workers`.
+/// PR 5: two calls on two volumes each run their volume's own limit: the I/O cap (32), not the
+/// calls' `workers()`, bounds them together.
+#[test]
+fn two_calls_on_two_volumes_each_run_their_volumes_limit() {
+    let h = H::new();
+    let (conc, tokens) = (Arc::new(Conc::default()), Tokens::new());
+    let a = h.start(tokened("/a", "A", 8, &conc, &tokens), 3);
+    wait_until(|| conc.running() == 3, "A at its volume's limit");
+    let b = h.start(tokened("/b", "B", 8, &conc, &tokens), 3);
+    wait_until(|| conc.on("/b") == 3, "B at its volume's limit beside A");
+    a.settle(&h, 5);
+    assert_eq!((conc.on("/a"), conc.on("/b")), (3, 3), "each volume at its own limit");
+    drain(&h, &tokens, 16);
+    assert_eq!(ok_count(&a.join()) + ok_count(&b.join()), 16);
+    assert_eq!(conc.max_all(), 6);
+}
+
+/// R2 process-wide under a small I/O cap: two calls on two volumes share one cap (each volume
+/// one fewer, R4a).
 #[test]
 fn two_calls_on_two_volumes_share_one_cap() {
-    let h = H::new();
+    let h = H::capped(3);
     let (conc, tokens) = (Arc::new(Conc::default()), Tokens::new());
     let a = h.start(tokened("/a", "A", 8, &conc, &tokens), 3);
     wait_until(|| conc.running() == 3, "A alone at its cap");

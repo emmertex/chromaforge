@@ -1,11 +1,12 @@
-//! The I/O scheduler (`adaptive-io-spec` PRs 1–4): bulk file reads and copies queued per volume,
+//! The I/O scheduler (`adaptive-io-spec` PRs 1–5): bulk file reads and copies queued per volume,
 //! so a call over several drives or cards reads them at once, and a volume that stops answering
 //! is contained (its files fail "volume not responding"; the others go on; cancel returns).
 //!
 //! One pool for the process ([`pool`], PR 3): every call's jobs go to one scheduler ([`sched`])
-//! run by a supervisor thread, with today's limits ([`crate::import::workers`]) shared by every
-//! call on a volume; the abandoned-job registry and the volumes' history ([`shared`]) are
-//! process-wide. An import's reads ahead and copies go through it as streams
+//! run by a supervisor thread, each volume's limit shared by every call on it and learned from
+//! its throughput ([`limits`], PR 5: from today's [`crate::import::workers`], one volume probing
+//! at a time, under an I/O cap of 32 running jobs); the abandoned-job registry and the volumes'
+//! history ([`shared`]) are process-wide. An import's reads ahead and copies go through it as streams
 //! (`import/stream.rs`, PR 4), as do the originals read ahead after a Lightroom import
 //! ([`crate::cmd::read_originals::OriginalsReader`]). The work gate's job-aware wait is
 //! [`crate::memory::WorkGate::acquire_for_job`]; byte counting is [`crate::bounded_read`]'s capped
@@ -21,6 +22,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub(crate) mod clock;
 pub(crate) mod job;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod limits;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod mounts;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod pool;
@@ -29,6 +32,10 @@ pub(crate) mod run;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod sched;
 pub(crate) mod shared;
+#[cfg(test)]
+mod sim;
+#[cfg(test)]
+mod sim_reference;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +44,13 @@ mod tests_copies;
 #[cfg(test)]
 mod tests_gate;
 #[cfg(test)]
+mod tests_limits;
+#[cfg(test)]
 mod tests_pool;
+#[cfg(test)]
+mod tests_pool_limits;
+#[cfg(test)]
+mod tests_sim;
 
 pub(crate) use job::JobState;
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +70,8 @@ pub(crate) struct IoContext {
     pub(crate) shared: Arc<shared::Shared>,
     pub(crate) mounts: mounts::MountCache,
     pub(crate) tick: std::time::Duration,
+    /// Running jobs at most, every volume together (§5.7's I/O cap; tests lower it).
+    pub(crate) io_cap: usize,
     /// How long a call waits for a fresh mount list (ns).
     pub(crate) mount_wait: u64,
     /// Worker thread spawns that may still succeed (tests inject failures with it; `usize::MAX`
@@ -88,6 +103,7 @@ impl IoContext {
             shared: Arc::new(shared::Shared::new(clock)),
             mounts: mounts::MountCache::new(reader),
             tick,
+            io_cap: limits::IO_CAP,
             mount_wait: mounts::MOUNT_WAIT,
             spawn_budget: Arc::new(AtomicUsize::new(usize::MAX)),
             supervisor_budget: AtomicUsize::new(usize::MAX),

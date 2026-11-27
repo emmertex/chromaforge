@@ -128,12 +128,12 @@ fn tracked(src: &str, dst: &str, n: usize, conc: &Arc<Conc>, gate: Option<&Arc<L
 // ---------------------------------------------------------------- slots and limits
 
 /// R3: a copy holds a slot on its source and on its destination; no volume ever runs more than
-/// the call cap, and none more than `cap − 1` while some unfinished job doesn't need it (R4a),
-/// at one, two, four and eight workers.
+/// the I/O cap, and none more than `cap − 1` while some unfinished job doesn't need it (R4a),
+/// at one, two, four and eight workers (the I/O cap set to PR 1's cap, `max(2, workers)`).
 #[test]
 fn a_copy_holds_a_slot_on_both_volumes() {
     for workers in [1usize, 2, 4, 8] {
-        let h = H::new();
+        let h = H::capped(workers.max(2));
         let conc = Arc::new(Conc::default());
         let mut jobs = tracked("/a", "/b", 12, &conc, None);
         jobs.extend(tracked("/b", "", 12, &conc, None));
@@ -155,10 +155,10 @@ fn a_copy_holds_a_slot_on_both_volumes() {
 }
 
 /// A copy within one volume holds one slot: it runs where that volume's limit is 1 (one worker;
-/// two workers beside another volume's reads, where the limit is `max(1, 2 − 1)`).
+/// an I/O cap of 2 beside another volume's reads, where the limit is `max(1, 2 − 1)`).
 #[test]
 fn a_copy_within_one_volume_holds_one_slot_and_runs_at_limit_1() {
-    let h = H::new();
+    let h = H::capped(2);
     let conc = Arc::new(Conc::default());
     let (r, _) = h.run(tracked("/a", "/a", 4, &conc, None), 1);
     assert_eq!(ok_count(&r), 4);
@@ -209,8 +209,8 @@ fn one_card_into_one_ssd_runs_workers_copies() {
 #[test]
 fn two_cards_into_one_ssd_hold_each_card_not_the_ssd() {
     for workers in [1usize, 2, 4, 8] {
-        let h = H::new();
         let cap = workers.max(2);
+        let h = H::capped(cap);
         let conc = Arc::new(Conc::default());
         let gate = Latch::new();
         let mut jobs = tracked("/a", "/c", 2 * cap, &conc, Some(&gate));
@@ -237,8 +237,8 @@ fn two_cards_into_one_ssd_hold_each_card_not_the_ssd() {
 #[test]
 fn a_hung_card_never_takes_the_other_cards_slot() {
     for workers in [2usize, 4, 8] {
-        let h = H::new();
         let cap = workers.max(2);
+        let h = H::capped(cap);
         let conc = Arc::new(Conc::default());
         let gate = Latch::new();
         let mut jobs = tracked("/a", "/c", cap + 2, &conc, Some(&gate));
@@ -294,7 +294,8 @@ fn hung_copies(src: &str, dst: &str, n: usize, tag: &str, latch: &Arc<Latch>, st
 /// other destination were its progress, and the hung copies leave it with their destination).
 #[test]
 fn a_hung_destination_fails_its_queue_while_others_finish() {
-    let h = H::new();
+    // (an I/O cap of 4: /a holds three slots and its fourth is the spinners' turn)
+    let h = H::capped(4);
     let (hung, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
     let stop = Arc::new(AtomicBool::new(false));
     let mut jobs = hung_copies("/a", "/b", 3, "h", &hung, &started);
