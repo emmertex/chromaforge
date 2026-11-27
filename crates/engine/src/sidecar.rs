@@ -262,12 +262,18 @@ pub enum DevelopPatch {
 /// as-shot white for everything developed relative to it).
 pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Result<SidecarData, String> {
     let d = lcc_meta::parse_xmp(xmp).map_err(|e| e.to_string())?;
+    Ok(sidecar_from_xmp(&d, target))
+}
+
+/// [`parse_sidecar`] of a packet already parsed, for a caller that adjusts the packet first (a Lightroom catalog's
+/// cached XMP, whose "not set" values are removed before they are read).
+pub(crate) fn sidecar_from_xmp(d: &lcc_meta::XmpData, target: crate::crs::Target) -> SidecarData {
     let m = &d.metadata;
     let lc = |k: &str| d.properties.get(&format!("lc:{k}")).and_then(|v| v.first()).cloned();
     let mut out = SidecarData {
-        plugin_fields: lcc_meta::plugin_fields(&d),
+        plugin_fields: lcc_meta::plugin_fields(d),
         // read a few more than fit, so skipped malformed entries don't hide good ones after them
-        plugin_filters: lcc_meta::plugin_filters(&d, lcc_develop::MAX_PLUGIN_FILTERS.saturating_mul(4))
+        plugin_filters: lcc_meta::plugin_filters(d, lcc_develop::MAX_PLUGIN_FILTERS.saturating_mul(4))
             .map(|e| crate::cmd::plugin_filters::stack_from_xmp(&e)),
         title: m.title.clone(),
         caption: m.caption.clone(),
@@ -415,7 +421,7 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
     if matches!(out.develop, Some(DevelopPatch::Partial(_))) {
         out.turned_to = m.orientation;
     }
-    Ok(out)
+    out
 }
 
 /// Apply sidecar data to a photo record (the sidecar wins, except that a capture time embedded in

@@ -1715,6 +1715,14 @@ fn strip_lua_sentinels(value: &mut crate::preset_import::Lua) -> usize {
     }
 }
 
+/// Remove the `crs:` fields of a parsed packet whose value is Lightroom's "not set" (-999999), from both the flat and
+/// the structured properties, so they read as absent.
+fn strip_unset_crs_fields(d: &mut lcc_meta::XmpData) {
+    let unset = |s: &str| s.trim().parse::<f64>().is_ok_and(|v| v == -999999.0);
+    d.properties.retain(|k, v| !(k.starts_with("crs:") && v.len() == 1 && v.iter().all(|s| unset(s))));
+    d.values.retain(|k, v| !(k.starts_with("crs:") && matches!(v, lcc_meta::XmpValue::Text(s) if unset(s))));
+}
+
 fn strip_xmp_sentinels(value: &mut Value) {
     match value {
         Value::Object(fields) => fields.retain(|_, value| {
@@ -1974,7 +1982,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.develop = Arc::new(p.camera_defaults());
         }
         if !src.xmp.is_empty() {
-            match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
+            match lcc_meta::parse_xmp(&src.xmp).map(|mut d| {
+                // Lightroom's "not set" value (-999999) in the cached packet means no value, as in the develop text:
+                // removed before the settings are read, because an old process version's field (Shadows) is
+                // converted on reading and would no longer be recognisable afterwards (Blacks +100)
+                strip_unset_crs_fields(&mut d);
+                crate::sidecar::sidecar_from_xmp(&d, crate::crs::Target::for_photo(&p))
+            }) {
                 Ok(mut sc) => {
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
@@ -3868,6 +3882,36 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(partial["light"]["exposure"], -5.0);
         assert_eq!(partial["light"]["contrast"], -100.0);
+    }
+
+    /// The "not set" value in the cached packet on an older process version's field is no value either: Shadows
+    /// (process 2010) is converted to Blacks on reading, so -999999 there came in as Blacks +100 when it was only
+    /// stripped after mapping. The develop text still applies.
+    #[test]
+    fn a_not_set_value_on_an_old_process_field_in_the_cached_packet_is_no_value() {
+        let mut data = sample();
+        data.photos.truncate(1);
+        data.photos[0].image.remove("masterImage");
+        data.photos[0].settings = "s = { Exposure2012 = 0.5 }".into();
+        // only old-process fields in the packet: a process 2012 field there would make the old ones be ignored anyway
+        data.photos[0].xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Shadows="-999999" crs:Brightness=" -999999 "/></rdf:RDF></x:xmpmeta>"#.into();
+        let mut s = crate::Session::new();
+        apply(&mut s, data, false).unwrap();
+        let p = s.catalog.photos().next().unwrap();
+        let defaults = p.camera_defaults();
+        assert_eq!(p.develop.light.blacks, defaults.light.blacks, "Shadows -999999 is no Blacks value");
+        assert_eq!(p.develop.light.shadows, defaults.light.shadows);
+        assert_eq!(p.develop.light.exposure, 0.5, "the develop text still applies");
+        // and the stripping touches only crs: fields that say "not set"
+        let mut d = lcc_meta::parse_xmp(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" crs:Shadows="-999999" crs:Blacks2012="-999998" crs:Exposure2012="-999999.5" xmp:Rating="-999999"/></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        strip_unset_crs_fields(&mut d);
+        assert!(!d.properties.contains_key("crs:Shadows"));
+        for kept in ["crs:Blacks2012", "crs:Exposure2012", "xmp:Rating"] {
+            assert!(d.properties.contains_key(kept), "{kept} was removed: {:?}", d.properties);
+        }
     }
 
     #[test]
