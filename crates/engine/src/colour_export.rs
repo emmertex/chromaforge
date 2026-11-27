@@ -34,7 +34,7 @@ pub fn profile_model(make: Option<&str>, model: &str) -> String {
 /// A `.dcp` of the camera colour a photo of the raw in `bytes` renders with (see [`with_photo_colour`]), named
 /// `name`, for camera `unique` (`UniqueCameraModel`; default [`profile_model`]).
 pub fn photo_dcp(bytes: &[u8], choice: &str, name: &str, unique: Option<&str>) -> Result<Vec<u8>, String> {
-    let mut raw = lcc_raw::decode(bytes).map_err(|e| format!("not a raw photo: {e}"))?;
+    let mut raw = crate::raw_decoder::decode(bytes).map_err(|e| format!("not a raw photo: {e}"))?;
     with_photo_colour(&mut raw, bytes, choice);
     if !lcc_raw::color::has_matrix(&raw.color) {
         return Err("the app has no colour model for this camera to export".into());
