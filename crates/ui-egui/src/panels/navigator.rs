@@ -1,5 +1,6 @@
 //! The Library module's Navigator panel (top of the left column): the active photo with the
-//! loupe's visible part outlined, and the zoom presets Fit / Fill / 1:1 / a custom level.
+//! loupe's visible part outlined, and the zoom presets Fit / Fill / 100% / a custom level (a click on it zooms to it,
+//! its triangle picks it).
 //! A click or drag pans the loupe (and opens it from the grids), like Lightroom Classic.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -24,6 +25,11 @@ fn visible(ctx: &egui::Context) -> Option<Rect> {
 fn custom_level(ctx: &egui::Context) -> &'static str {
     let i = ctx.data(|d| d.get_temp::<usize>(egui::Id::new("navigator-custom"))).unwrap_or(5);
     ZOOM_LEVELS.get(i).map(|l| l.0).unwrap_or("3:1")
+}
+
+/// A fixed zoom level's name as shown: its percentage (`"3:1"` → `"300%"`, `"1:3"` → `"33%"`).
+pub(crate) fn level_label(name: &str) -> String {
+    ZOOM_LEVELS.iter().find(|l| l.0 == name).map_or_else(|| name.to_string(), |l| format!("{:.0}%", l.1))
 }
 
 /// Which preset the loupe is at (for the highlight).
@@ -78,26 +84,37 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let custom = custom_level(ui.ctx());
     let cur = if app.ui.view == ViewMode::Detail { current(app.ui.zoom) } else { None };
     let mut x = hr.right() - 10.0;
-    for (key, label) in [("custom", custom), ("1:1", "1:1"), ("fill", "Fill"), ("fit", "Fit")] {
+    // levels read as percentages, as the toolbar's zoom menu does (#1457)
+    let custom_label = level_label(custom);
+    for (key, label) in [("custom", custom_label.as_str()), ("1:1", "100%"), ("fill", "Fill"), ("fit", "Fit")] {
         let level = if key == "custom" { custom } else { key };
-        let galley = ui.painter().layout_no_wrap(crate::i18n::tr(label).to_string(), t.font(11.0), t.text);
-        let bw = galley.size().x + 8.0 + if key == "custom" { 8.0 } else { 0.0 };
+        let text = crate::i18n::tr(label).to_string();
+        let galley = ui.painter().layout_no_wrap(text.clone(), t.font(11.0), t.text);
+        let arrow = if key == "custom" { 12.0 } else { 0.0 };
+        let bw = galley.size().x + 8.0 + arrow;
         let r = Rect::from_min_max(pos2(x - bw, hr.top() + 3.0), pos2(x, hr.bottom() - 3.0));
         x -= bw + 4.0;
         register(ui.ctx(), format!("navigator:{key}"), r);
-        let resp = ui.interact(r, egui::Id::new(("navigator-preset", key)), Sense::click());
+        // the custom preset is two targets: its level zooms in one click, its triangle picks the level (#1457)
+        let (label_r, arrow_r) = if key == "custom" { (r.with_max_x(r.right() - arrow), Some(r.with_min_x(r.right() - arrow))) } else { (r, None) };
+        let resp = ui.interact(label_r, egui::Id::new(("navigator-preset", key)), Sense::click());
         let on = cur == Some(level);
         crate::access::choice(&resp, label, on);
-        let col = if on || resp.hovered() { t.text } else { t.text_dim };
-        ui.painter().text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr(label), t.font(11.0), col);
+        let arrow_resp = arrow_r.map(|ar| {
+            register(ui.ctx(), "navigator:customMenu", ar);
+            ui.interact(ar, egui::Id::new("navigator-custom-menu"), Sense::click())
+        });
+        let hovered = resp.hovered() || arrow_resp.as_ref().is_some_and(egui::Response::hovered);
+        let col = if on || hovered { t.text } else { t.text_dim };
+        ui.painter().text(pos2(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, text, t.font(11.0), col);
         if on {
             ui.painter().line_segment([pos2(r.left() + 3.0, r.bottom()), pos2(r.right() - 3.0, r.bottom())], Stroke::new(1.0, t.text));
         }
-        if key == "custom" {
+        if let Some(ar) = &arrow_resp {
             triangle(ui.painter(), pos2(r.right() - 6.0, r.center().y), true, col);
-            egui::Popup::menu(&resp).show(|ui| {
+            egui::Popup::menu(ar).show(|ui| {
                 for (i, (name, _)) in ZOOM_LEVELS.iter().enumerate() {
-                    if ui.selectable_label(*name == custom, *name).clicked() {
+                    if ui.selectable_label(*name == custom, level_label(name)).clicked() {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("navigator-custom"), i));
                         if app.ui.view != ViewMode::Detail {
                             let _ = app.run("view.loupe", json!({}));
@@ -106,7 +123,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     }
                 }
             });
-        } else if resp.clicked() {
+        }
+        if resp.clicked() {
             if app.ui.view != ViewMode::Detail {
                 let _ = app.run("view.loupe", json!({}));
             }

@@ -324,5 +324,6 @@
   "“{name}” has its old settings again": "“{name}” voltou às configurações antigas",
   "“{name}” is new. What may the other devices syncing this catalog have of it?": "“{name}” é nova. O que os outros dispositivos que sincronizam este catálogo podem ter dela?",
   "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "“{name}” recebe as configurações da foto ativa. Nome, grupo, posição e marcas continuam.",
-  "★{n} at or above": "★{n} ou mais"
+  "★{n} at or above": "★{n} ou mais",
+  "Click {}%": "Clique em {}%"
 }
