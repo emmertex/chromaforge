@@ -48,7 +48,8 @@ what it shows there, Content-Aware (from the photo, on your computer) or Generat
 key, Settings → Generative Fill).
 
 The row of tools under the histogram is Edit, Crop, Remove, Red Eye, Masking and Browse Profiles (the profile
-browser in the panels' place; a second click puts it away). Basic starts with Auto · B&W | HDR, then the profile's
+browser in the panels' place; a second click puts it away); the Compact layout adds Reset. Right-click the row to hide
+any button but Edit, or to move one left or right; Settings ▸ Develop ▸ Tool Row shows and hides them too. Basic starts with Auto · B&W | HDR, then the profile's
 Amount and white balance.
 
 ### Tool profiles

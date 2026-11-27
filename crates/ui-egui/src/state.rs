@@ -647,6 +647,10 @@ pub struct AppSettings {
     /// mask Hue so far: ±180° instead of about ±34°). Off: the standard range; values already past
     /// it are kept, never rewritten.
     pub expanded_sliders: bool,
+    /// Masking: the mask list in a window of its own over the photo instead of in the panel (#1251;
+    /// Settings ▸ Develop, `view.masksDetached`). The selected mask's Feather, Refine Edges and sliders stay
+    /// in the panel.
+    pub masks_detached: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
@@ -877,6 +881,7 @@ impl Default for AppSettings {
             film_names: true,
             film_badges: true,
             expanded_sliders: false,
+            masks_detached: false,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             lock_zoom: true,

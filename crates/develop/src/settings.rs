@@ -453,6 +453,21 @@ pub struct PluginFilter {
     /// Whole-image measurement the filter computed once (e.g. film base / black / white points).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis: Option<serde_json::Value>,
+    /// Where the filter applies (#1397): one of the photo's masks, its output blended with its input by the mask's
+    /// coverage. `None`: the whole frame. Display stage only (a Source filter runs before masks exist). Not written
+    /// while `None`, so settings from before it keep their JSON and hash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask: Option<FilterMask>,
+}
+
+/// A pixel filter's mask ([`PluginFilter::mask`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FilterMask {
+    /// The [`Mask::id`] of the photo's mask.
+    pub id: u32,
+    /// Apply everywhere the mask is not.
+    pub invert: bool,
 }
 
 impl Default for PluginFilter {
@@ -466,6 +481,7 @@ impl Default for PluginFilter {
             enabled: true,
             stage: FilterStage::Display,
             analysis: None,
+            mask: None,
         }
     }
 }

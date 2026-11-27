@@ -42,9 +42,13 @@ pub(super) fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         });
         ui.add_space(6.0);
-        // rotate and flip, here as well as in Photo ▸ Rotate & Flip (issue #705)
+        // rotate and flip, here as well as in Photo ▸ Rotate & Flip (issue #705), centred under the tool row
+        // (issue #449)
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            // five 28 pt buttons, 2 pt apart
+            let row_w = 5.0 * 28.0 + 4.0 * 2.0;
+            ui.add_space(((ui.available_width() - row_w) / 2.0).max(0.0));
             let row = [
                 ("cropRotateLeft", Icon::RotateLeft, "Rotate Left", "photo.rotateLeft", false),
                 ("cropRotateRight", Icon::RotateRight, "Rotate Right", "photo.rotateRight", false),
