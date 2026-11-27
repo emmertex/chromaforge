@@ -1335,7 +1335,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         let marks = bar.shrink2(vec2(if square { 8.0 } else { 3.0 }, 1.0));
         register(ui.ctx(), format!("cellmarks:{}", id.0), marks);
         if show_badges || photo.label.is_some() {
-            paint_badges(p, &t, marks, &photo, false, app.session.catalog.is_vignetting_reference(photo.id));
+            paint_badges(p, &t, marks, &photo, false, app.session.catalog.is_vignetting_reference(photo.id), false);
         }
     }
     let badge_bar = Rect::from_min_max(pos2(img_rect.left(), img_rect.bottom() - 24.0), img_rect.right_bottom());
@@ -1536,7 +1536,7 @@ fn paint_outlined(p: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
 /// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
 /// from the left, its colour label and edited mark from the right, sized to the bar's height so
 /// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
-pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool, reference: bool) {
+pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool, reference: bool, gps: bool) {
     let h = bar.height().clamp(10.0, 40.0);
     let y = bar.center().y;
     let star = (h * 0.62).round().max(8.0);
@@ -1590,6 +1590,13 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
         let s = (h * 0.5).round();
         let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
         paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Radial, colour);
+        right -= s + 4.0;
+    }
+    // the photo has a GPS position (the filmstrip's marks; grid cells show it with their badges on the photo)
+    if gps {
+        let s = (h * 0.55).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::MapPin, colour);
     }
 }
 

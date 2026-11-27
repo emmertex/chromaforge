@@ -677,3 +677,81 @@ fn photos_dropped_on_a_saved_location_in_the_list_take_its_centre() {
     run(&mut h, "edit.undo", json!({}));
     assert!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.is_none(), "one undo step");
 }
+
+/// Scrolls the map's side panel until the widget is inside it (the Saved Locations section sits
+/// below Metadata, which grows with the selection).
+fn scroll_side_to(h: &mut Headless, id: &str) -> egui::Rect {
+    let side = widget(h, "map:side").expect("the side panel");
+    h.request("ui.move", json!({"x": side.center().x, "y": side.center().y}), T);
+    for _ in 0..30 {
+        if let Some(r) = widget(h, id).filter(|r| side.contains_rect(*r)) {
+            return r;
+        }
+        h.request("ui.scroll", json!({"dy": -300.0}), T);
+        h.settle(SETTLE);
+    }
+    panic!("{id} never scrolled into the side panel");
+}
+
+#[test]
+fn the_box_on_a_saved_location_row_shows_and_moves_the_selected_photos() {
+    let mut h = map_on_fake_tiles();
+    run(&mut h, "map.saveLocation", json!({"name": "Home", "lat": 40.653957, "lon": -4.689763, "radius": 25}));
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|i| i.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 40.653957, "lon": -4.689763}));
+    let gps = |h: &Headless, id: u64| h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).and_then(|p| p.meta.gps);
+    // one of two selected photos is inside: the engine says so, and the box moves the other one there
+    run(&mut h, "library.select", json!({"ids": ids}));
+    h.settle(SETTLE);
+    let l = run(&mut h, "map.locations", json!({}));
+    assert_eq!(l["locations"][0]["selected"], 1, "{l}");
+    scroll_side_to(&mut h, "map:locationHere:Home");
+    let r = h.request("ui.clickWidget", json!({"id": "map:locationHere:Home"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.selection.ids.len(), 2, "the click hit the box, not the filmstrip");
+    let g = gps(&h, ids[1]).expect("ticked: the selected photo is placed at the location");
+    assert!((g.0 - 40.653957).abs() < 1e-6 && (g.1 + 4.689763).abs() < 1e-6, "{g:?}");
+    assert_eq!(run(&mut h, "map.locations", json!({}))["locations"][0]["selected"], 2);
+    // the privacy of the location is untouched: Private lives in the Edit Location panel now
+    assert_eq!(run(&mut h, "map.locations", json!({}))["locations"][0]["private"], false);
+    // ticked already: a click changes nothing, and one undo takes back the move
+    scroll_side_to(&mut h, "map:locationHere:Home");
+    h.request("ui.clickWidget", json!({"id": "map:locationHere:Home"}), T);
+    h.settle(SETTLE);
+    run(&mut h, "edit.undo", json!({}));
+    assert!(gps(&h, ids[1]).is_none(), "one undo step");
+    assert!(gps(&h, ids[0]).is_some(), "the photo that was already there keeps its position");
+}
+
+/// Lightroom Classic's GPS badge: a grid cell of a photo with a position shows a map marker, and a
+/// click on it opens the Map on that photo.
+#[test]
+fn a_grid_cell_badge_marks_photos_with_a_position_and_opens_the_map_on_them() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
+    run(&mut h, "map.view", json!({"lat": 10.0, "lon": 100.0, "zoom": 9}));
+    run(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    run(&mut h, "module.library", json!({}));
+    let r = h.request("ui.set", json!({"view": "squareGrid"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let badge = format!("badge:gps:{}", ids[0]);
+    assert!(widget(&h, &badge).is_some(), "the photo with a position has the badge");
+    assert!(widget(&h, &format!("badge:gps:{}", ids[1])).is_none(), "the one without has none");
+    let r = h.request("ui.clickWidget", json!({"id": badge}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Map, "the badge opens the Map");
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(ids[0])], "on that photo");
+    let c = h.app.map.centre();
+    assert!((c.lat - 48.8566).abs() < 0.01 && (c.lon - 2.3522).abs() < 0.01, "centred on its pin: {c:?}");
+    // the badges setting hides it, as it hides the others
+    run(&mut h, "module.library", json!({}));
+    run(&mut h, "view.gridCellStyle", json!({"badges": false}));
+    h.settle(SETTLE);
+    assert!(widget(&h, &format!("badge:gps:{}", ids[0])).is_none());
+}

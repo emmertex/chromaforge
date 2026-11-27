@@ -166,6 +166,8 @@ pub mod update;
 pub mod upright_jobs;
 pub mod video;
 mod view;
+mod view_undo;
+pub use view_undo::ViewState;
 pub mod vignetting_calibration_io;
 pub mod vignetting_calibration_library;
 pub mod vignetting_calibration_placement;
@@ -253,6 +255,9 @@ pub struct UndoEntry {
     pub(crate) retry_inverse: Vec<Op>,
     /// Sidecars still separated from their photo after a failed move or rollback.
     pub(crate) retry_sidecars: Vec<rename::SidecarMove>,
+    /// A navigation step (a new source, filter or selection): the view to put back, and the one
+    /// that undoes that. `op` is then empty: nothing in the catalog changes ([`view_undo`]).
+    pub(crate) view: Option<view_undo::ViewStep>,
 }
 
 /// The one photo an undo step changes, when it changes exactly one through its edit, rating, flag,
@@ -367,6 +372,13 @@ pub struct Session {
     pub(crate) shelved_filter: Option<Filter>,
     pub sort: Sort,
     pub selection: Selection,
+    /// Whether a change of the view is a step of the history (off while the app moves the view by
+    /// itself: an import showing its photos).
+    record_view_steps: bool,
+    /// The module on screen, as the app reports it ([`Session::module_switched`]).
+    pub module: String,
+    /// The module an Undo or Redo brought back, until the app has switched to it.
+    module_request: Option<String>,
     /// The grid order for the current source/filter/sort (cached by catalog revision).
     /// Shared, so frontends can hold it across frames without copying ([`Session::visible_shared`]).
     visible: Arc<[PhotoId]>,
@@ -976,6 +988,9 @@ impl Session {
             depth: 0,
             wait_for_catalog_log: true,
             active_mask: None,
+            record_view_steps: true,
+            module: "library".to_string(),
+            module_request: None,
             segmenter: segment::Segmenter::default(),
             active_spot: None,
             library: None,
@@ -1105,6 +1120,8 @@ impl Session {
         let log_start = self.pending_log.len();
         let was_active = self.active();
         let (commits_before, silent_before) = (self.commits, self.silent_changes);
+        // where the view stood, and the history: a command that changes the view and leaves the history as it was is navigation
+        let navigating = (self.depth == 0 && self.record_view_steps).then(|| (self.view_state(), self.undo_mark(), self.redo.len()));
         self.depth += 1;
         // last-resort guard: a panic in a command is that command's error, not a crash
         let r = guard::catch(&format!("`{id}`"), || f(self)).unwrap_or_else(|e| Err(EngineError::Other(e)));
@@ -1139,6 +1156,12 @@ impl Session {
         if self.depth == 0 {
             // whatever the command changed, and however it ended: the view points at what is there
             self.reconcile_view();
+            if let Some((view, undone, redone)) = navigating
+                && self.commits == commits_before
+                && (self.undo_mark(), self.redo.len()) == (undone, redone)
+            {
+                self.view_changed(id, view);
+            }
         }
         if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
             // no library (`run --shared-settings`): the store is saved after each command
@@ -1267,6 +1290,7 @@ impl Session {
             profile: None,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         self.commits = self.commits.wrapping_add(1);
         if self.hold_stepped && !self.in_run_step {
@@ -1505,11 +1529,16 @@ impl Session {
             return;
         }
         let Some(entries) = self.undo.get(self.undo.len() - n..) else { return };
+        // Steps that only moved the view (the person navigated while a long run committed its steps) stay as they are,
+        // above the folded step; the run's own steps are the ones that fold.
+        if entries.iter().filter(|e| !e.is_navigation()).count() < 2 {
+            return;
+        }
         // Folder moves and partially applied file steps stay on their own.
         if entries.iter().any(|e| e.folder.is_some() || e.profile.is_some() || !e.retry_inverse.is_empty() || !e.retry_sidecars.is_empty()) {
             return;
         }
-        let tail = self.undo.split_off(self.undo.len() - n);
+        let (moves, tail): (Vec<_>, Vec<_>) = self.undo.split_off(self.undo.len() - n).into_iter().partition(UndoEntry::is_navigation);
         let ops = tail.into_iter().rev().map(|e| e.op).collect();
         self.undo.push(UndoEntry {
             label: label.to_string(),
@@ -1518,7 +1547,9 @@ impl Session {
             profile: None,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
+        self.undo.extend(moves);
     }
 
     /// Apply and journal (so it is saved) without an undo step: a change the app made by itself, not the user.
@@ -1542,6 +1573,9 @@ impl Session {
 
     pub(crate) fn undo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.undo.pop().ok_or_else(|| EngineError::Other("nothing to undo".into()))?;
+        if e.view.is_some() {
+            return Ok(self.take_view_step(e, true));
+        }
         // a replaced camera profile's file goes back first (nothing else changes when that fails)
         let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
             Some(Err(err)) => {
@@ -1576,6 +1610,7 @@ impl Session {
             profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
@@ -1589,6 +1624,9 @@ impl Session {
 
     pub(crate) fn redo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.redo.pop().ok_or_else(|| EngineError::Other("nothing to redo".into()))?;
+        if e.view.is_some() {
+            return Ok(self.take_view_step(e, false));
+        }
         // a replaced camera profile's file goes back first (nothing else changes when that fails)
         let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
             Some(Err(err)) => {
@@ -1625,6 +1663,7 @@ impl Session {
             profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
@@ -3037,6 +3076,8 @@ mod tests_upright_jobs;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
+#[cfg(test)]
+mod tests_view_undo;
 #[cfg(test)]
 mod tests_vignetting_calibration_commands;
 #[cfg(test)]

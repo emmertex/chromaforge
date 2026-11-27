@@ -6784,7 +6784,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let bar =
                         Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
                     register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
-                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id));
+                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id), ph.meta.gps.is_some());
                 }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone
@@ -6892,7 +6892,8 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
     use crate::icons::{Icon, paint};
     use lcc_catalog::Flag;
     let edited = ph.is_edited();
-    if ph.rating == 0 && ph.flag == Flag::None && !edited {
+    let gps = ph.meta.gps.is_some();
+    if ph.rating == 0 && ph.flag == Flag::None && !edited && !gps {
         return;
     }
     let bar = Rect::from_min_max(pos2(fr.left(), fr.bottom() - 15.0), fr.right_bottom());
@@ -6905,8 +6906,14 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
         Flag::Reject => paint(p, Rect::from_min_size(pos2(x, y - 5.0), vec2(10.0, 10.0)), Icon::FlagReject, t.reject),
         Flag::None => {}
     }
+    let mut right = bar.right() - 3.0;
     if edited {
-        paint(p, Rect::from_min_size(pos2(bar.right() - 13.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        right -= 13.0;
+    }
+    // the photo has a GPS position
+    if gps {
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::MapPin, t.text_label);
     }
 }
 

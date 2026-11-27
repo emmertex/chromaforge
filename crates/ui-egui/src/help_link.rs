@@ -65,7 +65,8 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("appearance", "reference/settings#appearance"),
     ("gridAndFilmstrip", "reference/settings#filmstrip-grid-keywords-and-presets"),
     ("detailView", "reference/settings#detail-view-and-eye-focus-strip"),
-    ("changeOverlay", "reference/settings#on-screen-overlay"),
+    ("changeOverlay", "reference/settings#image-and-library-edits"),
+    ("notifications", "reference/settings#messages"),
     // Settings ▸ Slideshow
     ("slideshow", "reference/settings#slideshow"),
     // Settings ▸ Faces

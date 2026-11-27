@@ -532,6 +532,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("osd.settings", "Overlay Settings", None, ""),
     ("osd.mode", "Overlay: What It Shows", None, ""),
     ("osd.state", "Overlay State", None, ""),
+    // how messages look and how long they stay (`notifications`)
+    ("messages.settings", "Message Settings", None, ""),
+    ("notifications.testFire", "Test a Notification", None, ""),
 ];
 
 fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
@@ -863,6 +866,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     }
     if id.starts_with("osd.") {
         return Some(crate::panels::surface_osd::command(app, id, p));
+    }
+    if id == "messages.settings" {
+        return Some(crate::notifications::messages_command(app, p));
+    }
+    if id == "notifications.testFire" {
+        return Some(crate::notifications::test_fire(app, p));
     }
     if let Some(language) = language_from_command(id) {
         // a language this build left out is English, as `set_language` shows it

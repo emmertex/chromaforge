@@ -6,6 +6,17 @@
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Held from writing a test's programs until it has run them. Tests run on threads of one
+/// process: a child forked by one test inherits, until it execs, the write handle another test
+/// still has on the program it just wrote, and running that program then fails with "Text file
+/// busy" (ETXTBSY). One test at a time keeps every program closed before anything runs it.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// A folder with the launcher and, beside it under the app's name, a script that echoes its
 /// arguments and standard input to standard output, writes to standard error and exits with 7.
@@ -20,6 +31,7 @@ fn install(tag: &str) -> lcc_testkit::TempDir {
 
 #[test]
 fn the_launcher_runs_the_app_as_the_cli_and_passes_everything_through() {
+    let _one = one_at_a_time();
     let dir = install("through");
     let mut child = Command::new(dir.path().join(lcc_brand::CLI_BINARY))
         .args(["render", "a b.jpg", "-o", "out.jpg"])
@@ -39,6 +51,7 @@ fn the_launcher_runs_the_app_as_the_cli_and_passes_everything_through() {
 
 #[test]
 fn a_missing_app_is_an_error_that_names_it() {
+    let _one = one_at_a_time();
     let dir = install("missing");
     std::fs::remove_file(dir.path().join(lcc_brand::BINARY)).unwrap();
     let out = Command::new(dir.path().join(lcc_brand::CLI_BINARY)).arg("--version").output().unwrap();

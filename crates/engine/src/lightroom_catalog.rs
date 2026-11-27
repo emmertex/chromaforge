@@ -4343,7 +4343,10 @@ pub(crate) mod tests {
         assert_eq!(s.visible(), &[id]);
         s.execute("library.filter", &json!({"kind": "image"})).unwrap();
         assert!(s.visible().is_empty());
-        s.execute("edit.undo", &json!({})).unwrap();
+        // the two filters are steps of their own, then the import
+        for _ in 0..3 {
+            s.execute("edit.undo", &json!({})).unwrap();
+        }
         assert!(s.catalog.is_empty());
         s.execute("edit.redo", &json!({})).unwrap();
         s.execute("library.filter", &json!({"kind": "video"})).unwrap();

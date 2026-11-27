@@ -503,8 +503,9 @@ fn the_message_after_a_pixel_shift_merge_says_why_it_was_not_registered() {
             json!({"kind": "pixelShift", "method": "plain", "fallback": {"reason": code, "message": lcc_engine::merge::fallback_message(code)}});
         let text = crate::merge::finished_message("Pixel shift", &info);
         assert_eq!(text, format!("Pixel shift merge added, but not registered: {words}"), "{code}");
-        let short = crate::toast::stay_seconds(crate::ToastKind::Message, "Pixel shift merge added");
-        assert!(crate::toast::stay_seconds(crate::ToastKind::Message, &text) > short, "long enough to read");
+        let info = crate::toast::MessageSettings::default().info_seconds();
+        let short = crate::toast::stay_seconds(crate::ToastKind::Message, "Pixel shift merge added", info);
+        assert!(crate::toast::stay_seconds(crate::ToastKind::Message, &text, info) > short, "long enough to read");
     }
     // in another language the same message is translated, reason and all
     crate::i18n::set_language(crate::i18n::Locale::De);

@@ -551,7 +551,9 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
     let preset = s.import_defaults.preset_for(raw, &p.meta.camera).and_then(|id| s.presets.iter().find(|x| x.id == id));
     match preset {
         Some(pr) => {
-            let look = std::sync::Arc::new(pr.apply(&base, 1.0));
+            // (a preset naming one white balance number is resolved on the photo's scale: issue #2910)
+            let info = crate::cmd::develop::wb_partial_names_one_number(&pr.settings).then(|| crate::media::source_info(p));
+            let look = std::sync::Arc::new(crate::presets::apply_preset_to_photo(pr, &base, None, 1.0, info.as_ref()));
             p.develop = look.clone();
             p.import_look = (*look != base).then_some(look);
         }
@@ -2246,7 +2248,9 @@ fn apply_settings(s: &Session, p: &mut Photo, opts: &ImportOptions, now: &str) {
     // the camera profile before the presets: a preset doesn't take it away unless the import says so
     let body = (!opts.preset_profile && p.develops_raw()).then(|| p.develop.profile.camera.clone()).filter(|c| !c.is_empty());
     for preset in opts.preset.iter().chain(&opts.presets) {
-        let mut d = preset.apply(&p.develop, 1.0);
+        // the same composition and white balance preparation as `preset.apply` (issue #2910)
+        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| crate::media::source_info(p));
+        let mut d = crate::presets::apply_preset_to_photo(preset, &p.develop, None, 1.0, info.as_ref());
         if let Some(cal) = &body {
             d.profile.camera.clone_from(cal);
         }
