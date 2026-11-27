@@ -2328,7 +2328,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 {
                     p.content_hash = Some(format!("{h}:dup{}", id.0));
                 }
-                p.sha1 = info.sha1.filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+                p.sha1 = info.sha1.filter(|h| lcc_catalog::is_sha1_hex(h));
                 p.embedded_lens = info.embedded_lens.map(Box::new);
                 // a merged pixel-shift file says in its own XMP which frames it was made from: those in the library
                 // are found again, when the photos agree with what the file says (a frame that is not there, or whose
