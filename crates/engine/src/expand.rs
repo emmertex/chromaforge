@@ -168,7 +168,7 @@ fn complete(c: &Canvas, seed: u64, cancel: &AtomicBool) -> Result<Rgb32f, String
     let out = lcc_inpaint::patchmatch::complete_with(w, h, 3, &flat, &c.fill, &params, &|| cancel.load(Ordering::Relaxed))
         .map_err(|_| "cancelled".to_string())?
         .ok_or("there is too little of the photo to fill from")?;
-    let data: Vec<[f32; 3]> = out.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let data: Vec<[f32; 3]> = out.as_chunks::<3>().0.to_vec();
     if data.len() != w * h {
         return Err("the fill came out the wrong size".into());
     }
