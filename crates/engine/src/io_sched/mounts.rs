@@ -92,23 +92,29 @@ impl MountCache {
     }
 }
 
-/// Most bytes of `/proc/self/mountinfo` read.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const MAX_MOUNTINFO_BYTES: u64 = 16 << 20;
+/// The mount list of a mountinfo file (Linux `/proc/self/mountinfo`), read through
+/// [`lcc_sysmem::limits::read_capped`] with at most `cap` bytes: a longer file is cut at its last
+/// whole line, and the list says it was cut ([`Mounts::truncated`]).
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
+pub(crate) fn mounts_from_mountinfo(path: &std::path::Path, cap: u64) -> Option<Mounts> {
+    let Some(read) = lcc_sysmem::limits::read_capped(path, cap) else {
+        log::debug!("{}: can't be read", path.display());
+        return None;
+    };
+    let mut m = Mounts::from_mountinfo(&read.text);
+    if read.truncated {
+        log::warn!("{} longer than {cap} bytes: the rest is left out", path.display());
+        m.mark_truncated();
+    }
+    Some(m)
+}
 
 /// This platform's mount list: Linux from `/proc/self/mountinfo` (procfs, no volume touched),
 /// macOS from the names in `/Volumes` (names only, no `stat` of the entries); elsewhere none.
 pub(crate) fn read_platform_mounts() -> Option<Mounts> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        use std::io::Read;
-        let f = std::fs::File::open("/proc/self/mountinfo").map_err(|e| log::debug!("mountinfo: {e}")).ok()?;
-        let mut bytes = Vec::new();
-        f.take(MAX_MOUNTINFO_BYTES.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| log::debug!("mountinfo: {e}")).ok()?;
-        if bytes.len() as u64 > MAX_MOUNTINFO_BYTES {
-            log::warn!("mountinfo longer than {MAX_MOUNTINFO_BYTES} bytes: the rest is left out");
-        }
-        Some(Mounts::from_mountinfo(&String::from_utf8_lossy(&bytes)))
+        mounts_from_mountinfo(std::path::Path::new("/proc/self/mountinfo"), lcc_sysmem::limits::READ_CAP)
     }
     #[cfg(target_os = "macos")]
     {

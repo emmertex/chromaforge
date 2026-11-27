@@ -1195,6 +1195,30 @@ fn a_blocked_mount_read_is_abandoned_after_a_second() {
     }
 }
 
+/// A mountinfo file longer than the cap: the list says it was cut, and the cut-off last line adds
+/// no mount point (`/srv/nas` cut to `/srv` would otherwise take `/srv/other`'s files).
+#[test]
+fn a_cut_mountinfo_says_so_and_drops_its_partial_line() {
+    let dir = std::env::temp_dir().join(format!("lcc-io-mountinfo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mountinfo");
+    let whole = "1 0 0:1 / / rw - ext4 a rw\n2 1 0:2 / /media/card rw - vfat b rw\n";
+    let text = format!("{whole}3 1 0:3 / /srv/nas rw - nfs c rw\n");
+    std::fs::write(&path, &text).unwrap();
+    // cut inside the third line's mount point, right after `/srv`
+    let cut = whole.len() + "3 1 0:3 / /srv".len();
+    let m = super::mounts::mounts_from_mountinfo(&path, cut as u64).unwrap();
+    assert!(m.truncated());
+    assert_eq!(m.len(), 2);
+    assert_eq!(lcc_catalog::folders::volume_key("/srv/other/a.jpg", &m).id(), "/");
+    // whole: not cut
+    let m = super::mounts::mounts_from_mountinfo(&path, text.len() as u64).unwrap();
+    assert!(!m.truncated());
+    assert_eq!(m.len(), 3);
+    assert!(super::mounts::mounts_from_mountinfo(&dir.join("missing"), 100).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A helper that panics while parsing clears its flag: the next call reads again.
 #[test]
 fn a_panicking_mount_helper_clears_its_flag() {

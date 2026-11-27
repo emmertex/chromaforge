@@ -260,25 +260,33 @@ impl Mounts {
     ///
     /// Fields of a line (proc(5)): mount id, parent id, `major:minor`, root, **mount point**,
     /// mount options, optional fields, `-`, filesystem type, source, super options. Only the mount
-    /// point is extracted (octal escapes such as `\040` decoded); the rest are dropped: the
-    /// device numbers by design (§5.1 of the I/O spec: no `st_dev` refinement), the others
+    /// point is extracted (octal escapes such as `\040` decoded by
+    /// [`lcc_sysmem::limits::unescape_mount_path`], fields split as there); the rest are dropped:
+    /// the device numbers by design (§5.1 of the I/O spec: no `st_dev` refinement), the others
     /// because a key needs only where the volume is mounted. A line with no fifth field is
-    /// counted in [`Mounts::skipped`].
+    /// counted in [`Mounts::skipped`]. A listing read only in part says so with
+    /// [`Mounts::mark_truncated`].
     pub fn from_mountinfo(text: &str) -> Mounts {
         let mut m = Mounts { fold_case: false, read: true, ..Default::default() };
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            let Some(point) = line.split(' ').nth(4) else {
+            let Some(point) = line.split_whitespace().nth(4) else {
                 m.skipped = m.skipped.saturating_add(1);
                 continue;
             };
-            if !m.push(&decode_mountinfo_escapes(point)) {
+            if !m.push(&lcc_sysmem::limits::unescape_mount_path(point)) {
                 break;
             }
         }
         m
+    }
+
+    /// The listing these mount points came from was cut before its end (the mount points past the
+    /// cut fall back to [`place`]'s rules, as past [`MAX_MOUNTS`]).
+    pub fn mark_truncated(&mut self) {
+        self.truncated = true;
     }
 
     /// The volumes listed by name in macOS `/Volumes` (each mounted at `/Volumes/<name>`; names
@@ -315,7 +323,8 @@ impl Mounts {
         self.read
     }
 
-    /// Whether entries past [`MAX_MOUNTS`] were left out.
+    /// Whether entries were left out: past [`MAX_MOUNTS`], or past the end of a listing read only
+    /// in part ([`Mounts::mark_truncated`]).
     pub fn truncated(&self) -> bool {
         self.truncated
     }
@@ -334,30 +343,6 @@ impl Mounts {
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
-}
-
-/// A mountinfo field with its octal escapes (`\040` space, `\011` tab, `\012` newline, `\134`
-/// backslash) decoded; a backslash not followed by three octal digits of a byte stays as it is.
-fn decode_mountinfo_escapes(field: &str) -> String {
-    let b = field.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0usize;
-    while let Some(&c) = b.get(i) {
-        if c == b'\\'
-            && let Some(d) = b.get(i + 1..i + 4)
-            && d.iter().all(|x| (b'0'..=b'7').contains(x))
-        {
-            let v = d.iter().fold(0u32, |acc, x| acc * 8 + u32::from(x - b'0'));
-            if let Ok(byte) = u8::try_from(v) {
-                out.push(byte);
-                i += 4;
-                continue;
-            }
-        }
-        out.push(c);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The volume `path` is on, from the path and a mount list alone (no I/O, so it can't block, time
