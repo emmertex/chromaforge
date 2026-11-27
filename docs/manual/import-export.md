@@ -65,7 +65,7 @@ gives the image's size in megapixels and the limit.
 
 File → Export… opens the export dialog; File → Export with Previous (`Cmd+Alt+Shift+E`) repeats the last one.
 
-- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP, AVIF, OpenEXR (scene-linear 16-bit half or 32-bit float, linear Rec. 2020 or ACEScg), DNG, or the original file with an XMP sidecar.
+- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP (lossy at a quality, or lossless; lossless only on web and Android), AVIF, OpenEXR (scene-linear 16-bit half or 32-bit float, linear Rec. 2020 or ACEScg), DNG, or the original file with an XMP sidecar.
   HDR edits can also export as gain-map JPEGs, PQ AVIF, PNG and JPEG XL, as float TIFFs, and (AVIF and JPEG XL with HDR mode Gain map) as an SDR image with a gain map.
 - Size by long/short edge, width/height, megapixels or percent; resolution in ppi; JPEG quality or a file size limit.
 - Colour space sRGB, Display P3, Adobe RGB, ProPhoto RGB or Rec. 2020.

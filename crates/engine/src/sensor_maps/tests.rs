@@ -139,7 +139,90 @@ fn the_map_file_round_trips_and_damaged_files_are_set_aside() {
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join(file_name("damaged-body")), b"{not json").unwrap();
     assert!(get("damaged-body").is_none());
-    assert!(d.join("damaged-body.json.bad").exists());
+    assert_eq!(bad_files(&d, "damaged-body").len(), 1);
+}
+
+fn bad_files(d: &std::path::Path, stem: &str) -> Vec<String> {
+    std::fs::read_dir(d)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&format!("{stem}.json.")) && n.ends_with(".bad"))
+        .collect()
+}
+
+// #1417: a second damage keeps the first backup
+#[test]
+fn a_second_damaged_file_never_overwrites_the_first_backup() {
+    let d = dir().unwrap();
+    std::fs::create_dir_all(&d).unwrap();
+    let p = d.join(file_name("damaged-twice"));
+    std::fs::write(&p, b"{first").unwrap();
+    assert!(read_file("damaged-twice").is_none());
+    std::fs::write(&p, b"{second").unwrap();
+    assert!(read_file("damaged-twice").is_none());
+    let kept = bad_files(&d, "damaged-twice");
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    let texts: Vec<String> = kept.iter().map(|n| std::fs::read_to_string(d.join(n)).unwrap()).collect();
+    assert!(texts.contains(&"{first".to_string()) && texts.contains(&"{second".to_string()), "{texts:?}");
+}
+
+// #1417: one entry of an unknown kind (or a null level) costs that entry, not the map
+#[test]
+fn one_damaged_entry_costs_only_that_entry() {
+    let body = "lenient-body";
+    let mut m = BodyMap::new(body, "Sony", "ILCE-9", [6048, 4024]);
+    m.record_pixels(&shot(1, 0, 0.01, 100), &[hot(1, 2), hot(3, 4), hot(5, 6)]);
+    let mut v = serde_json::to_value(&m).unwrap();
+    v["pixels"][1]["kind"] = serde_json::json!("warm");
+    v["pixels"][2]["level"] = serde_json::Value::Null;
+    let d = dir().unwrap();
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(file_name(body)), serde_json::to_vec(&v).unwrap()).unwrap();
+    let back = read_file(body).expect("the map still reads");
+    assert_eq!(back.pixels.len(), 1);
+    assert_eq!((back.pixels[0].x, back.pixels[0].y), (1, 2));
+    // the damaged original is kept aside
+    assert_eq!(bad_files(&d, body).len(), 1);
+    // not a JSON object at all: nothing to save
+    assert!(read_leniently("[1, 2]").is_none());
+    assert!(read_leniently("{not json").is_none());
+}
+
+// #1417: a non-finite level is never recorded (JSON would write it as null and the map would no longer load)
+#[test]
+fn a_non_finite_level_is_never_recorded() {
+    let mut m = BodyMap::new("inf-body", "", "M", [100, 100]);
+    let inf = Defect { x: 2, y: 2, s: 0, kind: DefectKind::Stuck, level: f32::INFINITY };
+    let nan = Defect { x: 3, y: 3, s: 0, kind: DefectKind::Hot, level: f32::NAN };
+    m.record_pixels(&shot(1, 0, 0.01, 100), &[hot(1, 1), inf, nan]);
+    assert_eq!(m.pixels.len(), 1);
+    let j = serde_json::to_string(&m).unwrap();
+    assert!(serde_json::from_str::<BodyMap>(&j).is_ok());
+}
+
+// #1417: a save that fails is tried again later
+#[test]
+fn a_failed_save_is_retried_by_flush() {
+    let _maps = change_generation();
+    let body = "retry-body";
+    let d = dir().unwrap();
+    std::fs::create_dir_all(&d).unwrap();
+    let path = d.join(file_name(body));
+    // the map is in memory first (a folder found when loading would be set aside as unreadable) …
+    let _ = record_pixels(body, "", "M", [100, 100], &shot(499, -30, 0.01, 100), &[hot(1, 1)]);
+    let _ = std::fs::remove_file(&path);
+    // … then a folder where the file goes makes every write fail
+    std::fs::create_dir_all(&path).unwrap();
+    for k in 0..8 {
+        let _ = record_pixels(body, "", "M", [100, 100], &shot(500 + k, k as i64 * 30, 0.01, 100), &[hot(1, 1)]);
+    }
+    assert!(!path.is_file());
+    assert!(with(|r| r.unsaved.contains_key(body)), "still waiting to be saved");
+    std::fs::remove_dir_all(&path).unwrap();
+    flush();
+    assert!(path.is_file(), "flush wrote it once the obstacle was gone");
+    assert!(!with(|r| r.unsaved.contains_key(body)));
 }
 
 #[test]
