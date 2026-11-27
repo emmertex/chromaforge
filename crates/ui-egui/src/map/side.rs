@@ -22,9 +22,13 @@ fn parse_coords(q: &str) -> Option<LatLon> {
     p.is_valid().then_some(p)
 }
 
-/// `map.search`: coordinates, then a saved location, then (with consent) the online geocoder.
+/// `map.search`: coordinates, then saved locations, then (with consent) the online geocoder.
+/// Saved locations match by name, ignoring case and accents (`lcc_engine::text::search_key`). One
+/// match, or a name typed in full, centres the map on it; several are listed under the search box
+/// (`MapUi::location_matches`) to pick from.
 pub fn search(app: &mut LccApp, q: &str) -> Result<Value, String> {
     let q = q.trim();
+    app.map.location_matches.clear();
     if q.is_empty() {
         app.map.results.clear();
         return Ok(json!({"results": []}));
@@ -34,12 +38,34 @@ pub fn search(app: &mut LccApp, q: &str) -> Result<Value, String> {
         app.map.set_view(p, z);
         return Ok(json!({"found": "coordinates", "lat": p.lat, "lon": p.lon}));
     }
-    let found = app.session.catalog.saved_locations().find(|l| l.name.to_lowercase().contains(&q.to_lowercase())).cloned();
-    if let Some(l) = found {
-        let z = (17.0 - (l.radius / 100.0).max(1.0).log2()).clamp(3.0, 17.0);
-        app.map.set_view(l.centre(), z);
-        return Ok(json!({"found": "savedLocation", "name": l.name}));
+    let key = lcc_engine::text::search_key(q);
+    let matches: Vec<(String, String)> = app
+        .session
+        .catalog
+        .saved_locations()
+        .map(|l| (lcc_engine::text::search_key(&l.name), l.name.clone()))
+        .filter(|(k, _)| k.contains(&key))
+        .collect();
+    let exact = matches.iter().find(|(k, _)| *k == key).or(if matches.len() == 1 { matches.first() } else { None });
+    if let Some((_, name)) = exact {
+        let name = name.clone();
+        go_to_location(app, &name);
+        return Ok(json!({"found": "savedLocation", "name": name}));
     }
+    if !matches.is_empty() {
+        let names: Vec<String> = matches.into_iter().map(|(_, n)| n).collect();
+        app.map.location_matches = names.clone();
+        return Ok(json!({"found": "savedLocations", "names": names}));
+    }
+    search_online(app, q)
+}
+
+/// The online geocoder (Nominatim) for `q`, with consent: `map.search {online: true}`, the last
+/// step of `search`, and the saved-location list's "Search online for …" row (so a place that
+/// shares its name with saved locations can still be looked up).
+pub fn search_online(app: &mut LccApp, q: &str) -> Result<Value, String> {
+    let q = q.trim();
+    app.map.location_matches.clear();
     if !app.map.prefs.online_consent {
         return Err(tr(
             "Place search needs online lookups: turn them on under Reverse Geocoding (they send the search text to the geocoding server)",
@@ -63,6 +89,15 @@ pub fn search(app: &mut LccApp, q: &str) -> Result<Value, String> {
     }
     #[cfg(target_arch = "wasm32")]
     Err(tr("Place search isn't available in the web app").to_string())
+}
+
+/// Centres the map on a saved location, zoomed so its circle fits, and shows its handles.
+pub(crate) fn go_to_location(app: &mut LccApp, name: &str) {
+    let Some(l) = app.session.catalog.saved_location(name).cloned() else { return };
+    let z = (17.0 - (l.radius / 100.0).max(1.0).log2()).clamp(3.0, 17.0);
+    app.map.set_view(l.centre(), z);
+    app.map.active_location = Some(l.name);
+    app.map.location_matches.clear();
 }
 
 /// `map.lookup {ids?}`: reverse-geocode the selected photos with the chosen provider (online in the
@@ -238,13 +273,70 @@ pub fn bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         if resp.has_focus() {
             app.text_focus = true;
         }
+        if resp.changed() {
+            app.map.location_matches.clear();
+        }
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let q = app.map.search.clone();
             if let Err(e) = search(app, &q) {
                 app.toast_error(ui.ctx(), e);
             }
         }
+        location_matches(app, ui, resp.rect);
     });
+}
+
+/// The saved locations a search matched, when there were several: a list under the search box
+/// (right-aligned with it); a click centres the map on that one. Esc or a click elsewhere closes it.
+fn location_matches(app: &mut LccApp, ui: &mut egui::Ui, search: Rect) {
+    if app.map.location_matches.is_empty() {
+        return;
+    }
+    let names = app.map.location_matches.clone();
+    let area = egui::Area::new(egui::Id::new("map:searchMatches"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(search.right_bottom() + egui::vec2(0.0, 4.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                // one line per name, the list as wide as the longest (growing left, from the box's
+                // right edge), and tall enough for ten before it scrolls: a ScrollArea in an Area
+                // otherwise starts at its minimum height, a row or two
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.set_min_width(search.width());
+                let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                let extra = if app.map.prefs.online_consent { 1.5 } else { 0.0 };
+                let tall = ((names.len() as f32 + extra) * row).min(10.0 * row);
+                egui::ScrollArea::vertical().min_scrolled_height(tall).max_height(tall).show(ui, |ui| {
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        for name in &names {
+                            let b = ui.selectable_label(false, name);
+                            register(ui.ctx(), format!("map:searchMatch:{name}"), b.rect);
+                            if b.clicked() {
+                                go_to_location(app, name);
+                            }
+                        }
+                        // with online lookups allowed, the place itself may be what was meant
+                        if app.map.prefs.online_consent {
+                            ui.separator();
+                            let q = app.map.search.trim().to_string();
+                            let b = ui.selectable_label(false, crate::i18n::tr_format!("Search online for “{q}”…", q = q));
+                            register(ui.ctx(), "map:searchOnline", b.rect);
+                            if b.clicked()
+                                && let Err(e) = search_online(app, &q)
+                            {
+                                app.toast_error(ui.ctx(), e);
+                            }
+                        }
+                    });
+                });
+            });
+        });
+    register(ui.ctx(), "map:searchMatches", area.response.rect);
+    let clicked_outside = ui.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() && !ui.rect_contains_pointer(search);
+    if clicked_outside || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.map.location_matches.clear();
+    }
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {

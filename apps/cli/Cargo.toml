@@ -50,6 +50,8 @@ denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
 realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
 own-model = ["denoise", "lcc-engine/own-model"]
+# ONNX Runtime for the AI features on the graphics card (docs/onnxruntime.md); the app turns it on
+onnxruntime = ["lcc-engine/onnxruntime"]
 # Heap profiling: `cargo run --release -p lcc-cli --features dhat-heap -- snapshot …` counts
 # every allocation (live/peak bytes in `library.memory` / `ui.inspect`) and writes dhat-heap.json
 # (open it in DHAT's viewer: allocation sites by bytes at the peak). Slows allocation-heavy work.

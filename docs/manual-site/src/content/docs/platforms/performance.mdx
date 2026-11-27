@@ -15,7 +15,7 @@ import Shot from '../../../components/Shot.astro';
 - **Settings ▸ Performance**: *Use the GPU for rendering*, preview size, *High quality adjustment previews*, memory for caches (Automatic uses a quarter of RAM, up to 16 GB).
 - **Exports**: photos at once, *Use the GPU for exports*, and **Test my machine**, which tries several settings and keeps the fastest.
 - **Thumbnail cache**: size limit and **Clear Cache**.
-- **Prepare photos in the background**: next photos are rendered ahead; it shows in the activity stack.
+- **Prepare photos in the background**: next photos are rendered ahead; it shows in the activity stack. Whenever the photo on screen loads, background work waits for it (a few seconds at most), so a photo opened in Develop is not slowed by a batch.
 - **Large libraries** open much faster from network shares and hard disks.
 - **Culling stays responsive** while photos are prepared in the background; the first picture of a raw is its camera JPEG, replaced by the full render.
 - **Heavily masked exports** stay on the GPU instead of falling back to the CPU.
