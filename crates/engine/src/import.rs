@@ -862,6 +862,50 @@ pub(crate) fn probe_all(
     probed
 }
 
+/// Whether a probe cached from an earlier scan still holds for the file at a path (a file-system
+/// call on the file's volume).
+pub(crate) type KeepCached = fn(&str, &ProbeInfo) -> bool;
+
+/// [`probe_all`] for files of which some carry a probe from an earlier scan (`cached`, by path):
+/// such a file's check that the probe still holds (`keep`) runs as the file's own job, on its
+/// volume's queue, and only a file that fails it is read again. So the calling thread (an
+/// import's planning) makes no call to a source volume here, and a volume that hangs fails its
+/// files "volume not responding" and lets cancel return, as for reads. Results in `paths` order;
+/// `done` counts every file, the cached ones included.
+pub(crate) fn probe_all_cached(
+    probe: Option<&crate::media::FileProbe>,
+    paths: &[String],
+    cached: HashMap<String, ProbeInfo>,
+    keep: KeepCached,
+    done: &std::sync::atomic::AtomicUsize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Result<ProbeInfo, String>> {
+    if cached.is_empty() {
+        return probe_all(probe, paths, done, cancel);
+    }
+    // (no probe hook: no files are read, so a cached probe is reused as it is)
+    let Some(probe) = probe.cloned() else {
+        let mut cached = cached;
+        let fresh = probe_all(None, paths, done, cancel);
+        return paths.iter().zip(fresh).map(|(p, f)| cached.remove(p).map(Ok).unwrap_or(f)).collect();
+    };
+    probe_all(Some(&cached_probe(probe, cached, keep)), paths, done, cancel)
+}
+
+/// `probe`, but a path in `cached` whose probe still holds (`keep`, on the job's thread) gets it
+/// back instead of being read.
+pub(crate) fn cached_probe(probe: crate::media::FileProbe, cached: HashMap<String, ProbeInfo>, keep: KeepCached) -> crate::media::FileProbe {
+    let cached = std::sync::Arc::new(std::sync::Mutex::new(cached));
+    std::sync::Arc::new(move |p: &str| {
+        // (taken, not cloned: a path listed twice is read for its second copy, as before)
+        let info = cached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(p);
+        match info {
+            Some(info) if keep(p, &info) => Ok(info),
+            _ => probe(p),
+        }
+    })
+}
+
 /// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
 /// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
 /// ran threads, `"cancelled"` where it ran serially on one CPU).
@@ -1136,26 +1180,13 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
-    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time)
-    let cached: Vec<Option<ProbeInfo>> = todo
-        .iter()
-        .map(|f| {
-            let info = input.cache.remove(f)?;
-            // (✕ set while the files' cached probes are checked: no more round trips to the disk; what is
-            // not reached counts as not probed, like the files after it)
-            if progress.cancel.load(Relaxed) {
-                return None;
-            }
-            // (a file that can't be looked at counts as unchanged; one that can is reused only as it was,
-            // size and modification time)
-            (std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, &info)).then_some(info)
-        })
-        .collect();
-    let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
-    progress.done.store(todo.len() - missing.len(), Relaxed);
-    let mut fresh = probe_all(input.probe.as_ref(), &missing, &progress.done, &progress.cancel).into_iter();
-    let probed: Vec<Result<ProbeInfo, String>> =
-        cached.into_iter().map(|c| c.map(Ok).unwrap_or_else(|| fresh.next().unwrap_or_else(|| Err("not probed".into())))).collect();
+    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time);
+    // (a file that can't be looked at counts as unchanged; one that can is reused only as it was, size and
+    // modification time)
+    let cached: HashMap<String, ProbeInfo> = todo.iter().filter_map(|f| input.cache.remove(f).map(|i| (f.clone(), i))).collect();
+    let keep: KeepCached = |f, info| std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, info);
+    progress.done.store(0, Relaxed);
+    let probed = probe_all_cached(input.probe.as_ref(), &todo, cached, keep, &progress.done, &progress.cancel);
     crate::memory::release();
     let mut probes: HashMap<String, Result<ProbeInfo, String>> = todo.into_iter().zip(probed).collect();
     // (who in the library has a content that was probed: asked once the probes are in)
@@ -1587,20 +1618,14 @@ impl ImportJob {
 
         // files a preceding scan already probed are not read again (a network share is slow to read),
         // as long as they are still there, as they were: a file gone or changed since is probed again
-        let cached: Vec<Option<ProbeInfo>> = todo
-            .iter()
-            .map(|f| {
-                // (the web's files are not std::fs files: kept as probed)
-                self.cache.remove(f).filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
-            })
-            .collect();
-        let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
+        // (the web's files are not std::fs files: kept as probed)
+        let cached: HashMap<String, ProbeInfo> = todo.iter().filter_map(|f| self.cache.remove(f).map(|i| (f.clone(), i))).collect();
+        let keep: KeepCached = |f, info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info);
         // Reading the files is the slow part of adding them where they are: it is counted on its
-        // own, and `cancel` stops it too (a large library takes long enough to want both).
-        self.read_total.fetch_add(missing.len(), Relaxed);
-        let mut fresh = probe_all(self.probe.as_ref(), &missing, &self.read_done, cancel).into_iter();
-        let probed: Vec<Result<ProbeInfo, String>> =
-            cached.into_iter().map(|c| c.map(Ok).unwrap_or_else(|| fresh.next().unwrap_or_else(|| Err("not probed".into())))).collect();
+        // own, and `cancel` stops it too (a large library takes long enough to want both). A file
+        // with a cached probe counts too: checking it is a round trip to its disk.
+        self.read_total.fetch_add(todo.len(), Relaxed);
+        let probed = probe_all_cached(self.probe.as_ref(), &todo, cached, keep, &self.read_done, cancel);
         crate::memory::release();
         // Who owns the shared stem sidecar (`IMG_0001.xmp`) among the library's files and the ones
         // arriving with this import: a JPEG or a TIFF arriving beside its raw reads its own sidecar

@@ -1413,6 +1413,66 @@ fn the_probe_wrapper_keeps_todays_strings() {
     assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).map(String::as_str), Some("/c/2: volume not responding (/c)"));
 }
 
+/// Threads that checked a cached probe, and a latch the check waits on for `/a` (a hung share).
+static CHECKED_ON: Mutex<Vec<std::thread::ThreadId>> = Mutex::new(Vec::new());
+static HANG_A: std::sync::OnceLock<Arc<Latch>> = std::sync::OnceLock::new();
+
+fn keep_if_named_kept(p: &str, _: &crate::media::ProbeInfo) -> bool {
+    CHECKED_ON.lock().unwrap().push(std::thread::current().id());
+    if p.starts_with("/a/") {
+        HANG_A.get_or_init(Latch::new).wait();
+    }
+    p.contains("kept")
+}
+
+/// An import's cached probes are checked as each file's own job, on its volume, never on the
+/// planning thread: a file whose probe still holds gets it back unread, one that changed is read
+/// again, and a volume whose check hangs lets cancel return (pre-existing #06, exposed by PR 1's
+/// "Cancel returns even while a drive hangs").
+#[test]
+fn cached_probes_are_checked_off_the_calling_thread() {
+    use crate::media::ProbeInfo;
+    let h = H::new();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let r2 = reads.clone();
+    let probe: crate::media::FileProbe = Arc::new(move |_| {
+        r2.fetch_add(1, Ordering::SeqCst);
+        Ok(ProbeInfo { format: "READ".into(), ..Default::default() })
+    });
+    let cached_info = || ProbeInfo { format: "CACHED".into(), ..Default::default() };
+    let paths: Vec<String> = ["/b/kept1", "/b/changed", "/c/kept2", "/c/new"].iter().map(|s| s.to_string()).collect();
+    let cached = [("/b/kept1", cached_info()), ("/b/changed", cached_info()), ("/c/kept2", cached_info())]
+        .into_iter()
+        .map(|(p, i)| (p.to_string(), i))
+        .collect();
+    let checked = crate::import::cached_probe(probe.clone(), cached, keep_if_named_kept);
+    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let r = crate::import::probe_scheduled(&h.ctx, &checked, &paths, 4, &done, &cancel);
+    let formats: Vec<&str> = r.iter().map(|r| r.as_ref().map(|i| i.format.as_str()).unwrap_or("err")).collect();
+    assert_eq!(formats, ["CACHED", "READ", "CACHED", "READ"]);
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert_eq!(done.load(Ordering::SeqCst), 4, "the cached files count too");
+    let me = std::thread::current().id();
+    assert!(!CHECKED_ON.lock().unwrap().is_empty() && CHECKED_ON.lock().unwrap().iter().all(|t| *t != me), "checked on the scheduler's threads");
+
+    // a share that hangs in the check: cancel returns
+    let paths: Vec<String> = ["/a/kept1", "/a/kept2"].iter().map(|s| s.to_string()).collect();
+    let cached = paths.iter().map(|p| (p.clone(), cached_info())).collect();
+    let checked = crate::import::cached_probe(probe, cached, keep_if_named_kept);
+    let (ctx, cancel, done) = (h.ctx.clone(), Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let (c2, d2) = (cancel.clone(), done.clone());
+    let call = std::thread::spawn(move || crate::import::probe_scheduled(&ctx, &checked, &paths, 4, &d2, &c2));
+    wait_until(|| CHECKED_ON.lock().unwrap().len() >= 5, "both checks to start");
+    cancel.store(true, Ordering::SeqCst);
+    let ticks = h.ctx.ticks.load(Ordering::SeqCst);
+    wait_until(|| h.ctx.ticks.load(Ordering::SeqCst) > ticks + 3, "ticks");
+    h.advance(CANCEL_SILENCE);
+    wait_until(|| call.is_finished(), "cancel to return while the checks hang");
+    let r = call.join().unwrap();
+    assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("cancelled")), "{r:?}");
+    HANG_A.get_or_init(Latch::new).release();
+}
+
 /// The real desktop probe, through the scheduler: counted bytes, a computing span, the job gate.
 #[test]
 fn the_desktop_probe_counts_its_bytes() {
