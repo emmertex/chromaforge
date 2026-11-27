@@ -605,6 +605,9 @@ pub struct AppSettings {
     /// again shows them at once. Used only where the GPU has room for them
     /// ([`crate::render::hdr_cache_fit`]); the Settings dialog says when it hasn't.
     pub hdr_zoom_cache: bool,
+    /// How messages look and how long they stay (Settings ▸ Notifications ▸ Messages).
+    #[serde(deserialize_with = "lenient_messages")]
+    pub messages: crate::toast::MessageSettings,
     /// Edit in Other Editor: the application ("" = the system's default for the file type).
     pub external_editor: String,
     /// The file Edit in Other Editor hands over.
@@ -644,6 +647,10 @@ pub struct AppSettings {
     /// mask Hue so far: ±180° instead of about ±34°). Off: the standard range; values already past
     /// it are kept, never rewritten.
     pub expanded_sliders: bool,
+    /// Masking: the mask list in a window of its own over the photo instead of in the panel (#1251;
+    /// Settings ▸ Develop, `view.masksDetached`). The selected mask's Feather, Refine Edges and sliders stay
+    /// in the panel.
+    pub masks_detached: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
@@ -859,6 +866,7 @@ impl Default for AppSettings {
             preview_limit: 0,
             high_quality_adjustment_previews: false,
             hdr_zoom_cache: true,
+            messages: crate::toast::MessageSettings::default(),
             external_editor: String::new(),
             external_file: EditFile::default(),
             photocraft_path: String::new(),
@@ -873,6 +881,7 @@ impl Default for AppSettings {
             film_names: true,
             film_badges: true,
             expanded_sliders: false,
+            masks_detached: false,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             lock_zoom: true,
@@ -1842,6 +1851,9 @@ pub struct UiState {
     pub film_dust_view: u8,
     /// The library filter bar above the grid.
     pub filter_bar: bool,
+    /// The filter bar over Develop's loupe (#1317): Develop's own, off until asked for, so filtering there keeps the
+    /// photo instead of going to the Library grid.
+    pub develop_filter_bar: bool,
     /// The filter bar's Metadata columns (issue #218): the field each column lists; empty = hidden.
     pub filter_columns: Vec<String>,
     /// The search box at the top of each Metadata column, by column: the text narrows that
@@ -3025,6 +3037,7 @@ impl Default for UiState {
             window_fullscreen: None,
             // Lightroom Classic shows the Library Filter bar over the Grid (the fork's default)
             filter_bar: true,
+            develop_filter_bar: false,
             filter_columns: Vec::new(),
             filter_column_search: Vec::new(),
             people_search: String::new(),
@@ -3064,6 +3077,16 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Whether this view is Develop's loupe, which carries its own filter bar (#1317).
+    pub fn develop_filter_shown_here(&self) -> bool {
+        self.module == crate::module::ModuleId::Develop && self.view == ViewMode::Detail
+    }
+
+    /// Whether the filter bar this view would show is on: Develop's own over its loupe, else the Library's.
+    pub fn filter_bar_shown(&self) -> bool {
+        if self.develop_filter_shown_here() { self.develop_filter_bar } else { self.filter_bar }
+    }
+
     /// The newest toast on screen.
     pub fn toast(&self) -> Option<&Toast> {
         self.toasts.last()
@@ -3078,6 +3101,10 @@ impl UiState {
     /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
     pub fn show_toast(&mut self, mut toast: Toast) {
+        // how long it stays is the policy's, with the Information time the person chose
+        if toast.key.is_none() {
+            toast.until = toast.at + crate::toast::stay_seconds(toast.kind, &toast.text, self.settings.messages.info_seconds());
+        }
         if let Some(key) = toast.key.clone() {
             // a sticky message belongs to its condition: raised again it keeps one place, with the newest text, and
             // one the person dismissed stays away until the condition clears
@@ -3471,6 +3498,11 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
 }
 
 /// A list of ids read leniently: what isn't a list is none, and what isn't text in it is left out.
+/// The message settings read leniently, each value kept inside its range.
+fn lenient_messages<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::toast::MessageSettings, D::Error> {
+    lenient::<D, crate::toast::MessageSettings>(d).map(crate::toast::MessageSettings::clamped)
+}
+
 fn lenient_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(value.as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -3526,7 +3558,8 @@ mod toast_tests {
     /// oldest goes; each expires at its own time.
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
-        let message = |text: String, until: f64| Toast { text, until, kind: ToastKind::Message, key: None };
+        // a message stays 1.4 s from when it was raised, so `at` places its end
+        let message = |text: String, ends: f64| Toast { text, until: 0.0, kind: ToastKind::Message, key: None, at: ends - 1.4 };
         let mut ui = UiState::default();
         ui.show_toast(message("Red Label".into(), 2.0));
         ui.show_toast(message("Cache cleared".into(), 3.0));
@@ -3534,7 +3567,7 @@ mod toast_tests {
         assert_eq!(ui.toast().map(|t| t.text.as_str()), Some("Cache cleared"));
         ui.show_toast(message("Red Label".into(), 4.0));
         assert_eq!(ui.toasts.len(), 2, "the same message is shown once");
-        assert_eq!(ui.toast().map(|t| (t.text.as_str(), t.until)), Some(("Red Label", 4.0)));
+        assert_eq!(ui.toast().map(|t| (t.text.as_str(), (t.until - 4.0).abs() < 1e-9)), Some(("Red Label", true)));
         for i in 0..5 {
             ui.show_toast(message(format!("m{i}"), 10.0));
         }
@@ -3549,9 +3582,9 @@ mod toast_tests {
     #[test]
     fn the_same_text_again_keeps_the_error_kind() {
         let mut ui = UiState::default();
-        ui.show_toast(Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None });
-        ui.show_toast(Toast { text: "Disk full".into(), until: 2.0, kind: ToastKind::Message, key: None });
-        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None }]);
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Error, key: None, at: 0.0 });
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Message, key: None, at: 0.0 });
+        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None, at: 0.0 }]);
     }
 
     /// A sticky message belongs to its key: raised again it stays one, with the newest text; clearing the key takes it

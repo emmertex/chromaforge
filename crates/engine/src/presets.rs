@@ -261,6 +261,40 @@ pub fn expand_preset_paths(paths: &[String]) -> Vec<String> {
     out
 }
 
+/// `preset` applied to a photo's settings `current` at `amount` (1.0 = 100 %), each setting it names
+/// blended from `original` (the photo's import look; `None`: `current` itself, see
+/// [`Preset::apply_on`]). The one path every caller that puts a preset on a photo takes: the
+/// `preset.apply` command and the Presets panel's previews ([`Session::preset_applied`]), importing
+/// with a preset and the import default preset, so all of them store the same result.
+///
+/// `info` is the photo's source, needed only when the preset names one white balance number (`None`
+/// otherwise): such a preset means what a one-field partial means (issue #2910), so the photo and
+/// its original are brought onto the preset's scale with the photo's own as-shot white first, and
+/// the result is put back on the scale the photo is edited on, the preparation `develop.merge`
+/// uses. Without an original, a zero (or negative) amount returns `current` exactly, before any
+/// preparation, so a preview at nothing never turns As Shot into Custom; a NaN amount changes
+/// nothing. Adapted from upstream #2896 (`apply_preset_to_photo`).
+pub(crate) fn apply_preset_to_photo(
+    preset: &Preset,
+    current: &DevelopSettings,
+    original: Option<&DevelopSettings>,
+    amount: f64,
+    info: Option<&lcc_pipeline::SourceInfo>,
+) -> DevelopSettings {
+    if amount.is_nan() || (amount <= 0.0 && original.is_none()) {
+        return current.clone();
+    }
+    let prepare = |d: &DevelopSettings| info.and_then(|info| crate::cmd::develop::prepare_photo_for_wb_partial(d, &preset.settings, info));
+    let prepared = prepare(current);
+    let base: &DevelopSettings = prepared.as_ref().unwrap_or(current);
+    let original = original.map(|d| prepare(d).unwrap_or_else(|| d.clone()));
+    let mut next = preset.apply_on(base, original.as_ref().unwrap_or(base), amount);
+    if let Some(info) = info.filter(|i| prepared.is_some() && i.raw && !i.relative_wb) {
+        lcc_pipeline::local::normalize_wb(&mut next, info);
+    }
+    next
+}
+
 impl Session {
     /// The settings after applying `preset` to photo `id` at `amount` (1.0 = 100 %). Each setting the
     /// preset names is blended from the photo's import look ([`lcc_catalog::Photo::import_defaults`])
@@ -274,25 +308,12 @@ impl Session {
     pub fn preset_applied(&self, id: PhotoId, preset: &Preset, amount: f64) -> Option<DevelopSettings> {
         let current = self.develop_of(id)?;
         let photo = self.catalog.photo(id)?;
-        // a hand-written preset may name one white balance number only, and then it means the same as
-        // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
-        // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses.
-        // (The source's facts are read only then: the panel asks for every visible row on every frame.)
-        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| self.source_info(id));
-        let prepare =
-            |d: &DevelopSettings| info.as_ref().and_then(|info| crate::cmd::develop::prepare_photo_for_wb_partial(d, &preset.settings, info));
-        let prepared = prepare(&current);
-        let base: &DevelopSettings = prepared.as_ref().unwrap_or(&current);
         // the import look is read only below or above 100 %: at 100 % the preset's values apply as they are
-        let imported = (photo.import_look.is_some() && (amount - 1.0).abs() >= 1e-9).then(|| {
-            let d = photo.import_defaults();
-            prepare(&d).unwrap_or(d)
-        });
-        let mut next = preset.apply_on(base, imported.as_ref().unwrap_or(base), amount);
-        if let Some(info) = info.as_ref().filter(|i| prepared.is_some() && i.raw && !i.relative_wb) {
-            lcc_pipeline::local::normalize_wb(&mut next, info);
-        }
-        Some(next)
+        let imported = (photo.import_look.is_some() && (amount - 1.0).abs() >= 1e-9).then(|| photo.import_defaults());
+        // (the source's facts are read only for a preset naming one white balance number: the panel
+        // asks for every visible row on every frame)
+        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| self.source_info(id));
+        Some(apply_preset_to_photo(preset, &current, imported.as_ref(), amount, info.as_ref()))
     }
 
     /// Add imported presets. Identical presets (same name, group and settings) already present are

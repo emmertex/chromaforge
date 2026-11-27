@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (HDR display on GNOME / Mutter: BT.2100 PQ float surface fallback); previously minor (control surfaces from OneSlips: the MX Creative Console, Loupedeck+) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last updated:** 2026-11-05 · **Change:** minor (HDR display on GNOME / Mutter: BT.2100 PQ float surface fallback); previously minor (control surfaces from OneSlips: the MX Creative Console, Loupedeck+) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 What Lightroom does with the machine's hardware, per platform, and what the app does. Sources:
 [gpu-pipeline.md](gpu-pipeline.md), [display-profiles.md](display-profiles.md), [denoise.md](denoise.md),

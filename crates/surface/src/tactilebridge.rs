@@ -735,7 +735,7 @@ pub fn import_settings(s: &mut SurfaceSettings, text: &str) -> Result<Report, St
     }
     if let Some(o) = field(&root, "osd") {
         if let Some(x) = boolean(o, "enabled") {
-            s.osd.enabled = x;
+            s.osd.set_mode(if x { s.osd.mode } else { crate::settings::OsdMode::Off });
         }
         if let Some(x) = num(o, "opacity") {
             s.osd.opacity = x;

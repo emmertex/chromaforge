@@ -5,8 +5,9 @@ use serde_json::json;
 
 use crate::{Selection, Session};
 
+/// Select without a history step: these tests look at the steps of the files' own changes.
 fn select(s: &mut Session, ids: &[u64], active: u64) {
-    s.execute("library.select", &json!({"ids": ids, "active": active})).unwrap();
+    s.selection = Selection { ids: ids.iter().map(|&id| PhotoId(id)).collect(), active: Some(PhotoId(active)) };
 }
 
 fn memory_library(store: &lcc_catalog::MemStore) -> Session {
