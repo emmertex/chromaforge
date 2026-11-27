@@ -547,12 +547,13 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
 /// The Metadata columns' height (points), under the filter bar's rows: a column's field, its search box and its values.
 pub const COLUMNS_HEIGHT: f32 = 198.0;
 /// The fields a Metadata column can list (`library.facetPick`'s fields), with their headers.
-pub const COLUMN_FIELDS: [(&str, &str); 25] = [
+pub const COLUMN_FIELDS: [(&str, &str); 26] = [
     ("year", "Date"),
     ("camera", "Camera"),
     ("lens", "Lens"),
     ("keyword", "Keyword"),
     ("person", "People"),
+    ("faces", "Face Count"),
     ("label", "Label"),
     ("flag", "Flag"),
     ("rating", "Rating"),
@@ -576,15 +577,18 @@ pub const COLUMN_FIELDS: [(&str, &str); 25] = [
 ];
 /// The columns first shown, as Lightroom Classic's Metadata filter starts.
 const DEFAULT_COLUMNS: [&str; 4] = ["year", "camera", "lens", "label"];
-/// Most columns side by side.
-const MAX_COLUMNS: usize = 6;
+/// The narrowest a column gets: past that many columns, the columns scroll sideways instead (issue #1112).
+const MIN_COLUMN_WIDTH: f32 = 140.0;
 
 /// The filter bar's commands (`menus_fork`).
 pub const COMMANDS: &[crate::menus::UiCommand] = &[("view.filterColumns", "Metadata Filter Columns", None, "")];
 
-/// `view.filterColumns {show?: bool, column?: index, field?: name, count?: 1..6, toggle?: name}` → `{columns}`: shows or
-/// hides the filter bar's Metadata columns (no argument toggles), sets the field one column lists, or the number of
-/// columns; `toggle` adds the field's column (the columns appear if hidden) or removes it (the last one hides them all).
+/// `view.filterColumns {show?: bool, column?: index, field?: name, count?: n, toggle?: name, add?: name | true,
+/// remove?: index, move?: index, to?: index}` → `{columns}`: shows or hides the filter bar's Metadata columns (no
+/// argument toggles), sets the field one column lists, or the number of columns (up to one per field, issue #1112);
+/// `toggle` adds the field's column (the columns appear if hidden) or removes it (the last one hides them all); `add`
+/// appends a column (the field named, or the first not shown yet); `remove` takes a column out; `move` puts a column
+/// at `to`, shifting the ones between.
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if id != "view.filterColumns" {
         return None;
@@ -621,6 +625,9 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 .ok_or_else(|| format!("{C}: toggle is one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", ")))?,
         ),
     };
+    if let Some(r) = edit_columns(app, p)? {
+        return Ok(r);
+    }
     if let Some(f) = toggle {
         let columns = &mut app.ui.filter_columns;
         if let Some(i) = columns.iter().position(|c| c == f) {
@@ -632,8 +639,6 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 app.ui.filter_column_search.clear();
                 return Ok(json!({"columns": []}));
             }
-        } else if columns.len() >= MAX_COLUMNS {
-            return Err(format!("{C}: at most {MAX_COLUMNS} columns"));
         } else {
             columns.push(f.to_string());
         }
@@ -643,8 +648,8 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         }
         return Ok(json!({"columns": app.ui.filter_columns}));
     }
-    let column = index("column", 0..=MAX_COLUMNS - 1)?;
-    let count = index("count", 1..=MAX_COLUMNS)?;
+    let column = index("column", 0..=max_columns() - 1)?;
+    let count = index("count", 1..=max_columns())?;
     let show = match p.get("show") {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_bool().ok_or_else(|| format!("{C}: show is true or false"))?),
@@ -689,6 +694,76 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         app.ui.view = crate::state::ViewMode::PhotoGrid;
     }
     Ok(json!({"columns": app.ui.filter_columns}))
+}
+
+/// Most columns: one per field a column can list.
+fn max_columns() -> usize {
+    COLUMN_FIELDS.len()
+}
+
+/// Puts the grid in view, where the columns are, with the filter bar shown.
+fn show_columns(app: &mut LccApp) {
+    app.ui.filter_bar = true;
+    if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid) {
+        app.ui.view = crate::state::ViewMode::PhotoGrid;
+    }
+}
+
+/// `view.filterColumns`'s `add`, `remove` and `move` (issue #1112): `None` when the call has none of them. Each
+/// column's search box goes with it.
+fn edit_columns(app: &mut LccApp, p: &Value) -> Result<Option<Value>, String> {
+    const C: &str = "view.filterColumns";
+    let given = |key: &str| p.get(key).filter(|v| !v.is_null());
+    let column_at = |key: &str, n: usize| -> Result<usize, String> {
+        given(key)
+            .and_then(Value::as_u64)
+            .and_then(|c| usize::try_from(c).ok())
+            .filter(|c| *c < n)
+            .ok_or_else(|| if n == 0 { format!("{C}: no columns are shown") } else { format!("{C}: {key} is 0 to {}", n - 1) })
+    };
+    let n = app.ui.filter_columns.len();
+    app.ui.filter_column_search.resize(n, String::new());
+    if let Some(v) = given("add") {
+        let field = match v {
+            Value::Bool(true) => COLUMN_FIELDS
+                .iter()
+                .map(|(k, _)| *k)
+                .find(|k| !app.ui.filter_columns.iter().any(|c| c == k))
+                .ok_or_else(|| format!("{C}: every field has a column already"))?,
+            Value::String(f) => COLUMN_FIELDS
+                .iter()
+                .map(|(k, _)| *k)
+                .find(|k| k == f)
+                .ok_or_else(|| format!("{C}: add is true or one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", ")))?,
+            _ => return Err(format!("{C}: add is true or one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", "))),
+        };
+        if n >= max_columns() {
+            return Err(format!("{C}: at most {} columns, one per field", max_columns()));
+        }
+        app.ui.filter_columns.push(field.to_string());
+        app.ui.filter_column_search.push(String::new());
+        show_columns(app);
+        return Ok(Some(json!({"columns": app.ui.filter_columns})));
+    }
+    if given("remove").is_some() {
+        let i = column_at("remove", n)?;
+        app.ui.filter_columns.remove(i);
+        app.ui.filter_column_search.remove(i);
+        if app.ui.filter_columns.is_empty() {
+            app.ui.filter_column_search.clear();
+        }
+        return Ok(Some(json!({"columns": app.ui.filter_columns})));
+    }
+    if given("move").is_some() || given("to").is_some() {
+        let from = column_at("move", n)?;
+        let to = column_at("to", n)?;
+        let field = app.ui.filter_columns.remove(from);
+        app.ui.filter_columns.insert(to, field);
+        let search = app.ui.filter_column_search.remove(from);
+        app.ui.filter_column_search.insert(to, search);
+        return Ok(Some(json!({"columns": app.ui.filter_columns})));
+    }
+    Ok(None)
 }
 
 /// `library.facets` for the columns, computed again only when the library, the source or the filter changed.
@@ -767,116 +842,146 @@ fn value_row(ui: &mut egui::Ui, widget: String, text: String, count: u64, on: bo
 fn columns(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
     let t = Tokens::get(ui.ctx());
     let f = app.session.filter.clone();
-    let fields: Vec<String> = app.ui.filter_columns.iter().take(MAX_COLUMNS).cloned().collect();
+    let fields: Vec<String> = app.ui.filter_columns.clone();
     let n = fields.len().max(1);
     let facets = facets(app, ui.ctx(), &fields);
     let gap = 8.0;
-    let w = ((area.width() - gap * (n as f32 - 1.0)) / n as f32).max(60.0);
+    // as wide as the bar allows, but never narrower than MIN_COLUMN_WIDTH: more columns than fit scroll sideways
+    let w = ((area.width() - gap * (n as f32 - 1.0)) / n as f32).max(MIN_COLUMN_WIDTH);
+    let total = w * n as f32 + gap * (n as f32 - 1.0);
+    let scrolls = total > area.width() + 0.5;
     register(ui.ctx(), "filterColumns", area);
     // one search box per column, kept from frame to frame (a search survives the faceted counts changing with it)
     app.ui.filter_column_search.resize(fields.len(), String::new());
     let mut picked: Option<Value> = None;
     let mut op_pick: Option<(String, Value)> = None;
     let mut retitle: Option<(usize, &'static str)> = None;
-    for (i, field) in fields.iter().enumerate() {
-        let r = Rect::from_min_size(area.min + vec2(i as f32 * (w + gap), 0.0), vec2(w, area.height()));
-        ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.divider), StrokeKind::Inside);
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Min)));
-        c.spacing_mut().item_spacing.y = 1.0;
-        let title = COLUMN_FIELDS.iter().find(|(k, _)| k == field).map_or("Camera", |(_, l)| *l);
-        let head = crate::widgets::dropdown_within(&mut c, &format!("filterColumn{i}"), crate::i18n::tr(title), t.semibold(12.5), t.text, w - 8.0);
-        egui::Popup::menu(&head).id(egui::Id::new(("filterColumnField", i))).show(|ui| {
-            for (k, label) in COLUMN_FIELDS {
-                let resp = ui.selectable_label(k == field, crate::i18n::tr(label));
-                register(ui.ctx(), format!("filterColumnField:{i}:{k}"), resp.rect);
-                if resp.clicked() {
-                    retitle = Some((i, k));
-                }
-            }
-        });
-        c.separator();
-        // the sticky search box: it stays at the top while the values below scroll, and narrows them as it is
-        // typed (issue #218); an emptied box shows every value again
-        let mut query = app.ui.filter_column_search.get(i).cloned().unwrap_or_default();
-        crate::text_field::TextField::singleline(&format!("field:filterColumnSearch:{i}"), &mut query)
-            .hint(crate::i18n::tr("Search…"))
-            .width((w - 12.0).max(24.0))
-            .font(t.font(12.0))
-            .margin(egui::Margin::symmetric(6, 2))
-            .show(&mut c);
-        if let Some(slot) = app.ui.filter_column_search.get_mut(i) {
-            *slot = query.clone();
-        }
-        // the column's boolean operator for the multi-value fields (issue #683): any chosen value matches (OR) or
-        // all of them must (AND); a photo has one camera, and the single-value fields (label, flag, rating, kind,
-        // year) have nothing to combine
-        let has_op = matches!(field.as_str(), "lens" | "keyword" | "person");
-        if has_op {
-            let op_key = format!("{field}Op");
-            let op = match field.as_str() {
-                "lens" => f.lens_op,
-                "keyword" => f.keyword_op,
-                _ => f.person_op,
-            };
-            c.horizontal(|c| {
-                c.spacing_mut().item_spacing.x = 4.0;
-                let buttons = [
-                    ("Any", lcc_catalog::MatchOp::Any, "Match any of the chosen values (OR)"),
-                    ("All", lcc_catalog::MatchOp::All, "Match all of the chosen values (AND)"),
-                ];
-                for (label, want, tip) in buttons {
-                    let resp = c.selectable_label(op == want, egui::RichText::new(crate::i18n::tr(label)).font(t.font(11.5)));
-                    register(ui.ctx(), format!("filterColumnOp:{i}:{label}"), resp.rect);
-                    if resp.clicked() && op != want {
-                        op_pick = Some((op_key.clone(), json!(if want == lcc_catalog::MatchOp::All { "all" } else { "any" })));
+    let mut edit: Option<Value> = None;
+    let mut host = ui.new_child(egui::UiBuilder::new().max_rect(area));
+    egui::ScrollArea::horizontal().id_salt("filterColumnsScroll").auto_shrink([false, false]).show(&mut host, |ui| {
+        // the scroll bar takes the bottom of the area when the columns scroll
+        let height = if scrolls { area.height() - 12.0 } else { area.height() };
+        let (strip, _) = ui.allocate_exact_size(vec2(total, height), Sense::hover());
+        for (i, field) in fields.iter().enumerate() {
+            let r = Rect::from_min_size(strip.min + vec2(i as f32 * (w + gap), 0.0), vec2(w, height));
+            ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.divider), StrokeKind::Inside);
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink(4.0)).layout(egui::Layout::top_down(egui::Align::Min)));
+            c.spacing_mut().item_spacing.y = 1.0;
+            let title = COLUMN_FIELDS.iter().find(|(k, _)| k == field).map_or("Camera", |(_, l)| *l);
+            let head =
+                crate::widgets::dropdown_within(&mut c, &format!("filterColumn{i}"), crate::i18n::tr(title), t.semibold(12.5), t.text, w - 8.0);
+            egui::Popup::menu(&head).id(egui::Id::new(("filterColumnField", i))).show(|ui| {
+                for (k, label) in COLUMN_FIELDS {
+                    let resp = ui.selectable_label(k == field, crate::i18n::tr(label));
+                    register(ui.ctx(), format!("filterColumnField:{i}:{k}"), resp.rect);
+                    if resp.clicked() {
+                        retitle = Some((i, k));
                     }
-                    resp.on_hover_text(crate::i18n::tr(tip));
+                }
+                // add, move and remove columns (issue #1112)
+                ui.separator();
+                let last = fields.len().saturating_sub(1);
+                let items: [(&str, &str, bool, Value); 4] = [
+                    ("add", "Add Column", fields.len() < max_columns(), json!({"add": true})),
+                    ("left", "Move Left", i > 0, json!({"move": i, "to": i.saturating_sub(1)})),
+                    ("right", "Move Right", i < last, json!({"move": i, "to": (i + 1).min(last)})),
+                    ("remove", "Remove", true, json!({"remove": i})),
+                ];
+                for (key, label, enabled, args) in items {
+                    let resp = ui.add_enabled(enabled, egui::Button::new(crate::i18n::tr(label)).frame(false));
+                    register(ui.ctx(), format!("filterColumnEdit:{i}:{key}"), resp.rect);
+                    if resp.clicked() {
+                        edit = Some(args);
+                    }
                 }
             });
             c.separator();
-        }
-        let data = facets.field(field.as_str());
-        let chosen: Vec<&str> = data["chosen"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        let none_on = data["noneChosen"].as_bool().unwrap_or(false);
-        let all = format!("{} ({})", crate::i18n::tr("All"), data["distinct"].as_u64().unwrap_or(0));
-        if value_row(&mut c, format!("filterValue:{i}:0"), all, data["photos"].as_u64().unwrap_or(0), chosen.is_empty() && !none_on, true) {
-            picked = Some(json!({"field": field, "value": null}));
-            // clearing the column also puts its operator back to OR, so the next pick doesn't start in AND
+            // the sticky search box: it stays at the top while the values below scroll, and narrows them as it is
+            // typed (issue #218); an emptied box shows every value again
+            let mut query = app.ui.filter_column_search.get(i).cloned().unwrap_or_default();
+            crate::text_field::TextField::singleline(&format!("field:filterColumnSearch:{i}"), &mut query)
+                .hint(crate::i18n::tr("Search…"))
+                .width((w - 12.0).max(24.0))
+                .font(t.font(12.0))
+                .margin(egui::Margin::symmetric(6, 2))
+                .show(&mut c);
+            if let Some(slot) = app.ui.filter_column_search.get_mut(i) {
+                *slot = query.clone();
+            }
+            // the column's boolean operator for the multi-value fields (issue #683): any chosen value matches (OR) or
+            // all of them must (AND); a photo has one camera, and the single-value fields (label, flag, rating, kind,
+            // year) have nothing to combine
+            let has_op = matches!(field.as_str(), "lens" | "keyword" | "person");
             if has_op {
-                op_pick = Some((format!("{field}Op"), json!("any")));
+                let op_key = format!("{field}Op");
+                let op = match field.as_str() {
+                    "lens" => f.lens_op,
+                    "keyword" => f.keyword_op,
+                    _ => f.person_op,
+                };
+                c.horizontal(|c| {
+                    c.spacing_mut().item_spacing.x = 4.0;
+                    let buttons = [
+                        ("Any", lcc_catalog::MatchOp::Any, "Match any of the chosen values (OR)"),
+                        ("All", lcc_catalog::MatchOp::All, "Match all of the chosen values (AND)"),
+                    ];
+                    for (label, want, tip) in buttons {
+                        let resp = c.selectable_label(op == want, egui::RichText::new(crate::i18n::tr(label)).font(t.font(11.5)));
+                        register(ui.ctx(), format!("filterColumnOp:{i}:{label}"), resp.rect);
+                        if resp.clicked() && op != want {
+                            op_pick = Some((op_key.clone(), json!(if want == lcc_catalog::MatchOp::All { "all" } else { "any" })));
+                        }
+                        resp.on_hover_text(crate::i18n::tr(tip));
+                    }
+                });
+                c.separator();
             }
+            let data = facets.field(field.as_str());
+            let chosen: Vec<&str> = data["chosen"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let none_on = data["noneChosen"].as_bool().unwrap_or(false);
+            let all = format!("{} ({})", crate::i18n::tr("All"), data["distinct"].as_u64().unwrap_or(0));
+            if value_row(&mut c, format!("filterValue:{i}:0"), all, data["photos"].as_u64().unwrap_or(0), chosen.is_empty() && !none_on, true) {
+                picked = Some(json!({"field": field, "value": null}));
+                // clearing the column also puts its operator back to OR, so the next pick doesn't start in AND
+                if has_op {
+                    op_pick = Some((format!("{field}Op"), json!("any")));
+                }
+            }
+            egui::ScrollArea::vertical().id_salt(("filterColumnRows", i)).auto_shrink([false, false]).show(&mut c, |ui| {
+                let values = data["values"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                // the search box lets through only the rows whose text holds what is typed; a row keeps its place in
+                // the full list, so clicking one picks the same value whatever is typed
+                let mut shown = 0;
+                for (n, v) in values.iter().enumerate() {
+                    let (Some(value), Some(count)) = (v["value"].as_str(), v["count"].as_u64()) else { continue };
+                    let label = value_label(field, value);
+                    if !matches(&query, &label) {
+                        continue;
+                    }
+                    shown += 1;
+                    let on = chosen.iter().any(|c| c.eq_ignore_ascii_case(value));
+                    if value_row(ui, format!("filterValue:{i}:{}", n + 1), label, count, on, true) {
+                        picked = Some(json!({"field": field, "value": value}));
+                    }
+                }
+                if shown == 0 && !query.trim().is_empty() {
+                    ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("No matches")).font(t.font(12.0)).color(t.text_dim)));
+                }
+                let none = data["none"].as_u64().unwrap_or(0);
+                // photos without a value (no keyword, no capture date, no title…) can be picked too (issue #777)
+                if (none > 0 || none_on)
+                    && value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, none_on, true)
+                {
+                    picked = Some(json!({"field": field, "none": true}));
+                }
+            });
         }
-        egui::ScrollArea::vertical().id_salt(("filterColumnRows", i)).auto_shrink([false, false]).show(&mut c, |ui| {
-            let values = data["values"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-            // the search box lets through only the rows whose text holds what is typed; a row keeps its place in
-            // the full list, so clicking one picks the same value whatever is typed
-            let mut shown = 0;
-            for (n, v) in values.iter().enumerate() {
-                let (Some(value), Some(count)) = (v["value"].as_str(), v["count"].as_u64()) else { continue };
-                let label = value_label(field, value);
-                if !matches(&query, &label) {
-                    continue;
-                }
-                shown += 1;
-                let on = chosen.iter().any(|c| c.eq_ignore_ascii_case(value));
-                if value_row(ui, format!("filterValue:{i}:{}", n + 1), label, count, on, true) {
-                    picked = Some(json!({"field": field, "value": value}));
-                }
-            }
-            if shown == 0 && !query.trim().is_empty() {
-                ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr("No matches")).font(t.font(12.0)).color(t.text_dim)));
-            }
-            let none = data["none"].as_u64().unwrap_or(0);
-            // photos without a value (no keyword, no capture date, no title…) can be picked too (issue #777)
-            if (none > 0 || none_on)
-                && value_row(ui, format!("filterValue:{i}:{}", values.len() + 1), crate::i18n::tr("Unknown").to_string(), none, none_on, true)
-            {
-                picked = Some(json!({"field": field, "none": true}));
-            }
-        });
-    }
+    });
     if let Some(args) = picked {
         let _ = app.run("library.facetPick", args);
+    }
+    if let Some(args) = edit {
+        let _ = app.run("view.filterColumns", args);
     }
     if let Some((key, value)) = op_pick {
         filter(app, json!({key: value}));
