@@ -26,6 +26,7 @@ lcc-sysmem = { path = "crates/sysmem" }
 lcc-libraw = { path = "crates/libraw" }
 lcc-hdrmeta = { path = "crates/hdrmeta" }
 lcc-gpumem = { path = "crates/gpumem" }
+lcc-onnxrt = { path = "crates/onnxrt" }
 lcc-winspool = { path = "crates/winspool" }
 lcc-winmsi = { path = "crates/winmsi" }
 lcc-winjob = { path = "crates/winjob" }

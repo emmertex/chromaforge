@@ -1005,6 +1005,27 @@ fn unnamed_and_suggested_faces_follow_the_library_filter_when_scoped() {
     assert_eq!(photos(&r, "more"), bc, "{r}");
     let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
     assert_eq!(r["more"].as_array().unwrap().len(), 3, "{r}");
+    // a collection picked in the sidebar scopes them too, not only a filter (issue #685): the album holds a and c
+    s.filter.only.clear();
+    s.execute("faces.enable", &json!({"enabled": true})).unwrap();
+    let album = s.execute("album.create", &json!({"name": "Trip", "addSelected": false})).unwrap()["id"].as_u64().unwrap();
+    s.execute("album.addPhotos", &json!({"id": album, "ids": [a.0, c.0]})).unwrap();
+    s.execute("library.source", &json!({"kind": "album", "id": album})).unwrap();
+    let mut ac = vec![a.0, c.0];
+    ac.sort();
+    let r = s.execute("faces.unnamed", &json!({"scope": "filter", "bySuggestion": true})).unwrap();
+    assert_eq!((r["total"].clone(), photos(&r, "faces")), (json!(2), ac.clone()), "{r}");
+    let grouped: Vec<u64> =
+        r["groups"].as_array().unwrap().iter().flat_map(|g| g["faces"].as_array().unwrap().iter()).map(|f| f["photo"].as_u64().unwrap()).collect();
+    assert!(!grouped.is_empty() && grouped.iter().all(|p| ac.contains(p)), "{r}");
+    s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    let r = s.execute("faces.person", &json!({"name": "Ann", "scope": "filter"})).unwrap();
+    assert_eq!(photos(&r, "confirmed"), vec![a.0], "{r}");
+    assert_eq!(photos(&r, "more"), ac, "{r}");
+    // back to the whole library, everything again
+    s.execute("library.source", &json!({"kind": "all"})).unwrap();
+    let r = s.execute("faces.unnamed", &json!({"scope": "filter"})).unwrap();
+    assert_eq!(r["total"], 3, "{r}");
     // an odd scope is an error, not a panic
     for bad in [json!("visible"), json!(7), json!({})] {
         assert!(s.execute("faces.unnamed", &json!({"scope": bad})).is_err(), "{bad}");

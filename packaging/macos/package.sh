@@ -195,16 +195,27 @@ check_no_embedded_fonts "$APP/Contents/Resources" "$APP/Contents/MacOS/$NAME"
 # Licences (and the craft-fonts font licences when built with CRAFT_FONTS_DIR) inside the bundle.
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+# ONNX Runtime and its WebGPU plug-in (pinned Microsoft builds; Apple silicon only) for the AI features on the
+# graphics card: dylibs in Contents/Frameworks, signed below with the app's identity, licences beside the others. An
+# Intel Mac, or a missing library, runs the app's own runners (docs/onnxruntime.md).
+if [[ "$ARCH" != x64 ]]; then
+  (cd "$ROOT" && cargo xtask onnxruntime fetch --dest "$WORK/onnxruntime" --platform macos-aarch64)
+  mkdir -p "$APP/Contents/Frameworks"
+  cp "$WORK/onnxruntime/"*.dylib "$APP/Contents/Frameworks/"
+  cp "$WORK/onnxruntime/"*.txt "$APP/Contents/Resources/Licenses/"
+fi
 
 # Remove inherited build-time extended attributes BEFORE code signing.
 # Never repair, re-sign or strip metadata from the published release after signing.
 xattr -cr "$APP"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# The nested code is the main executable, which is the CLI too; frameworks/helpers would be signed
-# here. The CLI needs the app's entitlements: `--opt addToPhotos=true` / `app.export {addToPhotos}`
+# The nested code is ONNX Runtime's dylibs (when shipped) and the main executable, which is the CLI too. The CLI needs the app's entitlements: `--opt addToPhotos=true` / `app.export {addToPhotos}`
 # send Apple Events to Photos through osascript too (macOS asks about the app that started the CLI,
 # usually the terminal).
+for lib in "$APP/Contents/Frameworks/"*.dylib; do
+  [[ -e "$lib" ]] && sign --options runtime "$lib"
+done
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/$NAME"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
