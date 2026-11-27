@@ -999,7 +999,8 @@ pub(crate) fn cached_probe(probe: crate::media::FileProbe, cached: HashMap<Strin
     })
 }
 
-/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
+/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count (where its volumes
+/// start before they are measured, not a cap): each outcome as
 /// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
 /// ran threads, `"cancelled"` where it ran serially on one CPU), a drive that stopped responding
 /// also typed.
@@ -1041,7 +1042,8 @@ pub(crate) fn refused_probe(path: &str, e: crate::io_sched::pool::SubmitError) -
     ProbeError::from(format!("{path}: {e}"))
 }
 
-/// A stream of file reads (probes) linked to the caller's `cancel`, at today's thread count,
+/// A stream of file reads (probes) linked to the caller's `cancel`, its volumes starting at today's
+/// thread count,
 /// keying paths with `mounts` (one list for all of a caller's streams) or a fresh list.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn probe_stream(
@@ -2270,7 +2272,8 @@ fn run_transfers(
     }
 }
 
-/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count: each outcome
+/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count (where its
+/// volumes start before they are measured, not a cap): each outcome
 /// as an item (`None`: not started).
 #[cfg(not(target_arch = "wasm32"))]
 fn transfers_scheduled(
