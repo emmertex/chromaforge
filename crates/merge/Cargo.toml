@@ -20,4 +20,5 @@ lcc-scenes = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+rustfft = { workspace = true }
 half = { workspace = true }

@@ -57,8 +57,16 @@ pub enum MergeKind {
         focus: FocusOptions,
     },
     /// The frames of a Nikon pixel-shift series (4, 8, 16 or 32 shots) → one image with full colour at every pixel,
-    /// merged on the raw mosaics ([`lcc_merge::pixelshift`]).
-    PixelShift,
+    /// merged on the raw mosaics ([`lcc_merge::pixelshift`]): registered (the frames' positions measured on the data and
+    /// the image reconstructed from them, [`lcc_merge::pixelshift_registered`]) or plain (the camera's own pattern).
+    PixelShift {
+        #[serde(default = "registered_by_default")]
+        registered: bool,
+    },
+}
+
+fn registered_by_default() -> bool {
+    true
 }
 
 impl MergeKind {
@@ -68,12 +76,12 @@ impl MergeKind {
             MergeKind::Panorama { .. } => "Pano",
             MergeKind::HdrPanorama { .. } => "HDR-Pano",
             MergeKind::FocusStack { .. } => "Focus",
-            MergeKind::PixelShift => "PixelShift",
+            MergeKind::PixelShift { .. } => "PixelShift",
         }
     }
     fn min_photos(&self) -> usize {
         match self {
-            MergeKind::HdrPanorama { .. } | MergeKind::PixelShift => 4,
+            MergeKind::HdrPanorama { .. } | MergeKind::PixelShift { .. } => 4,
             _ => 2,
         }
     }
@@ -98,9 +106,6 @@ pub enum PixelShiftRefusal {
     /// A series with a shot count that has not been measured.
     #[error("Pixel Shift: {0}-shot series are not supported yet")]
     Unsupported(u16),
-    /// The result file of this series is already there.
-    #[error("A pixel-shift merge of this series already exists ({name})")]
-    Exists { name: String },
 }
 
 /// Where a merge writes its result before a free name is looked for: next to the first source, or in `output_dir`.
@@ -129,13 +134,8 @@ pub(crate) fn restored_merge_sources(catalog: &lcc_catalog::Catalog, prov: &lcc_
             counter: f.counter,
         })
         .collect();
-    lcc_catalog::MergeSources { engine: prov.engine, shot_count: prov.shot_count, reference: prov.reference, scale: prov.scale, frames }
-}
-
-/// The name of the pixel-shift result of the series whose frame 01 is `first`, when that file is already there.
-fn existing_pixel_shift_result(first: &str, output_dir: Option<&str>) -> Option<String> {
-    let path = output_names(&merge_target(first, output_dir), MergeKind::PixelShift.suffix()).next()?;
-    path.exists().then(|| path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    let registration = prov.registration.as_ref().map(crate::merge_pixel_shift::catalog_registration_of_file);
+    lcc_catalog::MergeSources { engine: prov.engine, shot_count: prov.shot_count, reference: prov.reference, scale: prov.scale, frames, registration }
 }
 
 /// What planning a pixel-shift merge found out about its series: the frames in series order (frame 01 first).
@@ -147,6 +147,8 @@ pub struct PixelShiftPlan {
     /// What the catalog adds to frame 01's file metadata ([`pixel_shift_metadata`]): the union of the frames' keywords,
     /// and frame 01's descriptive fields as they stand in the catalog.
     pub metadata: lcc_meta::Metadata,
+    /// The registered merge would not fit in the memory the merge may use: the series is merged plainly, and says why.
+    pub memory_limited: bool,
 }
 
 /// The descriptive metadata a pixel-shift merge takes from the catalog, for `ids` in series order (frame 01 first).
@@ -209,7 +211,10 @@ pub struct PixelShiftFrame {
 }
 
 /// Compression of the merged DNG (measured on a 16-shot series of 16512 × 11008: see `docs/pixel-shift.md`).
-const PIXEL_SHIFT_PACKING: lcc_merge::pixelshift::DngPacking = lcc_merge::pixelshift::DngPacking::LosslessJpeg;
+/// The reason a pixel-shift merge was not registered, in plain words (English), from its code.
+pub use crate::merge_pixel_shift::reason_message as fallback_message;
+
+pub(crate) const PIXEL_SHIFT_PACKING: lcc_merge::pixelshift::DngPacking = lcc_merge::pixelshift::DngPacking::LosslessJpeg;
 
 /// Options that apply after the merge.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -388,89 +393,6 @@ impl MergeJob {
         Ok(frames)
     }
 
-    /// A pixel-shift merge: the frames are read, decoded and placed one at a time (the merged image is the only large
-    /// buffer), then written as a LinearRaw DNG carrying frame 01's colour, lens data and metadata.
-    fn run_pixel_shift(&self, progress: &ProgressFn) -> std::result::Result<MergeOutput, String> {
-        use lcc_merge::pixelshift;
-        use lcc_raw::merge_provenance::{ENGINE, Provenance, SourceFrame, Window};
-        let plan = self.pixel_shift.as_ref().ok_or("the photos were not checked as a pixel-shift series")?;
-        let pattern = pixelshift::pattern_for(plan.count).ok_or_else(|| format!("{}-shot pixel-shift series are not supported yet", plan.count))?;
-        if self.sources.len() != pattern.shifts.len() {
-            return Err(format!("the series has {} shots but {} photos were given", plan.count, self.sources.len()));
-        }
-        if !progress(0.0, "Reading frame 1") {
-            return Err("cancelled".into());
-        }
-        // frame 01 gives the result its colour, lens data, metadata and place on the sensor
-        let bytes = (self.read)(&self.sources[0].1)?;
-        let mut first = lcc_raw::decode(&bytes).map_err(|e| format!("{}: {e}", self.sources[0].1))?;
-        let lens = first.opcodes.list3.clone();
-        // the colour fit sees the raw without its lens warp, as when the photo opens
-        first.opcodes.list3.retain(|op| !op.is_lens_correction());
-        let tags = crate::camera_preview::starting_colour_tags(&mut first, &bytes);
-        first.opcodes.list3.clone_from(&lens);
-        let mut color = tags.unwrap_or_else(|| first.color.clone());
-        if color.as_shot_neutral.is_none()
-            && color.as_shot_white_xy.is_none()
-            && let Some(m) = first.wb_multipliers.filter(|m| m.iter().all(|v| *v > 0.0 && v.is_finite()))
-        {
-            color.as_shot_neutral = Some(m.map(|v| 1.0 / f64::from(v)));
-        }
-        let window = lcc_raw::sensor_window(&bytes, [first.active_area.width, first.active_area.height]).map(|w| Window {
-            sensor: w.sensor,
-            origin: w.origin,
-            size: w.size,
-        });
-        // frame 01's own JPEG goes into the file as its preview: the colour look is fitted to it when the file opens, as it
-        // is for the camera's raw
-        let preview = lcc_raw::embedded_preview(&bytes)
-            .filter(|jpeg| jpeg.starts_with(&[0xff, 0xd8]))
-            .map(|jpeg| lcc_raw::DngPreview { jpeg, color_space: lcc_raw::embedded_preview_color_space(&bytes) });
-        drop(bytes);
-        // the catalog's descriptive fields and keywords win; frame 01's file fills in the rest (camera, lens, exposure,
-        // capture time with its sub-seconds and offset). Rating and label are not carried.
-        let mut metadata = plan.metadata.clone();
-        metadata.fill_missing(&first.metadata);
-        metadata.rating = None;
-        metadata.label = None;
-        if metadata.capture_time.is_none() {
-            metadata.capture_time = plan.frames.first().and_then(|f| lcc_meta::DateTime::parse_iso(&f.captured));
-        }
-        let orientation = first.orientation;
-        let mut first = Some(first);
-        let mut load = |i: usize| -> std::result::Result<lcc_raw::RawImage, String> {
-            if let Some(f) = first.take().filter(|_| i == 0) {
-                return Ok(f);
-            }
-            let path = &self.sources[i].1;
-            let bytes = (self.read)(path)?;
-            lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))
-        };
-        let step = |f: f32| progress(0.02 + 0.78 * f, &format!("Merging frame {} of {}", (f * plan.count as f32) as usize + 1, plan.count));
-        let merged = pixelshift::merge_series(pattern, 0..self.sources.len(), &mut load, &step).map_err(err)?;
-        if !progress(0.82, "Writing DNG") {
-            return Err("cancelled".into());
-        }
-        let (width, height, filled) = (merged.width, merged.height, merged.filled);
-        let provenance = Provenance {
-            engine: ENGINE,
-            shot_count: plan.count,
-            reference: 1,
-            scale: pattern.scale as u16,
-            window,
-            frames: plan
-                .frames
-                .iter()
-                .map(|f| SourceFrame { index: f.index, file_name: f.file_name.clone(), captured: f.captured.clone(), counter: f.counter })
-                .collect(),
-        };
-        let source = pixelshift::DngSource { metadata, color, orientation, lens, provenance, preview };
-        let dng = pixelshift::write_dng(merged, source, PIXEL_SHIFT_PACKING).map_err(err)?;
-        progress(1.0, "Done");
-        let info = json!({"kind": "pixelShift", "shots": plan.count, "width": width, "height": height, "filledNodes": filled});
-        Ok(MergeOutput { dng, preview: None, crop: None, info, layers: None })
-    }
-
     /// Run the merge. `progress(fraction, stage)` returns false to cancel.
     pub fn run(&self, progress: &ProgressFn) -> std::result::Result<MergeOutput, String> {
         if self.sources.len() < self.kind.min_photos() {
@@ -617,7 +539,7 @@ impl MergeJob {
                 });
                 (r.image, r.color, r.orientation, r.metadata, r.baseline_exposure, lcc_merge::DngSamples::U16, None, info, None)
             }
-            MergeKind::PixelShift => return self.run_pixel_shift(progress),
+            MergeKind::PixelShift { .. } => return self.run_pixel_shift(progress),
         };
         if !progress(0.9, "Writing DNG") {
             return Err("cancelled".into());
@@ -845,7 +767,15 @@ impl MergeDimensions {
             MergeKind::HdrPanorama { pano, .. } => hdr_peak()?.max(panorama_peak(pano, 0)?),
             // frames stream in one at a time: the merged image (6 bytes a node, 4 nodes per sensor pixel), its
             // bookkeeping byte and, while the DNG is written, about as much again
-            MergeKind::PixelShift => self
+            // the registered merge keeps all frames' mosaics (2 bytes a sample) and, while it measures, their green
+            // planes (1 byte a sensor pixel), then the merged image: 80 bytes a sensor pixel including the decoder
+            // (measured on a 16-shot series of 45 megapixels: a peak of 59 bytes a pixel without it)
+            MergeKind::PixelShift { registered: true } => self
+                .largest_source
+                .checked_mul(64)
+                .and_then(|bytes| bytes.checked_add(decoder_bytes))
+                .ok_or_else(|| "Photo Merge cannot safely estimate memory: pixel shift working set overflow".to_string())?,
+            MergeKind::PixelShift { registered: false } => self
                 .largest_source
                 .checked_mul(4 * 12)
                 .and_then(|bytes| bytes.checked_add(decoder_bytes))
@@ -1050,7 +980,13 @@ pub fn parse(id: &str, p: &Value) -> Result<(MergeKind, MergeFinish)> {
         "merge.hdr" => MergeKind::Hdr { hdr },
         "merge.panorama" => MergeKind::Panorama { pano },
         "merge.focusStack" => MergeKind::FocusStack { focus: FocusOptions { align: hdr.align } },
-        "merge.pixelShift" => MergeKind::PixelShift,
+        "merge.pixelShift" => MergeKind::PixelShift {
+            registered: match p.get("method").and_then(Value::as_str).unwrap_or("registered") {
+                "registered" => true,
+                "plain" => false,
+                other => return Err(bad(format!("method: unknown `{other}` (registered, plain)"))),
+            },
+        },
         _ => MergeKind::HdrPanorama { hdr, pano, bracket: p.get("bracket").and_then(Value::as_u64).unwrap_or(0) as usize },
     };
     // a pixel-shift merge starts like the camera's own files (no Auto Settings) and sits on its frames in a stack
@@ -1140,20 +1076,26 @@ impl Session {
             sources.sort_by_cached_key(|(id, _)| key(id));
         }
         let mut pixel_shift = None;
-        if matches!(kind, MergeKind::PixelShift) {
+        let mut memory_limited = false;
+        if matches!(kind, MergeKind::PixelShift { .. }) {
             if preview {
                 return Err(EngineError::Other("Pixel Shift has no preview".into()));
             }
             let (ordered, plan) = self.plan_pixel_shift_checked(&sources).map_err(|e| EngineError::Other(e.to_string()))?;
-            // checked before anything is decoded: a result already there is neither replaced nor merged again
-            if let Some(name) = ordered.first().and_then(|(_, first)| existing_pixel_shift_result(first, finish.output_dir.as_deref())) {
-                return Err(EngineError::Other(PixelShiftRefusal::Exists { name }.to_string()));
-            }
+            // a merge of the series that is already there does not stop this one: it gets a name of its own
             sources = ordered;
             pixel_shift = Some(plan);
         }
-        let estimated = dimensions.working_bytes(&kind, preview, available).map_err(EngineError::Other)?;
+        let mut estimated = dimensions.working_bytes(&kind, preview, available).map_err(EngineError::Other)?;
+        // a registered pixel-shift merge that would not fit is merged plainly, and says so; the plain merge still has to fit
+        if matches!(kind, MergeKind::PixelShift { registered: true }) && check_merge_memory_budget(estimated, available).is_err() {
+            memory_limited = true;
+            estimated = dimensions.working_bytes(&MergeKind::PixelShift { registered: false }, preview, available).map_err(EngineError::Other)?;
+        }
         check_merge_memory_budget(estimated, available).map_err(EngineError::Other)?;
+        if let Some(plan) = pixel_shift.as_mut() {
+            plan.memory_limited = memory_limited;
+        }
         if let Some(lo) = finish.layers.as_ref().filter(|_| !preview) {
             if !matches!(kind, MergeKind::Hdr { .. }) {
                 return Err(EngineError::Other("Merge to Layers is for HDR merges only".into()));
@@ -1169,9 +1111,9 @@ impl Session {
         Ok(MergeJob { kind, finish, sources, pixel_shift, preview: preview_edge, album, read, frames })
     }
 
-    /// Whether `ids` can be merged as one pixel-shift series: their headers are read (not their pixels) and the result's
-    /// file name is looked for, so a front end can refuse before anything is decoded.
-    pub fn pixel_shift_check(&self, ids: &[PhotoId], output_dir: Option<&str>) -> std::result::Result<(), PixelShiftRefusal> {
+    /// Whether `ids` can be merged as one pixel-shift series: their headers are read (not their pixels), so a front end
+    /// can refuse before anything is decoded. A merge of the series that is already there is no reason to refuse.
+    pub fn pixel_shift_check(&self, ids: &[PhotoId]) -> std::result::Result<(), PixelShiftRefusal> {
         let mut sources = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(p) = self.catalog.photo(*id) else { continue };
@@ -1180,11 +1122,7 @@ impl Session {
                 _ => return Err(PixelShiftRefusal::NotFiles { name: p.file_name.clone() }),
             }
         }
-        let (ordered, _) = self.plan_pixel_shift_checked(&sources)?;
-        match ordered.first().and_then(|(_, first)| existing_pixel_shift_result(first, output_dir)) {
-            Some(name) => Err(PixelShiftRefusal::Exists { name }),
-            None => Ok(()),
-        }
+        self.plan_pixel_shift_checked(&sources).map(|_| ())
     }
 
     /// The frames Delete Merge Sources would delete for the merged photo `id`: those other than the reference frame that
@@ -1256,7 +1194,7 @@ impl Session {
             .collect();
         let ids: Vec<PhotoId> = ordered.iter().map(|(id, _)| *id).collect();
         let metadata = pixel_shift_metadata(&self.catalog, &ids);
-        Ok((ordered, PixelShiftPlan { count: series.count, frames, metadata }))
+        Ok((ordered, PixelShiftPlan { count: series.count, frames, metadata, memory_limited: false }))
     }
 
     /// Write a finished (non-preview) merge next to its first source, import it, add it to the album
@@ -1300,7 +1238,13 @@ impl Session {
         } else {
             // A new file under a free name (never replacing one), complete and synced before it appears.
             let target = merge_target(first, job.finish.output_dir.as_deref());
-            let path = lcc_catalog::safe_file::write_new_unique(&mut output_names(&target, job.kind.suffix()), &out.dng)
+            // a plain merge of a series has its own name beside the registered one; either takes the next free number
+            // when its name is taken (a file is never replaced)
+            let suffix = match (&job.kind, out.info.get("method").and_then(Value::as_str)) {
+                (MergeKind::PixelShift { .. }, Some("plain")) => "PixelShift-Plain",
+                _ => job.kind.suffix(),
+            };
+            let path = lcc_catalog::safe_file::write_new_unique(&mut output_names(&target, suffix), &out.dng)
                 .map_err(|e| EngineError::Other(format!("could not write the merged DNG next to {first}: {e}")))?
                 .to_string_lossy()
                 .to_string();
@@ -1336,7 +1280,7 @@ impl Session {
             ops.push(op);
         }
         // a pixel-shift merge remembers its frames (the DNG's own XMP says the same)
-        if !reused && let (MergeKind::PixelShift, Some(plan)) = (&job.kind, &job.pixel_shift) {
+        if !reused && let (MergeKind::PixelShift { .. }, Some(plan)) = (&job.kind, &job.pixel_shift) {
             let frames = plan
                 .frames
                 .iter()
@@ -1349,12 +1293,19 @@ impl Session {
                     counter: f.counter,
                 })
                 .collect();
+            let registration = crate::merge_pixel_shift::catalog_registration(&out.info);
+            let engine = if registration.as_ref().is_some_and(|r| r.registered) {
+                lcc_raw::merge_provenance::ENGINE_REGISTERED
+            } else {
+                lcc_raw::merge_provenance::ENGINE
+            };
             let sources = lcc_catalog::MergeSources {
-                engine: lcc_raw::merge_provenance::ENGINE,
+                engine,
                 shot_count: plan.count,
                 reference: 1,
                 scale: lcc_merge::pixelshift::pattern_for(plan.count).map_or(1, |p| p.scale as u16),
                 frames,
+                registration,
             };
             ops.push(lcc_catalog::Op::SetMergeSources { id, sources: Some(Box::new(sources)) });
         }

@@ -1829,7 +1829,23 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             crate::widgets::named(ui.add(egui::TextEdit::multiline(&mut wm.text).desired_rows(2).hint_text(crate::i18n::tr("© Your Name")).desired_width(f32::INFINITY)), crate::i18n::tr("Text"))
                         });
                     }
-                    choices(ui, "Position", "watermarkDialogAnchor", &WM_POSITIONS, &mut wm.anchor);
+                    // a 3 × 3 grid laid out like the corners, edges and centre it picks (ids as before:
+                    // `button:watermarkDialogAnchor-{0..8}`; adapted from upstream #4720)
+                    field(ui, "Position", |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                            for (r, row) in WM_POSITIONS.chunks(3).enumerate() {
+                                ui.horizontal(|ui| {
+                                    for (c, (v, l)) in row.iter().enumerate() {
+                                        let i = r * 3 + c;
+                                        if crate::widgets::text_button(ui, &format!("watermarkDialogAnchor-{i}"), l, wm.anchor == *v).clicked() {
+                                            wm.anchor = *v;
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    });
                     choices(ui, "Rotate", "watermarkDialogRotation", &[(0u16, "0°"), (90, "90°"), (180, "180°"), (270, "270°")], &mut wm.rotation);
                     let mut size = wm.size as f64 * 100.0;
                     if !graphic && num(ui, &WM_SIZE, &mut size) {
