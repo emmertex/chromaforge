@@ -385,6 +385,7 @@
   "{what} merge added, but not registered: {reason}": "Đã thêm ghép {what}, nhưng không căn chỉnh: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "Đã chọn {}",
   "{} faces wait under 1 person": "{} khuôn mặt chờ dưới 1 người",
   "{} faces wait under {} people": "{} khuôn mặt chờ dưới {} người",
   "{} fixed in this photo": "Đã sửa {} trong ảnh này",

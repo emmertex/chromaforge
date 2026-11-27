@@ -318,6 +318,7 @@
   "{what} merge added, but not registered: {reason}": "Combinación {what} añadida, pero sin registro: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "{} elegidos",
   "{} faces wait under 1 person": "{} caras esperan bajo 1 persona",
   "{} faces wait under {} people": "{} caras esperan bajo {} personas",
   "{} keys": "Teclas de {}",

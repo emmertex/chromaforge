@@ -318,6 +318,7 @@
   "{what} merge added, but not registered: {reason}": "已新增{what}合併照片，但未對位：{reason}",
   "{what}: {n}": "{what}：{n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "已選 {} 項",
   "{} faces wait under 1 person": "1 位人物下有 {} 張人臉待處理",
   "{} faces wait under {} people": "{} 位人物下有 {} 張人臉待處理",
   "{} keys": "{} 按鍵",

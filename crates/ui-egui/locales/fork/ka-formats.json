@@ -399,6 +399,7 @@
   "{what} merge added, but not registered: {reason}": "{what}: გაერთიანება დაემატა, მაგრამ რეგისტრაციის გარეშე: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "არჩეულია {}",
   "{} faces wait under 1 person": "1 ადამიანის ქვეშ {} სახე ელოდება",
   "{} faces wait under {} people": "{} ადამიანის ქვეშ {} სახე ელოდება",
   "{} fixed in this photo": "ამ ფოტოში გასწორდა {}",

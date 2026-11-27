@@ -474,7 +474,7 @@ fn pick_row(ui: &mut egui::Ui, id: &str, label: &str, chosen: &mut Vec<String>, 
                 ui.horizontal(|ui| {
                     text_field::TextField::singleline(&format!("{id}:narrow"), &mut narrow).hint(tr("Type to narrow the list")).width(180.0).show(ui);
                     let clear = ui.add_enabled(!chosen.is_empty(), egui::Button::new(tr("Clear")));
-                    crate::widgets::register(ui.ctx(), &format!("{id}:clear"), clear.rect);
+                    crate::widgets::register(ui.ctx(), format!("{id}:clear"), clear.rect);
                     if clear.clicked() {
                         chosen.clear();
                     }
@@ -492,7 +492,7 @@ fn pick_row(ui: &mut egui::Ui, id: &str, label: &str, chosen: &mut Vec<String>, 
                     for v in listed.get(rows).unwrap_or_default() {
                         let mut on = chosen.iter().any(|c| c.eq_ignore_ascii_case(v));
                         let r = ui.checkbox(&mut on, shown_value(v));
-                        crate::widgets::register(ui.ctx(), &format!("{id}:{v}"), r.rect);
+                        crate::widgets::register(ui.ctx(), format!("{id}:{v}"), r.rect);
                         if r.changed() {
                             if on {
                                 chosen.push(v.clone());

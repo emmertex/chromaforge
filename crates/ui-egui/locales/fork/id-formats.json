@@ -341,6 +341,7 @@
   "{what} merge added, but not registered: {reason}": "Hasil penggabungan {what} ditambahkan, tetapi tanpa registrasi: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "{} dipilih",
   "{} faces wait under 1 person": "{} wajah menunggu di bawah 1 orang",
   "{} faces wait under {} people": "{} wajah menunggu di bawah {} orang",
   "{} fixed in this photo": "{} diperbaiki di foto ini",

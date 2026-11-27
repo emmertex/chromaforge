@@ -310,6 +310,7 @@
   "{what} merge added, but not registered: {reason}": "Fusion de {what} ajoutée, mais non recalée : {reason}",
   "{what}: {n}": "{what} : {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} Mo · {format}",
+  "{} chosen": "{} choisis",
   "{} faces wait under 1 person": "{} visages attendent sous 1 personne",
   "{} faces wait under {} people": "{} visages attendent sous {} personnes",
   "{} keys": "Touches {}",

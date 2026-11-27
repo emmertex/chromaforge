@@ -318,6 +318,7 @@
   "{what} merge added, but not registered: {reason}": "已添加 {what} 合并，但未配准：{reason}",
   "{what}: {n}": "{what}：{n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "已选 {} 项",
   "{} faces wait under 1 person": "1 位人物下有 {} 张人脸待处理",
   "{} faces wait under {} people": "{} 位人物下有 {} 张人脸待处理",
   "{} keys": "{} 按键",

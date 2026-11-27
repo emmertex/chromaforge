@@ -326,6 +326,7 @@
   "{what} merge added, but not registered: {reason}": "Dodano po scaleniu: {what}, ale bez rejestracji: {reason}",
   "{what}: {n}": "{what}: {n}",
   "{w} × {h} · {mb} MB · {format}": "{w} × {h} · {mb} MB · {format}",
+  "{} chosen": "Wybrano: {}",
   "{} faces wait under 1 person": "{} twarzy czeka pod 1 osobą",
   "{} faces wait under {} people": "{} twarzy czeka pod {} osobami",
   "{} fixed in this photo": "Usunięto na tym zdjęciu: {}",
