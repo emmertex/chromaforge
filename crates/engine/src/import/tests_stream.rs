@@ -428,9 +428,9 @@ fn reads_ahead_at_most_per_volume_files_on_each_volume() {
         let ctx = context(&root);
         let h = start_in(&ctx, files.clone(), options(&root, ImportMode::Add), look, Some(gated_probe(&gate, real)));
         wait_until(|| ctx.pending.load(Ordering::SeqCst) >= 2 * want, "the read-ahead to fill");
-        // (both cards' reads are queued; that both also *run* while every read is held isn't
-        // promised here: the pool's cap is `workers()` for the whole process, and the first card's
-        // reads, listed first, can take every slot until one ends. Per-volume limits remove that.)
+        // (each volume has its own limit, so the first card's reads can't take the second's slots:
+        // both run at once. A busy machine may take a while to start them: wait, don't sample.)
+        wait_until(|| gate.calls_on("a") > 0 && gate.calls_on("b") > 0, "both cards read at once");
         // (time for any read ahead beyond the bound to show up)
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(ctx.pending.load(Ordering::SeqCst), 2 * want, "{n} files a card: no more than {w} read ahead on each");
