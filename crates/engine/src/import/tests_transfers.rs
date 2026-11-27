@@ -322,25 +322,28 @@ fn a_stall_at_the_dng_step_is_outcome_unknown() {
 }
 
 /// The wrappers' words for the pool's new outcomes (I/O spec PR 3): a job the stopped pool never
-/// started, and several files submitted from inside a file job (refused, never a deadlock).
+/// started (typed as such, not the file's own failure: the import doesn't call it unreadable),
+/// and several files submitted from inside a file job (refused, never a deadlock).
 #[test]
 fn the_wrappers_name_the_pools_outcomes() {
     use crate::io_sched::JobOutcome;
     let dir = Path::new("/ssd/in");
     for (moving, word) in [(false, "copied"), (true, "moved")] {
         match transfer_outcome(JobOutcome::SchedulerStopped, "/card/a.nef".into(), dir, moving) {
-            Some(PreparedItem::Failed(p, e)) => {
-                assert_eq!(p, "/card/a.nef");
+            Some(PreparedItem::Interrupted(why, e)) => {
+                assert_eq!(*why, Interrupted { path: "/card/a.nef".into(), why: Interruption::SchedulerStopped, volume: None, folder: None });
                 assert_eq!(e, format!("not {word}: the I/O scheduler stopped; the original is kept"));
             }
             other => panic!("{}", describe(other.as_ref(), dir)),
         }
     }
     assert!(transfer_outcome(JobOutcome::NotStarted, "/card/a.nef".into(), dir, false).is_none(), "not started, as today");
-    assert_eq!(
-        probe_outcome(JobOutcome::SchedulerStopped, "/card/a.nef", "not probed").unwrap_err().message,
-        "/card/a.nef: not read: the I/O scheduler stopped"
-    );
+    let stopped = probe_outcome(JobOutcome::SchedulerStopped, "/card/a.nef", "not probed").unwrap_err();
+    assert_eq!(stopped.message, "/card/a.nef: not read: the I/O scheduler stopped");
+    match stopped.into_item("/card/a.nef".into()) {
+        PreparedItem::Interrupted(why, _) => assert_eq!((why.why, why.volume), (Interruption::SchedulerStopped, None)),
+        other => panic!("{}", describe(Some(&other), dir)),
+    }
     assert_eq!(probe_outcome(JobOutcome::NotStarted, "/card/a.nef", "not probed").unwrap_err().message, "not probed");
 
     // several files probed from inside a pool job: every file fails with the reason, at once

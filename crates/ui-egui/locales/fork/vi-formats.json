@@ -7,6 +7,7 @@
   " · kept, not applied: {}": " · giữ lại, không áp dụng: {}",
   " · {n} not added to the library: {e}": " · {n} không được thêm vào thư viện: {e}",
   " · {n} not imported: a drive stopped responding": " · {n} không được nhập: một ổ đĩa đã ngừng phản hồi",
+  " · {n} not imported: the app's file reader stopped; import them again": " · {n} không được nhập: trình đọc tệp của ứng dụng đã dừng; hãy nhập lại",
   " · {n} skipped (could not be rendered)": " · {n} đã bỏ qua (không thể kết xuất)",
   "+ Create “{new}”": "+ Tạo “{new}”",
   ", ": ", ",

@@ -276,7 +276,8 @@ pub struct ImportReport {
     /// (path, error): every file that failed, those of `interrupted` included.
     pub failed: Vec<(String, String)>,
     /// The files of `failed` that failed for a reason outside the file: a drive stopped responding,
-    /// or a copy was left unfinished (each also in `failed`, with its message).
+    /// a copy was left unfinished, or the app's file reader stopped (each also in `failed`, with its
+    /// message).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interrupted: Vec<Interrupted>,
     /// Files skipped as still being copied in (`lcc_catalog::incoming`): a later scan or import picks them up.
@@ -302,7 +303,7 @@ pub struct ImportReport {
 
 /// Why a file failed when the cause is outside the file (the I/O scheduler's typed outcomes,
 /// never read from a message).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Interruption {
     /// A drive it needs stopped responding before its read, copy or move started: nothing was done.
@@ -311,6 +312,10 @@ pub enum Interruption {
     /// cancelled, while it was under way): it may still finish, leaving a file in `folder` that the
     /// library doesn't list. The original is kept.
     OutcomeUnknown,
+    /// The app's file reader (the I/O pool's scheduler) stopped, an internal error, before its read,
+    /// copy or move started: nothing was done, the file is fine, and importing it again reads it
+    /// (later work schedules its own reads).
+    SchedulerStopped,
 }
 
 /// A file of [`ImportReport::failed`] that failed for an [`Interruption`].
@@ -320,7 +325,7 @@ pub struct Interrupted {
     pub path: String,
     pub why: Interruption,
     /// The drive that stopped responding (none: the import was cancelled while the copy was under
-    /// way).
+    /// way, or the app's file reader stopped).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<String>,
     /// [`Interruption::OutcomeUnknown`]: the folder the copy or move was going into.
@@ -877,23 +882,35 @@ pub(crate) fn probe_all(
     probe_all_typed(probe, paths, done, cancel).into_iter().map(|r| r.map_err(ProbeError::into_message)).collect()
 }
 
-/// Why a file's probe failed: its message, and the drive when the scheduler failed it because
-/// that drive stopped responding (typed: the import tells the user so instead of "not readable").
+/// Why a file's probe failed: its message, and, when the scheduler failed it for a cause outside
+/// the file, that cause (typed: the import tells the user so instead of "not readable").
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProbeError {
     pub(crate) message: String,
-    pub(crate) not_responding: Option<String>,
+    /// The cause outside the file, if it was one.
+    pub(crate) why: Option<Interruption>,
+    /// The drive that stopped responding ([`Interruption::VolumeNotResponding`]).
+    pub(crate) volume: Option<String>,
 }
 
 impl ProbeError {
     pub(crate) fn into_message(self) -> String {
         self.message
     }
+
+    /// The import item of file `path` whose probe failed this way: the cause outside the file
+    /// typed as such ([`PreparedItem::Interrupted`]), else the file's own failure.
+    fn into_item(self, path: String) -> PreparedItem {
+        match self.why {
+            Some(why) => PreparedItem::Interrupted(Box::new(Interrupted { path, why, volume: self.volume, folder: None }), self.message),
+            None => PreparedItem::Failed(path, self.message),
+        }
+    }
 }
 
 impl From<String> for ProbeError {
     fn from(message: String) -> ProbeError {
-        ProbeError { message, not_responding: None }
+        ProbeError { message, why: None, volume: None }
     }
 }
 
@@ -1017,11 +1034,15 @@ fn probe_outcome(o: crate::io_sched::JobOutcome<Result<ProbeInfo, String>>, p: &
         JobOutcome::Done(r) => r.map_err(ProbeError::from),
         JobOutcome::NotStarted => Err(ProbeError::from(unreached.to_string())),
         JobOutcome::Cancelled => Err(ProbeError::from(String::from("cancelled"))),
-        JobOutcome::VolumeNotResponding { volume, .. } => {
-            Err(ProbeError { message: format!("{p}: volume not responding ({volume})"), not_responding: Some(volume.to_string()) })
-        }
+        JobOutcome::VolumeNotResponding { volume, .. } => Err(ProbeError {
+            message: format!("{p}: volume not responding ({volume})"),
+            why: Some(Interruption::VolumeNotResponding),
+            volume: Some(volume.to_string()),
+        }),
         JobOutcome::Panicked(m) => Err(ProbeError::from(format!("{p}: {m}"))),
-        JobOutcome::SchedulerStopped => Err(ProbeError::from(format!("{p}: not read: the I/O scheduler stopped"))),
+        JobOutcome::SchedulerStopped => {
+            Err(ProbeError { message: format!("{p}: not read: the I/O scheduler stopped"), why: Some(Interruption::SchedulerStopped), volume: None })
+        }
     }
 }
 
@@ -1742,16 +1763,10 @@ impl ImportJob {
                     plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
                     continue;
                 }
-                Err(ProbeError { message, not_responding }) => {
-                    log::warn!("import {path}: {message}");
+                Err(e) => {
+                    log::warn!("import {path}: {}", e.message);
                     self.done.fetch_add(1, Relaxed);
-                    plan.slots.push(Slot::Item(match not_responding {
-                        Some(volume) => PreparedItem::Interrupted(
-                            Box::new(Interrupted { path, why: Interruption::VolumeNotResponding, volume: Some(volume), folder: None }),
-                            message,
-                        ),
-                        None => PreparedItem::Failed(path, message),
-                    }));
+                    plan.slots.push(Slot::Item(e.into_item(path)));
                     continue;
                 }
             };
@@ -2112,7 +2127,10 @@ fn transfer_outcome(o: crate::io_sched::JobOutcome<PreparedItem>, path: String, 
             Some(interrupted(path, Interruption::VolumeNotResponding, Some(&volume), msg))
         }
         JobOutcome::Panicked(m) => Some(PreparedItem::Failed(path, m)),
-        JobOutcome::SchedulerStopped => Some(PreparedItem::Failed(path, format!("not {not_done}: the I/O scheduler stopped; the original is kept"))),
+        JobOutcome::SchedulerStopped => {
+            let msg = format!("not {not_done}: the I/O scheduler stopped; the original is kept");
+            Some(interrupted(path, Interruption::SchedulerStopped, None, msg))
+        }
     }
 }
 
@@ -2769,7 +2787,8 @@ mod prepared_tests {
     }
 
     /// The report keeps why a file failed when the cause was outside it, typed: a drive that
-    /// stopped responding, a copy left unfinished (with the folder a stray file may appear in);
+    /// stopped responding, a copy left unfinished (with the folder a stray file may appear in), the
+    /// app's file reader stopped;
     /// each is also in `failed` with its message, beside a file's own failure. A raw imported
     /// without the DNG Copy as DNG was to make gets a warning naming why, on its photo.
     #[test]
@@ -2791,6 +2810,7 @@ mod prepared_tests {
                 interrupted("/card/a.nef", Interruption::VolumeNotResponding, None),
                 interrupted("/card/b.nef", Interruption::OutcomeUnknown, Some("/lib/2026")),
                 PreparedItem::Failed("/card/c.nef".into(), "not a photo".into()),
+                interrupted("/card/e.nef", Interruption::SchedulerStopped, None),
                 PreparedItem::Ready(Box::new(ReadyFile {
                     path: "/card/d.nef".into(),
                     stored: raw,
@@ -2804,9 +2824,16 @@ mod prepared_tests {
         };
         let report = commit_prepared(&mut s, &ImportOptions::default(), "now", prepared).unwrap();
         let failed: Vec<&str> = report.failed.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(failed, ["/card/a.nef", "/card/b.nef", "/card/c.nef"]);
+        assert_eq!(failed, ["/card/a.nef", "/card/b.nef", "/card/c.nef", "/card/e.nef"]);
         let why: Vec<(&str, Interruption, Option<&str>)> = report.interrupted.iter().map(|i| (i.path.as_str(), i.why, i.folder.as_deref())).collect();
-        assert_eq!(why, [("/card/a.nef", Interruption::VolumeNotResponding, None), ("/card/b.nef", Interruption::OutcomeUnknown, Some("/lib/2026"))]);
+        assert_eq!(
+            why,
+            [
+                ("/card/a.nef", Interruption::VolumeNotResponding, None),
+                ("/card/b.nef", Interruption::OutcomeUnknown, Some("/lib/2026")),
+                ("/card/e.nef", Interruption::SchedulerStopped, None)
+            ]
+        );
         let id = report.imported.first().copied();
         assert!(id.is_some());
         let dng: Vec<(&str, ImportWarningCode, Option<u64>)> = report.warnings.iter().map(|w| (w.path.as_str(), w.code, w.photo)).collect();
@@ -2815,6 +2842,7 @@ mod prepared_tests {
         assert_eq!(v["interrupted"][0]["why"], "volumeNotResponding");
         assert_eq!(v["interrupted"][1]["why"], "outcomeUnknown");
         assert_eq!(v["interrupted"][1]["folder"], "/lib/2026");
+        assert_eq!(v["interrupted"][2]["why"], "schedulerStopped");
         assert_eq!(v["warnings"][0]["code"], "dngMemoryHeld");
         // with nothing interrupted the field is left out
         let none = ImportReport::default();

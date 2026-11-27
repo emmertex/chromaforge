@@ -1464,13 +1464,13 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.first().is_some_and(|r| r.is_ok()));
     assert!(r.get(1).and_then(msg).is_some_and(|e| e.starts_with("/a/boom: ") && e.contains("bad file")));
-    assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.not_responding.is_none())), "a panic isn't a volume's");
+    assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.why.is_none())), "a panic isn't a volume's");
     assert_eq!(done.load(Ordering::SeqCst), 3);
     let cancel = Arc::new(AtomicBool::new(true));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.iter().all(|r| msg(r) == Some("not probed")));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 1, &done, &cancel);
-    assert!(r.iter().all(|r| msg(r) == Some("cancelled") && r.as_ref().err().is_some_and(|e| e.not_responding.is_none())));
+    assert!(r.iter().all(|r| msg(r) == Some("cancelled") && r.as_ref().err().is_some_and(|e| e.why.is_none())));
     // one file, cancelled before it starts: not probed, as today's single-file path
     let ran = Arc::new(AtomicBool::new(false));
     let ran2 = ran.clone();
@@ -1488,11 +1488,15 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let cancel = Arc::new(AtomicBool::new(false));
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &["/c/0".to_string()], 4, &done, &cancel);
     assert_eq!(r.first().and_then(msg), Some("gone"), "the recovery job's own result");
-    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.not_responding.is_none()), Some(true), "its own failure, not the volume's");
+    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.why.is_none()), Some(true), "its own failure, not the volume's");
     let paths: Vec<String> = ["/c/1", "/c/2"].iter().map(|s| s.to_string()).collect();
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &paths, 4, &done, &cancel);
     assert_eq!(r.get(1).and_then(msg), Some("/c/2: volume not responding (/c)"));
-    assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).and_then(|e| e.not_responding.as_deref()), Some("/c"), "typed, not read from the message");
+    assert_eq!(
+        r.get(1).and_then(|r| r.as_ref().err()).map(|e| (e.why, e.volume.as_deref())),
+        Some((Some(crate::import::Interruption::VolumeNotResponding), Some("/c"))),
+        "typed, not read from the message"
+    );
 }
 
 /// Threads that checked a cached probe, and a latch the check waits on for `/a` (a hung share).

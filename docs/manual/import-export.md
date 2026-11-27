@@ -25,7 +25,9 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
   file in the destination folder that the library doesn't list; the original is always kept). The message at the end
   counts these apart from unreadable files ("not imported: a drive stopped responding"; "copies left unfinished",
   with the folder), and a batch the library couldn't add (a failed save) as "not added", with the reason;
-  `library.import` lists such files in `interrupted` (`why`: `volumeNotResponding` or `outcomeUnknown`). Cancel
+  `library.import` lists such files in `interrupted` (`why`: `volumeNotResponding` or `outcomeUnknown`; files the
+  app's file reader never read because it stopped on an internal error: `schedulerStopped`, counted as "not
+  imported: the app's file reader stopped; import them again"). Cancel
   returns even while a drive hangs; a raw waiting for Copy as DNG when you cancel is kept as its raw copy; a copy
   still being written to disk, read back or converted to DNG when you cancel is finished first instead of left
   unfinished (on a slow drive Cancel can then take up to several minutes).

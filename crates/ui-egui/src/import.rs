@@ -422,6 +422,8 @@ pub struct ImportTask {
     pub failed: usize,
     /// Files not imported because a drive they need stopped responding.
     pub not_responding: usize,
+    /// Files not imported because the app's file reader stopped (an internal error) first.
+    pub reader_stopped: usize,
     /// Copies or moves left unfinished (a drive stopped responding, or Cancel, while they were
     /// under way): a file may still appear in their destination folders, `unfinished_in`.
     pub unfinished: usize,
@@ -1334,21 +1336,29 @@ fn not_added(task: &mut ImportTask, n: usize, e: &str) {
 }
 
 /// Count a committed batch's failures (`v`, its report): `failed` lists every failure,
-/// `interrupted` says which were a drive's that stopped responding or a copy left unfinished
-/// (with its folder), not the file's own.
+/// `interrupted` says which were a drive's that stopped responding, a copy left unfinished (with
+/// its folder) or the app's file reader stopping, not the file's own. A reason this build doesn't
+/// know is counted as a failure (and logged), never as another reason.
 fn tally_failures(task: &mut ImportTask, v: &Value) {
+    use lcc_engine::import::Interruption;
     let interrupted = v.field("interrupted").as_array().map_or(&[][..], Vec::as_slice);
     task.failed += v.field("failed").as_array().map_or(0, Vec::len).saturating_sub(interrupted.len());
     for i in interrupted {
-        if *i.field("why") == "outcomeUnknown" {
-            task.unfinished += 1;
-            if let Some(folder) = i.field("folder").as_str()
-                && !task.unfinished_in.iter().any(|f| f == folder)
-            {
-                task.unfinished_in.push(folder.to_string());
+        match serde_json::from_value::<Interruption>(i.field("why").clone()) {
+            Ok(Interruption::OutcomeUnknown) => {
+                task.unfinished += 1;
+                if let Some(folder) = i.field("folder").as_str()
+                    && !task.unfinished_in.iter().any(|f| f == folder)
+                {
+                    task.unfinished_in.push(folder.to_string());
+                }
             }
-        } else {
-            task.not_responding += 1;
+            Ok(Interruption::VolumeNotResponding) => task.not_responding += 1,
+            Ok(Interruption::SchedulerStopped) => task.reader_stopped += 1,
+            Err(e) => {
+                log::warn!("import: {}: an interruption of an unknown kind ({e}): counted as a failure", i.field("path"));
+                task.failed += 1;
+            }
         }
     }
 }
@@ -1360,6 +1370,9 @@ fn interruptions(task: &ImportTask) -> String {
     let mut msg = String::new();
     if task.not_responding > 0 {
         msg.push_str(&crate::i18n::tr_format!(" · {n} not imported: a drive stopped responding", n = task.not_responding));
+    }
+    if task.reader_stopped > 0 {
+        msg.push_str(&crate::i18n::tr_format!(" · {n} not imported: the app's file reader stopped; import them again", n = task.reader_stopped));
     }
     if task.unfinished > 0 {
         msg.push_str(&match task.unfinished_in.as_slice() {
@@ -2664,8 +2677,8 @@ mod tests {
     }
 
     /// A batch's failures are told apart: a file's own failure is "not readable"; one a drive that
-    /// stopped responding kept out, and a copy left unfinished (with the folder a stray file may
-    /// appear in), are said as such; a batch the library couldn't add is "not added" with why,
+    /// stopped responding kept out, a copy left unfinished (with the folder a stray file may
+    /// appear in), and one the app's stopped file reader never read, are said as such; a batch the library couldn't add is "not added" with why,
     /// never "not readable". Nothing of the kind: no part at all.
     #[test]
     fn a_batchs_failures_are_told_apart() {
@@ -2691,12 +2704,23 @@ mod tests {
             &json!({"failed": [["/card/d.nef", "…"]], "interrupted": [{"path": "/card/d.nef", "why": "outcomeUnknown", "folder": "/lib/2027"}]}),
         );
         assert!(interruptions(&task).contains("copies left unfinished: 2 (files may still appear in their destination folders"));
+        // the app's file reader stopped before it read a file: neither unreadable nor a drive's; a
+        // reason this build doesn't know is a failure, not some other reason
+        tally_failures(
+            &mut task,
+            &json!({
+                "failed": [["/card/f.nef", "not read: the I/O scheduler stopped"], ["/card/g.nef", "…"]],
+                "interrupted": [{"path": "/card/f.nef", "why": "schedulerStopped"}, {"path": "/card/g.nef", "why": "somethingNew"}],
+            }),
+        );
+        assert_eq!((task.failed, task.not_responding, task.unfinished, task.reader_stopped), (2, 1, 2, 1));
+        assert!(interruptions(&task).contains(" · 1 not imported: the app's file reader stopped; import them again"), "{}", interruptions(&task));
         // a report with no `interrupted` (none): every failure is the file's own
         tally_failures(&mut task, &json!({"failed": [["/card/e.nef", "bad"]]}));
-        assert_eq!(task.failed, 2);
+        assert_eq!(task.failed, 3);
         not_added(&mut task, 64, "disk full");
         not_added(&mut task, 3, "another error");
-        assert_eq!((task.failed, task.not_added), (2, 67), "not counted as unreadable");
+        assert_eq!((task.failed, task.not_added), (3, 67), "not counted as unreadable");
         assert!(interruptions(&task).ends_with(" · 67 not added to the library: disk full"), "{}", interruptions(&task));
     }
 
