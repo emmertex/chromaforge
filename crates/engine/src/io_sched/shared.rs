@@ -8,7 +8,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use lcc_catalog::folders::VolumeKey;
@@ -92,15 +92,26 @@ pub(crate) struct Shared {
     /// The last wake from sleep, plus one (0: none).
     last_wake: AtomicU64,
     next_id: AtomicU64,
+    /// Entries outstanding (kept with the map, so the gate can skip the lock while there are none).
+    outstanding: AtomicUsize,
 }
 
 impl Shared {
     pub(crate) fn new(clock: Arc<dyn Clock>) -> Shared {
-        Shared { clock, state: Mutex::default(), last_wake: AtomicU64::new(0), next_id: AtomicU64::new(1) }
+        Shared { clock, state: Mutex::default(), last_wake: AtomicU64::new(0), next_id: AtomicU64::new(1), outstanding: AtomicUsize::new(0) }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether any abandoned job is outstanding (no lock: the gate asks on every wake).
+    pub(crate) fn has_entries(&self) -> bool {
+        self.outstanding.load(Ordering::Acquire) > 0
+    }
+
+    fn count_entries(&self, st: &State) {
+        self.outstanding.store(st.entries.len(), Ordering::Release);
     }
 
     pub(crate) fn next_id(&self) -> u64 {
@@ -246,11 +257,14 @@ impl Shared {
         let mut st = self.lock();
         let stall_time = stall_time_of(st.volumes.get(&job.volume));
         st.entries.insert(job.id, Entry { volume: job.volume.clone(), kind, abandoned_at: now, stall_time, job: job.clone() });
+        self.count_entries(&st);
     }
 
     /// The scheduler failed to claim the job (its thread finished first): no entry after all.
     pub(crate) fn drop_entry(&self, job_id: u64) {
-        let _ = self.lock().entries.remove(&job_id);
+        let mut st = self.lock();
+        let _ = st.entries.remove(&job_id);
+        self.count_entries(&st);
     }
 
     /// The job was abandoned: it no longer runs on its volume.
@@ -264,6 +278,7 @@ impl Shared {
     pub(crate) fn job_returned(&self, job: &JobState) {
         let mut st = self.lock();
         let _ = st.entries.remove(&job.id);
+        self.count_entries(&st);
         Self::end_recovery_locked(&mut st, &job.volume, job.id);
     }
 

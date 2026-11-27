@@ -38,6 +38,8 @@ pub(crate) struct JobState {
     /// Set when the gate refused the job because abandoned jobs hold memory (typed, for the
     /// metrics; nothing matches the error text).
     gate_failure: Mutex<Option<VolumeKey>>,
+    /// The work gate whose permits it holds or waits for, woken when the job is abandoned.
+    gate: Mutex<Option<Arc<crate::memory::GateCore>>>,
 }
 
 impl JobState {
@@ -56,6 +58,7 @@ impl JobState {
             permit_bytes: AtomicU64::new(0),
             status: AtomicU8::new(RUNNING),
             gate_failure: Mutex::new(None),
+            gate: Mutex::new(None),
         }
     }
 
@@ -138,9 +141,23 @@ impl JobState {
         self.status.compare_exchange(RUNNING, FINISHED, Ordering::AcqRel, Ordering::Acquire).is_ok()
     }
 
-    /// The scheduler abandons the job; `false` if its thread finished first.
+    /// The job holds or waits for permits of `gate` (an abandon wakes it).
+    pub(crate) fn attach_gate(&self, gate: &Arc<crate::memory::GateCore>) {
+        *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
+    }
+
+    /// The scheduler abandons the job; `false` if its thread finished first. Its gate is woken:
+    /// the job ends a wait there at once, and other waiters look again at the memory it strands.
     pub(crate) fn try_abandon(&self) -> bool {
-        self.status.compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire).is_ok()
+        let abandoned = self.status.compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire).is_ok();
+        if abandoned {
+            // (the gate's lock is taken after this one is let go: the gate's waiters take them the other way round)
+            let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            if let Some(g) = gate {
+                g.wake();
+            }
+        }
+        abandoned
     }
 
     pub(crate) fn record_gate_failure(&self, volume: Option<VolumeKey>) {

@@ -319,6 +319,67 @@ fn an_abandoned_waiter_ends_unread() {
     assert!(free.acquire_for_job(5).is_ok());
 }
 
+/// One admission rule for both acquires: a 0-byte request holds nothing and is admitted at once,
+/// even while the gate holds more than its limit (one oversized holder), with or without a job.
+#[test]
+fn a_zero_byte_request_never_waits() {
+    let reg = Reg::new();
+    let gate = leak(100);
+    let _big = gate.acquire(150);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(gate.acquire(0));
+        let _ = tx.send(());
+    });
+    assert!(rx.recv_timeout(AT_ONCE).is_ok(), "acquire(0) admitted at once");
+    assert_eq!(try_acquire(&reg, gate, 0, AT_ONCE), Some(Ok(())), "acquire_for_job(0) admitted at once");
+    // (1 byte still waits: it doesn't fit)
+    assert_eq!(try_acquire(&reg, gate, 1, WAITS), None);
+}
+
+/// The scheduler abandoning a waiter wakes the gate: the wait ends at once, not at its next look
+/// (which, with no abandoned job outstanding, is a second away).
+#[test]
+fn an_abandon_wakes_its_waiter_at_once() {
+    let reg = Reg::new();
+    let gate = leak(100);
+    let _holder = gate.acquire(100);
+    let j = reg.job("/b");
+    let j2 = j.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(with_job(Some(j2), || gate.acquire_for_job(10).map(drop)));
+    });
+    wait_until(|| j.at_gate(), "the waiter at the gate");
+    // (it has looked, found nothing outstanding and gone to sleep)
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(j.try_abandon());
+    assert_eq!(rx.recv_timeout(WAITS).ok(), Some(Err(GateError::Abandoned)));
+}
+
+/// A holder abandoned while another job waits (no entry outstanding when it began to wait) wakes
+/// the gate too: the waiter looks again at once and fails "cannot fit".
+#[test]
+fn an_abandoned_holder_wakes_the_waiters() {
+    let reg = Reg::new();
+    let gate = leak(100);
+    let x = reg.job("/a");
+    let held = with_job(Some(x.clone()), || gate.acquire_for_job(60)).unwrap();
+    let _other = gate.acquire(30);
+    let w = reg.job("/b");
+    let w2 = w.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(with_job(Some(w2), || gate.acquire_for_job(50).map(drop)));
+    });
+    wait_until(|| w.at_gate(), "the waiter at the gate");
+    std::thread::sleep(Duration::from_millis(50));
+    reg.shared.add_entry(&x, AbandonKind::Stall, reg.clock.mono());
+    assert!(x.try_abandon());
+    assert!(matches!(rx.recv_timeout(WAITS).ok(), Some(Err(GateError::CannotFit { .. }))));
+    drop(held);
+}
+
 // ---------------------------------------------------------------- the gate inside the scheduler
 
 /// Jobs on `vol` that take `bytes` of `gate` (through `acquire_for_job`), count a byte, and finish.

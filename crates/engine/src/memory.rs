@@ -200,11 +200,9 @@ pub fn cache_share(budget: usize) -> usize {
 /// A weighted semaphore over bytes of working memory: [`WorkGate::acquire`] waits while other
 /// holders already use the limit (one holder may always proceed, whatever its size).
 pub struct WorkGate {
-    /// Bytes held and the limit. Held is a `u128`: callers weigh work with saturating maths, so a
-    /// permit may hold `usize::MAX`, and the exact total of several such permits still fits, so
-    /// releasing one in any order leaves the others counted (issue #2576).
-    state: Mutex<(u128, usize)>,
-    cv: Condvar,
+    /// The held bytes, the limit and the waiters' condition (shared with the I/O jobs that hold
+    /// or wait for its permits, so abandoning one wakes its waiters at once).
+    core: std::sync::Arc<GateCore>,
     /// Acquires that had to wait, and their total wait (ms): what a benchmark reports as memory
     /// holding work back.
     waits: std::sync::atomic::AtomicU64,
@@ -240,21 +238,58 @@ impl std::fmt::Display for GateError {
     }
 }
 
-/// How long [`WorkGate::acquire_for_job`] waits between looks at its job and the limit.
-const JOB_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+/// A [`WorkGate`]'s state and its waiters' condition.
+pub(crate) struct GateCore {
+    /// Bytes held and the limit. Held is a `u128`: callers weigh work with saturating maths, so a
+    /// permit may hold `usize::MAX`, and the exact total of several such permits still fits, so
+    /// releasing one in any order leaves the others counted (issue #2576).
+    state: Mutex<(u128, usize)>,
+    cv: Condvar,
+}
 
-impl WorkGate {
-    pub fn new(limit: usize) -> WorkGate {
-        WorkGate { state: Mutex::new((0, limit)), cv: Condvar::new(), waits: Default::default(), waited_ms: Default::default() }
-    }
-
+impl GateCore {
     fn lock(&self) -> std::sync::MutexGuard<'_, (u128, usize)> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Wake every waiter to look again (an I/O job holding or waiting for a permit was abandoned).
+    /// The lock is taken first, so a waiter between its look and its wait can't miss it.
+    pub(crate) fn wake(&self) {
+        drop(self.lock());
+        self.cv.notify_all();
+    }
+}
+
+/// Whether a request of `bytes` must wait with `held` of `limit` held: never for 0 bytes (they
+/// hold nothing) or when nothing is held (one holder may always proceed); else when they don't
+/// fit. The one admission rule of [`WorkGate::acquire`] and [`WorkGate::acquire_for_job`].
+fn over(held: u128, limit: usize, bytes: usize) -> bool {
+    bytes > 0 && held > 0 && held.saturating_add(bytes as u128) > limit as u128
+}
+
+/// How long [`WorkGate::acquire_for_job`] waits between looks at the stranded memory while
+/// abandoned jobs are outstanding (their own clocks run, so it must look again).
+const JOB_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+/// … and while none is: every change it waits for (a permit dropped, a new limit, its own job
+/// or a holder abandoned) wakes it at once; this only bounds a wake missed by another gate.
+const JOB_IDLE_STEP: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl WorkGate {
+    pub fn new(limit: usize) -> WorkGate {
+        WorkGate {
+            core: std::sync::Arc::new(GateCore { state: Mutex::new((0, limit)), cv: Condvar::new() }),
+            waits: Default::default(),
+            waited_ms: Default::default(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (u128, usize)> {
+        self.core.lock()
+    }
+
     pub fn set_limit(&self, limit: usize) {
         self.lock().1 = limit;
-        self.cv.notify_all();
+        self.core.cv.notify_all();
     }
 
     /// Acquires that waited so far, and their total wait (ms).
@@ -268,14 +303,13 @@ impl WorkGate {
         (usize::try_from(g.0).unwrap_or(usize::MAX), g.1)
     }
 
-    /// Hold `bytes`, waiting until they fit (or nothing else is held). Even `usize::MAX` bytes on
-    /// a gate whose limit is `usize::MAX` make the next holder wait.
+    /// Hold `bytes`, waiting until they fit (or nothing else is held; 0 bytes never wait). Even
+    /// `usize::MAX` bytes on a gate whose limit is `usize::MAX` make the next holder wait.
     pub fn acquire(&self, bytes: usize) -> Permit<'_> {
         let mut g = self.lock();
-        let over = |g: &(u128, usize)| g.0 > 0 && g.0.saturating_add(bytes as u128) > g.1 as u128;
-        let start = over(&g).then(web_time::Instant::now);
-        while over(&g) {
-            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        let start = over(g.0, g.1, bytes).then(web_time::Instant::now);
+        while over(g.0, g.1, bytes) {
+            g = self.core.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
         if let Some(t) = start {
             self.count_wait(t.elapsed());
@@ -294,14 +328,16 @@ impl WorkGate {
     /// Hold `bytes` for an I/O job of the scheduler ([`crate::io_sched`]): as [`WorkGate::acquire`]
     /// when the thread runs no job; for a job, a wait that can end in an error.
     ///
-    /// - A request of 0 bytes is admitted at once (it holds nothing).
-    /// - The job's abandon flag set: [`GateError::Abandoned`], within about 100 ms.
-    /// - Otherwise admission is tried first (as `acquire`: when nothing is held, or the bytes fit);
-    ///   only a request the gate would not admit now is checked for "cannot fit": abandoned jobs
+    /// - Admission is tried first, by `acquire`'s own rule (a request of 0 bytes, or any when
+    ///   nothing is held, or one that fits, is admitted at once).
+    /// - The job's abandon flag set: [`GateError::Abandoned`] at once (the scheduler wakes the
+    ///   gate when it abandons a job that holds or waits for its permits).
+    /// - Only a request the gate would not admit now is checked for "cannot fit": abandoned jobs
     ///   stalled on their own clocks hold A > 0 bytes and A + B exceeds the limit, so held never
-    ///   falls low enough ([`GateError::CannotFit`], naming the volume holding the most).
+    ///   falls low enough ([`GateError::CannotFit`], naming the volume holding the most). The
+    ///   registry is only locked for this while abandoned jobs are outstanding.
     /// - Else it waits however long (a legitimate holder may keep memory for minutes), re-reading
-    ///   the limit at every step ([`set_budget`] may change it), with the job marked "at the gate"
+    ///   the limit at every wake ([`set_budget`] may change it), with the job marked "at the gate"
     ///   so its volume's stall clock pauses.
     ///
     /// On a grant the gate adds the bytes, then the job records them; the permit's drop clears
@@ -314,17 +350,21 @@ impl WorkGate {
         }
         let need = bytes as u128;
         let mut g = self.lock();
+        // (before the abandon flag is read below: an abandon after this finds the gate to wake)
+        job.attach_gate(&self.core);
+        let shared = job.shared();
         let mut start: Option<web_time::Instant> = None;
         let result = loop {
             if job.is_abandoned() {
                 break Err(GateError::Abandoned);
             }
-            if need == 0 || !(g.0 > 0 && g.0.saturating_add(need) > g.1 as u128) {
+            if !over(g.0, g.1, bytes) {
                 g.0 = g.0.saturating_add(need);
                 job.permit_add(bytes);
                 break Ok(());
             }
-            if let Some(shared) = job.shared() {
+            let outstanding = shared.as_ref().is_some_and(|s| s.has_entries());
+            if outstanding && let Some(shared) = &shared {
                 // (lock order: the gate, then the registry)
                 let (stranded, volume) = shared.stranded(job.now());
                 if stranded > 0 && stranded.saturating_add(need) > g.1 as u128 {
@@ -336,7 +376,8 @@ impl WorkGate {
                 start = Some(web_time::Instant::now());
                 job.set_at_gate(true);
             }
-            g = match self.cv.wait_timeout(g, JOB_WAIT_STEP) {
+            let step = if outstanding { JOB_WAIT_STEP } else { JOB_IDLE_STEP };
+            g = match self.core.cv.wait_timeout(g, step) {
                 Ok((g, _)) => g,
                 Err(e) => e.into_inner().0,
             };
@@ -366,7 +407,8 @@ impl Drop for Permit<'_> {
         let mut g = self.gate.lock();
         g.0 = g.0.saturating_sub(self.bytes as u128);
         drop(g);
-        self.gate.cv.notify_all();
+        // (every waiter: which ones fit now depends on each one's size)
+        self.gate.core.cv.notify_all();
     }
 }
 
