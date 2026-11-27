@@ -142,8 +142,8 @@ pub fn apply(s: &mut Session, results: Vec<(Unread, std::result::Result<ProbeInf
                 }
             }
         }
-        let family = crate::cmd::convert::Sha1To::Family;
-        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, family, &mut ops, &mut out.updated, &mut hashed);
+        let reach = crate::cmd::convert::Reach::Family;
+        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, reach, &mut ops, &mut out.updated, &mut hashed);
     }
     if !ops.is_empty() {
         s.apply_system(Op::Batch { ops })?;

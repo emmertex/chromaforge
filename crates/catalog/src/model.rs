@@ -431,7 +431,10 @@ pub struct Photo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_baseline: Option<u64>,
     /// SHA-1 of the original file's bytes (hex), as remote services such as Immich identify
-    /// assets by it. Catalog format 4.
+    /// assets by it. Catalog format 4. Set once, from the first read that hashes the file (import,
+    /// Read Originals, Reload, a relink, the background back-fill) and kept: device sync keys the
+    /// photo by it, so a later change of the file's bytes (an external editor, a relink to another
+    /// export) doesn't replace it; [`Photo::content_hash`] follows the bytes instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha1: Option<String>,
     /// The state at the last read from / write to the XMP sidecar (see [`crate::xmp_state`]).
@@ -693,7 +696,10 @@ pub fn preview_stamp(preview_only: &Option<String>) -> String {
 
 /// Whether `s` is a SHA-1 as [`Photo::sha1`] holds it: exactly 40 hex digits (either case, nothing
 /// around them). [`crate::Op::SetSha1`] refuses anything else, so a caller filtering a probed value
-/// before building the op asks this, not its own copy of the rule.
+/// before building the op asks this, not its own copy of the rule. It is the catalog's storage
+/// rule; reading a stored value back (device sync's keys) goes through `lcc_hash::Sha1Digest`,
+/// whose parser is looser (it trims, and also takes base64), so whatever this accepts parses there
+/// to the same digest — the engine's `tests_reload_sha1` pins that.
 pub fn is_sha1_hex(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }

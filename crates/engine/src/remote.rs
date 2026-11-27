@@ -370,12 +370,16 @@ impl State {
 
 /// The photos whose SHA-1 is still unknown: library photos from files (virtual copies share
 /// their master's file and are skipped), minus those that failed this session; at most `limit`
-/// (one batch: a large library is not copied path by path for every batch).
+/// (one batch: a large library is not copied path by path for every batch). A photo whose original
+/// is still to be read ([`crate::cmd::read_originals::is_unread`]) is left to that read, which
+/// computes the SHA-1 too: hashing it here as well would read each such file twice while the two
+/// run side by side. One device sync wants hashed first ([`State::sha1_first`]) is hashed anyway.
 pub(crate) fn sha1_pending(s: &crate::Session, limit: usize) -> Vec<(PhotoId, String)> {
     let first = s.remote.sha1_first.iter().filter_map(|id| s.catalog.photo(*id));
+    let rest = s.catalog.photos().filter(|p| !crate::cmd::read_originals::is_unread(p));
     let mut seen = std::collections::HashSet::new();
     first
-        .chain(s.catalog.photos())
+        .chain(rest)
         .filter(|p| seen.insert(p.id))
         .filter(|p| crate::cmd::convert::takes_sha1(p) && !s.remote.sha1_failed.contains(&p.id))
         .filter_map(|p| match &p.source {
@@ -403,6 +407,12 @@ pub(crate) fn spawn_sha1(tx: Sender<Msg>, batch: Vec<(PhotoId, String)>) {
 /// Why a link-only photo shows a preview ([`lcc_catalog::Photo::preview_only`]): the original stays
 /// on the server until the photo is opened in Develop.
 pub const LINK_ONLY: &str = "Immich link only: the original is downloaded when the photo is opened in Develop";
+
+/// Whether `p` is an Immich link-only photo: its file is the server's preview, its original stays on
+/// the server ([`LINK_ONLY`]). The one test for it, so nothing else compares the message.
+pub fn is_link_only(p: &lcc_catalog::Photo) -> bool {
+    p.preview_only.as_deref() == Some(LINK_ONLY)
+}
 
 /// What [`crate::Session::secret_store`] says when the keys need the encrypted file's passphrase.
 pub const NEEDS_PASSPHRASE: &str = "unlock the encrypted key file with its passphrase (Settings → Connections)";
@@ -547,7 +557,9 @@ mod tests {
     fn sha1_pending_stops_at_the_batch() {
         let mut s = crate::Session::new();
         for i in 0..100u64 {
-            let p = Photo::new(PhotoId(i + 1), Source::File { path: format!("/x/{i}.jpg") }, "a.jpg", "JPEG", 10, 10, "2026-01-01T00:00:00");
+            let mut p = Photo::new(PhotoId(i + 1), Source::File { path: format!("/x/{i}.jpg") }, "a.jpg", "JPEG", 10, 10, "2026-01-01T00:00:00");
+            // (read from its file: one still to be read is left to read-originals)
+            p.content_hash = Some(format!("hash-{i}"));
             s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         }
         let first = super::sha1_pending(&s, super::SHA1_BATCH);

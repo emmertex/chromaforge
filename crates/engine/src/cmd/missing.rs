@@ -90,15 +90,16 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
 /// camera and exposure fields it never had, and the lens data and as-shot white balance the file
 /// carries (adapted from upstream #3969). `changed` gets the photos whose records change; `hashed`
 /// gets `id` when it takes the new file's SHA-1, to queue once committed
-/// ([`crate::cmd::convert::queue_link_check`]). Only `id` itself does, never its family: the family is
-/// read before the relink applies and still names the old file.
+/// ([`crate::cmd::convert::queue_link_check`]). Only `id` itself takes any of the new file's facts,
+/// never its family ([`crate::cmd::convert::Reach::Target`]): the family is read before the relink
+/// applies and still names the old file.
 pub(crate) fn relink_ops(s: &Session, id: PhotoId, path: &str, changed: &mut Vec<PhotoId>, hashed: &mut Vec<PhotoId>) -> Vec<Op> {
     let mut ops = vec![relink_op(id, path)];
     if s.media.file_probe.is_some()
         && let Some(Ok(info)) = crate::import::probe_paths(s, std::slice::from_ref(&path.to_string())).pop()
     {
-        let target = crate::cmd::convert::Sha1To::Target;
-        crate::cmd::convert::reload_ops(&s.catalog, id, &info, target, &mut ops, changed, hashed);
+        let reach = crate::cmd::convert::Reach::Target;
+        crate::cmd::convert::reload_ops(&s.catalog, id, &info, reach, &mut ops, changed, hashed);
     }
     ops
 }

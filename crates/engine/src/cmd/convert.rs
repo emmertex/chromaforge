@@ -285,7 +285,7 @@ pub(crate) fn content_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info
     })
 }
 
-/// Ops that fill a photo's empty camera fields (camera, lens, exposure, GPS, capture time) from a fresh probe.
+/// Ops that fill a photo's empty camera fields (camera, serial, lens, exposure, GPS, capture time) from a fresh probe.
 pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     let (mut m, src) = (ph.meta.clone(), &info.meta);
     let before = m.clone();
@@ -309,6 +309,12 @@ pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Phot
     if m.lens_make.is_empty() {
         m.lens_make = src.lens_make.clone();
     }
+    // the body's serial keys its sensor maps and the camera body; a Lightroom catalog import has
+    // none of these (its catalog gives make, model and lens only)
+    if m.camera_serial.is_empty() {
+        m.camera_serial = src.camera_serial.clone();
+    }
+    m.lens_range = m.lens_range.or(src.lens_range);
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
         m.exposure_time = src.exposure_time;
@@ -405,23 +411,26 @@ pub(crate) fn as_shot_wb_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, i
     (ph.develops_raw() && !ph.relative_wb() && ph.as_shot_wb != Some(read)).then_some(Op::SetAsShotWb { id, wb: Some(read) })
 }
 
-/// Which photos a reload gives the probe's SHA-1 to ([`reload_ops`]).
+/// Which photos a probe's results reach ([`reload_ops`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Sha1To {
-    /// The photo and the rest of its same-file family, each where [`takes_sha1`] holds: a reload of a
-    /// virtual copy gives its master the SHA-1 (copies themselves never take one).
+pub(crate) enum Reach {
+    /// The photo and the rest of its same-file family: a reload of a virtual copy refreshes its
+    /// master and the other copies on that file too, and gives the master the SHA-1 (copies
+    /// themselves never take one, [`takes_sha1`]).
     Family,
-    /// Only the photo itself, and only where [`takes_sha1`] holds: a relink, probed before its
-    /// [`Op::Relink`] applies, so the family still names the old file and the new file's SHA-1 would
-    /// key them under the wrong bytes.
+    /// Only the photo itself: a relink, probed before its [`Op::Relink`] applies. Its family still
+    /// names the old file, so none of the new file's facts (content hash, size, dimensions, lens,
+    /// white balance, SHA-1) are theirs.
     Target,
 }
 
-/// Whether `p` takes a SHA-1 computed from its file: it has none yet, is no virtual copy, is not a
-/// photo kept only on this device, and its file is its original (not an Immich link-only photo's
-/// preview). The SHA-1 back-fill ([`crate::remote::sha1_pending`]) hashes the same photos.
+/// Whether `p` takes a SHA-1 computed from its file: it has none yet, is no virtual copy, is in the
+/// library (not in Recently Deleted, not only browsed in a folder: [`lcc_catalog::Photo::in_library`]),
+/// and its file is its original (not an Immich link-only photo's preview). The SHA-1 back-fill
+/// ([`crate::remote::sha1_pending`]), the Immich back-fill's result and a vignetting calibration's
+/// reference ask this too.
 pub(crate) fn takes_sha1(p: &lcc_catalog::Photo) -> bool {
-    p.sha1.is_none() && p.copy_of.is_none() && !p.local && !super::recheck::link_only(p) && matches!(p.source, Source::File { .. })
+    p.sha1.is_none() && p.copy_of.is_none() && p.in_library() && !super::recheck::link_only(p) && matches!(p.source, Source::File { .. })
 }
 
 /// The op that records a probe's SHA-1 for `ph`, when it [`takes_sha1`] and the probe's value is one
@@ -434,15 +443,16 @@ fn sha1_op(ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Option<Op
 
 /// The ops that bring photo `id` and its virtual copies up to date with what their file is now
 /// (`info`, a fresh probe), appended to `ops`; the photos whose file facts change are appended to
-/// `changed`. Photos given the probe's SHA-1 (`sha1_to`) are appended to `hashed` instead (the caller
-/// queues them for the Immich checksum lookup, `remote::State::link_queue`, once the ops are
-/// committed); one given only a SHA-1 is not in `changed`. Read Originals, Reload, the preview-only
-/// recheck (`library.recheckPreviewOnly`) and relinking share it.
+/// `changed`. `reach` says whether the photo's same-file family takes them too ([`Reach`]). Photos
+/// given the probe's SHA-1 are appended to `hashed` instead (the caller queues them for the Immich
+/// checksum lookup, [`queue_link_check`], once the ops are committed); one given only a SHA-1 is not
+/// in `changed`. Read Originals, Reload, the preview-only recheck (`library.recheckPreviewOnly`) and
+/// relinking share it.
 pub(crate) fn reload_ops(
     cat: &lcc_catalog::Catalog,
     id: lcc_catalog::PhotoId,
     info: &crate::media::ProbeInfo,
-    sha1_to: Sha1To,
+    reach: Reach,
     ops: &mut Vec<Op>,
     changed: &mut Vec<lcc_catalog::PhotoId>,
     hashed: &mut Vec<lcc_catalog::PhotoId>,
@@ -467,12 +477,13 @@ pub(crate) fn reload_ops(
         ops.append(&mut mine);
         changed.push(id);
     }
-    // A selected copy refreshes its same-file family too, but only the explicit target gets missing descriptive
-    // metadata above. Relinked copies keep their own file facts.
+    // A selected copy refreshes its same-file family too, but only the explicit target gets missing camera fields
+    // above. Relinked copies keep their own file facts, and a relink reaches no one but its target.
+    if reach == Reach::Target {
+        return;
+    }
     for c in cat.photos().filter(|c| c.id != id && shares_reload_source(c, ph)) {
-        if sha1_to == Sha1To::Family {
-            give_sha1(c, ops);
-        }
+        give_sha1(c, ops);
         // Copies may have independently edited metadata: repair only a recognisable legacy shutter value, not every
         // missing field on the copy (upstream #1692).
         let mut meta = c.meta.clone();
@@ -1081,7 +1092,7 @@ mod tests {
         info.meta.exposure_time = Some(0.4);
         info.meta.title = "File title".into();
         let (mut ops, mut changed, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
-        reload_ops(&cat, source.id, &info, Sha1To::Family, &mut ops, &mut changed, &mut hashed);
+        reload_ops(&cat, source.id, &info, Reach::Family, &mut ops, &mut changed, &mut hashed);
         for op in ops {
             cat.apply(op).unwrap();
         }
