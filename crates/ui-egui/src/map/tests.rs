@@ -805,3 +805,49 @@ fn a_pin_hover_card_steps_through_the_pins_photos_and_selects_one() {
     h.step();
     assert!(widget(&h, "map:hover").is_some() && widget(&h, "map:hover:next").is_none());
 }
+
+/// Lightroom Classic: one click on a filmstrip thumbnail brings the map to that photo at the zoom
+/// it has, gliding when the pin is near and jumping when it is far; no position, no move.
+#[test]
+fn one_filmstrip_click_centres_the_map_on_the_photo_and_keeps_the_zoom() {
+    let mut h = map_on_fake_tiles();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": [ids[0], ids[1]]}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.86, "lon": 2.37}));
+    run(&mut h, "map.geotag", json!({"ids": [ids[1]], "lat": 40.42, "lon": -3.70}));
+    run(&mut h, "library.select", json!({"ids": []}));
+    // the filmstrip lists every photo (the Location Filter is off)
+    run(&mut h, "map.filter", json!({"filter": "all"}));
+    h.settle(SETTLE);
+    let zoom = h.app.map.prefs.zoom;
+    let near = |h: &Headless, lat: f64, lon: f64| {
+        let c = h.app.map.centre();
+        (c.lat - lat).abs() < 1e-4 && (c.lon - lon).abs() < 1e-4
+    };
+    // near: on its way after one frame, there once the glide is over
+    let r = h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[0])}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(h.app.map.glide.is_some(), "a pin a few hundred pixels away: the map glides");
+    assert!(!near(&h, 48.86, 2.37), "not there in one frame");
+    assert!(h.step_until(T, |h| h.app.map.glide.is_none()), "the glide ends");
+    h.settle(SETTLE);
+    assert!(near(&h, 48.86, 2.37), "centred on the photo: {:?}", h.app.map.centre());
+    assert_eq!(h.app.map.prefs.zoom, zoom, "the zoom stays");
+    assert_eq!(h.app.session.selection.ids, vec![lcc_catalog::PhotoId(ids[0])], "the click selects it too");
+    // far: there at once
+    h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[1])}), T);
+    h.step();
+    assert!(h.app.map.glide.is_none() && near(&h, 40.42, -3.70), "Madrid from Paris at zoom 12: a jump");
+    assert_eq!(h.app.map.prefs.zoom, zoom);
+    // no position: the map stays
+    h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[2])}), T);
+    h.settle(SETTLE);
+    assert!(near(&h, 40.42, -3.70));
+    // a drag, zoom or search during a glide ends it where it is
+    let mut m = crate::map::MapUi::default();
+    m.prefs.lat = 0.0;
+    m.prefs.lon = 0.0;
+    m.glide = Some(crate::map::Glide { from: (0.5, 0.5), to: (0.6, 0.5), start: 0.0, last: lcc_geo::LatLon::new(1.0, 1.0) });
+    assert!(!crate::map::glide_step(&mut m, 0.1) && m.glide.is_none(), "a map moved by something else stops gliding");
+}
