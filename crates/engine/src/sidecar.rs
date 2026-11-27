@@ -911,9 +911,19 @@ pub const OWNED: &[&str] = &[
     "xmpRights:WebStatement",
     "photoshop:AuthorsPosition",
     "Iptc4xmpCore:CreatorContactInfo",
+    // the IPTC fields the app edits beyond the core ones (photo.setMeta, metadata presets): without them here an edit
+    // reached only a new sidecar, and the next read put the old value back
+    "photoshop:Headline",
+    "photoshop:CaptionWriter",
+    "photoshop:Category",
+    "photoshop:SupplementalCategories",
+    "Iptc4xmpCore:SubjectCode",
+    "Iptc4xmpCore:CountryCode",
     "lc:*",
     "lcvid:*",
     "lcpx:*",
+    // plug-in custom metadata fields (`lcc_meta::plugin_fields_ns`): the app writes them all, so a save replaces them
+    "lcpf:*",
 ];
 
 /// Properties replaced only when the app has a value (capture time, GPS): otherwise the
