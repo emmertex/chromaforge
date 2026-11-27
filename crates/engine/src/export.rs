@@ -3605,12 +3605,22 @@ fn run_batch_with(
     }
     let heads: Vec<_> = items.iter().map(|i| (i.photo, i.file_name.clone(), i.guard.clone(), i.source_dir.clone())).collect();
     let lanes = lanes.max(1);
+    // lanes chosen by hand are kept as they are; the automatic ones follow the GPU's share of the work (#1377)
+    let adaptive = export_lanes_override().is_none() && lanes > MIN_ADAPTIVE_LANES;
     let queue = std::sync::Arc::new(Queue {
-        lane: std::sync::Mutex::new(Lane { items: items.into_iter().map(Some).collect(), next: 0, placed: 0, stop: false, done: Default::default() }),
+        lane: std::sync::Mutex::new(Lane {
+            items: items.into_iter().map(Some).collect(),
+            next: 0,
+            placed: 0,
+            running: 0,
+            stop: false,
+            done: Default::default(),
+        }),
         cv: std::sync::Condvar::new(),
         ahead: lanes,
         cancel: cancel.clone(),
         lanes: std::sync::atomic::AtomicUsize::new(0),
+        split: adaptive.then(|| std::sync::Mutex::new(Split::new(lanes))),
     });
     // stops the lanes however this thread leaves: an error, a cancel, a panic in `progress` or the
     // placer (lanes still in flight then stop at their next step on their own)
@@ -3670,6 +3680,9 @@ struct Queue {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Lane threads started.
     lanes: std::sync::atomic::AtomicUsize,
+    /// How many photos run at once, from the GPU's measured share of the work; `None`: every lane runs (lanes set
+    /// by hand, or too few to adapt).
+    split: Option<std::sync::Mutex<Split>>,
 }
 
 struct Lane {
@@ -3678,6 +3691,8 @@ struct Lane {
     next: usize,
     /// Photos handed to the placer so far.
     placed: usize,
+    /// Photos started and not finished.
+    running: usize,
     stop: bool,
     done: std::collections::HashMap<usize, Result<Exported, String>>,
 }
@@ -3687,8 +3702,75 @@ impl Lane {
         let i = self.next;
         let item = self.items.get_mut(i)?.take()?;
         self.next += 1;
+        self.running += 1;
         Some((i, item))
     }
+}
+
+/// The fewest photos an adaptive batch runs at once: one decoding and encoding on the processor while another
+/// renders on the GPU.
+const MIN_ADAPTIVE_LANES: usize = 2;
+/// The GPU's share of a stretch of the batch at or above which it is the bottleneck: photos beyond those it keeps
+/// busy only wait for it, holding their decoded originals in memory.
+const GPU_SATURATED: f64 = 0.9;
+/// The share below which it waits for the processor: a photo more keeps it fed (up to the automatic lanes).
+const GPU_STARVED: f64 = 0.7;
+
+/// The split between the processor's and the GPU's work in an export batch, measured as it runs (#1377): the time
+/// the GPU had work, against the time that passed, over each stretch of photos. The batch runs as many photos at
+/// once as keep the GPU fed without photos queueing for it: fewer when it is saturated (each waiting photo holds a
+/// decoded 45 MP original), more again when it waits, never more than the automatic lanes nor fewer than
+/// [`MIN_ADAPTIVE_LANES`]. Without a GPU (its share 0) every lane runs, as before.
+struct Split {
+    /// Photos that may run at once now.
+    limit: usize,
+    max: usize,
+    /// The stretch being measured: when it started, the GPU's busy time then, photos finished in it.
+    since: web_time::Instant,
+    busy: std::time::Duration,
+    finished: usize,
+    _meter: lcc_gpu::BusyHold,
+}
+
+impl Split {
+    fn new(lanes: usize) -> Split {
+        let meter = lcc_gpu::hold_busy_meter();
+        Split { limit: lanes, max: lanes, since: web_time::Instant::now(), busy: lcc_gpu::busy_time(), finished: 0, _meter: meter }
+    }
+
+    /// A photo finished: at the end of a stretch (twice the photos running, so the first photos' decodes and the
+    /// last ones' encodes don't decide it), size the lanes from the GPU's share of it.
+    fn finished(&mut self) {
+        self.finished += 1;
+        if self.finished < self.limit.saturating_mul(2).max(4) {
+            return;
+        }
+        let (now, busy) = (web_time::Instant::now(), lcc_gpu::busy_time());
+        let wall = now.saturating_duration_since(self.since).as_secs_f64();
+        let share = if wall > 0.0 { busy.saturating_sub(self.busy).as_secs_f64() / wall } else { 0.0 };
+        let next = next_lane_limit(self.limit, self.max, share);
+        if next != self.limit && lcc_pipeline::profiling() {
+            eprintln!("[profile] export: GPU busy {:.0} % of the last {} photos: {} photos at once", share * 100.0, self.finished, next);
+        }
+        *self = Split { limit: next, max: self.max, since: now, busy, finished: 0, _meter: lcc_gpu::hold_busy_meter() };
+    }
+}
+
+/// Photos at once after a stretch in which the GPU had work `share` of the time (0 to 1), running `limit` of at most
+/// `max`: one fewer when it was saturated, one more when it waited, else the same.
+fn next_lane_limit(limit: usize, max: usize, share: f64) -> usize {
+    let lo = MIN_ADAPTIVE_LANES.min(max);
+    if !share.is_finite() {
+        return limit.clamp(lo, max.max(lo));
+    }
+    let next = if share >= GPU_SATURATED {
+        limit.saturating_sub(1)
+    } else if share < GPU_STARVED {
+        limit.saturating_add(1)
+    } else {
+        limit
+    };
+    next.clamp(lo, max.max(lo))
 }
 
 /// How often the placer looks at the cancel flag while it waits for a photo.
@@ -3712,8 +3794,17 @@ impl Queue {
         self.cancelled() || self.lock().stop
     }
 
+    /// Photos that may run at once now ([`Split`]).
+    fn limit(&self) -> usize {
+        self.split.as_ref().map_or(usize::MAX, |s| s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).limit)
+    }
+
     fn finish(&self, i: usize, r: Result<Exported, String>) {
+        if let Some(s) = &self.split {
+            s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finished();
+        }
         let mut l = self.lock();
+        l.running = l.running.saturating_sub(1);
         // (a cancelled or ended batch keeps no results nobody will collect)
         if !l.stop && !self.cancelled() {
             l.done.insert(i, r);
@@ -3730,7 +3821,7 @@ impl Queue {
                 if l.stop || self.cancelled() || l.next >= l.items.len() {
                     return;
                 }
-                if l.next < l.placed.saturating_add(self.ahead) {
+                if l.next < l.placed.saturating_add(self.ahead) && l.running < self.limit() {
                     match l.take_next() {
                         Some(t) => break t,
                         None => return,
@@ -3953,6 +4044,30 @@ mod tests_two_cards {
         );
         let saved: ExportCards = serde_json::from_value(serde_json::json!("second")).unwrap();
         assert_eq!(saved, ExportCards::Second);
+    }
+
+    /// #1377: the automatic lanes follow the GPU's measured share: one fewer while it is saturated, one more while it
+    /// waits, never past the automatic count nor under two; without a GPU (share 0) every lane runs.
+    #[test]
+    fn lanes_follow_the_gpus_share_of_the_work() {
+        // saturated: down one step at a time, to two
+        let mut l = 8;
+        for _ in 0..10 {
+            l = super::next_lane_limit(l, 8, 0.97);
+        }
+        assert_eq!(l, 2);
+        // waiting for the processor: back up, to the automatic lanes
+        for _ in 0..10 {
+            l = super::next_lane_limit(l, 8, 0.4);
+        }
+        assert_eq!(l, 8);
+        // in between: kept
+        assert_eq!(super::next_lane_limit(5, 8, 0.8), 5);
+        // no GPU: every lane
+        assert_eq!(super::next_lane_limit(8, 8, 0.0), 8);
+        // a reading that isn't a number changes nothing; one lane stays one
+        assert_eq!(super::next_lane_limit(5, 8, f64::NAN), 5);
+        assert_eq!(super::next_lane_limit(1, 1, 0.99), 1);
     }
 
     #[test]
