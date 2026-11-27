@@ -107,6 +107,17 @@ pub struct Manifest {
     /// without it cut rows. Unknown values mean rows.
     #[serde(default, deserialize_with = "lenient_bands", skip_serializing_if = "Bands::is_rows")]
     pub bands: Bands,
+    /// Whether the host measures a new entry by itself (`"analyze": "manual" | "auto"`, ABI v1.1, #1395):
+    /// with `auto`, an entry of a filter with `pc_analyze` that has no measurement is measured in the
+    /// background as soon as its photo is open, so the filter acts without a Measure click. Hosts
+    /// without it, and unknown values, mean manual.
+    #[serde(default, deserialize_with = "lenient_analyze", skip_serializing_if = "Analyze::is_manual")]
+    pub analyze: Analyze,
+    /// Parameters whose change makes the measurement stale (`"analyzeParams": ["…"]`, ABI v1.1, #1395):
+    /// setting one drops the entry's measurement (an `auto` filter is then measured again). Names that
+    /// aren't parameters of the filter are dropped by [`Manifest::parse`].
+    #[serde(default, deserialize_with = "lenient_names", skip_serializing_if = "Vec::is_empty")]
+    pub analyze_params: Vec<String>,
     /// Display labels of parameters that declare one (`{"type": …, "label": "Dynamic range"}`), by
     /// parameter name. Read by [`Manifest::parse`]; labels that aren't 1-64 printable characters are dropped.
     #[serde(skip)]
@@ -251,6 +262,38 @@ pub enum AnalyzeArea {
     Crop,
 }
 
+/// When a filter's `pc_analyze` runs (see [`Manifest::analyze`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Analyze {
+    /// When the user asks (Measure).
+    #[default]
+    Manual,
+    /// Also by itself, whenever an entry has no measurement.
+    Auto,
+}
+
+impl Analyze {
+    fn is_manual(&self) -> bool {
+        *self == Analyze::Manual
+    }
+}
+
+/// The key of `pc_analyze`'s result whose string the host shows beside "Measured" (ABI v1.1, #1398).
+pub const STATUS_KEY: &str = "_status";
+
+/// Longest status line shown, in characters.
+pub const MAX_STATUS_CHARS: usize = 120;
+
+/// The status line a measurement carries under [`STATUS_KEY`]: a string of 1 to [`MAX_STATUS_CHARS`]
+/// printable characters, trimmed. Anything else (another type, control or hidden formatting
+/// characters, too long, blank) is no status.
+pub fn analysis_status(analysis: &Value) -> Option<&str> {
+    let t = analysis.get(STATUS_KEY)?.as_str()?.trim();
+    let ok = t.chars().count() <= MAX_STATUS_CHARS && t.chars().all(|c| !c.is_control() && !hidden_format(c)) && t.chars().any(visible);
+    ok.then_some(t)
+}
+
 /// How the image is cut into bands (see [`Manifest::bands`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +350,17 @@ fn lenient_area<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<A
     Ok(if v.as_str() == Some("crop") { AnalyzeArea::Crop } else { AnalyzeArea::Frame })
 }
 
+fn lenient_analyze<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Analyze, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(if v.as_str() == Some("auto") { Analyze::Auto } else { Analyze::Manual })
+}
+
+/// A list of names, or none when it isn't an array of strings.
+fn lenient_names<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(v.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default())
+}
+
 fn lenient_stage<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<Stage>, D::Error> {
     let v = Value::deserialize(d)?;
     Ok(match v.as_str() {
@@ -361,6 +415,15 @@ impl Manifest {
         (man.about, man.dropped) = About::parse(&raw);
         dropped_pictures(&raw, &mut man.dropped);
         man.sections = param_sections(raw.get("sections"), &man.params);
+        // (only the filter's own parameters, each once)
+        let mut seen = Vec::new();
+        man.analyze_params.retain(|k| {
+            let keep = man.params.iter().any(|(n, _)| n == k) && !seen.contains(k);
+            if keep {
+                seen.push(k.clone());
+            }
+            keep
+        });
         man.shortcut = raw
             .get("shortcut")
             .and_then(Value::as_str)
@@ -690,6 +753,42 @@ mod tests {
         assert_eq!(Manifest::parse(with(r#","analyzeArea":"crop""#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Crop);
         assert_eq!(Manifest::parse(with(r#","analyzeArea":"somewhere""#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Frame);
         assert_eq!(Manifest::parse(with(r#","analyzeArea":7"#).as_bytes()).unwrap().analyze_area, AnalyzeArea::Frame);
+    }
+
+    // #1395: `analyze` is manual unless a filter asks for auto; `analyzeParams` keeps the filter's own parameters
+    #[test]
+    fn analyze_is_manual_unless_a_filter_asks_and_its_params_are_its_own() {
+        let with = |v: &str| {
+            format!(
+                r#"{{"id":"a.b","name":"A","kind":"filter","params":{{"level":{{"type":"number","min":0,"max":1,"default":0}},"mode":{{"type":"bool","default":false}}}}{v}}}"#
+            )
+        };
+        let m = |v: &str| Manifest::parse(with(v).as_bytes()).unwrap();
+        assert_eq!(m("").analyze, Analyze::Manual);
+        assert_eq!(m(r#","analyze":"auto""#).analyze, Analyze::Auto);
+        assert_eq!(m(r#","analyze":"sometimes""#).analyze, Analyze::Manual);
+        assert_eq!(m(r#","analyze":true"#).analyze, Analyze::Manual);
+        assert!(m("").analyze_params.is_empty());
+        assert_eq!(m(r#","analyzeParams":["level","nope","level",3,"mode"]"#).analyze_params, ["level", "mode"]);
+        assert!(m(r#","analyzeParams":"level""#).analyze_params.is_empty());
+        // it round-trips the way a host lists it
+        let v = serde_json::to_value(m(r#","analyze":"auto","analyzeParams":["level"]"#)).unwrap();
+        assert_eq!(v["analyze"], "auto");
+        assert_eq!(v["analyzeParams"], json!(["level"]));
+    }
+
+    // #1398: the status line is a short printable string, else nothing
+    #[test]
+    fn a_status_line_is_short_printable_text_or_nothing() {
+        assert_eq!(analysis_status(&json!({"_status": "  Acts above 0.42 "})), Some("Acts above 0.42"));
+        assert_eq!(analysis_status(&json!({"level": 1})), None);
+        assert_eq!(analysis_status(&json!({"_status": 3})), None);
+        assert_eq!(analysis_status(&json!({"_status": "   "})), None);
+        assert_eq!(analysis_status(&json!({"_status": "two\nlines"})), None);
+        assert_eq!(analysis_status(&json!({"_status": "x".repeat(MAX_STATUS_CHARS + 1)})), None);
+        assert!(analysis_status(&json!({"_status": "é".repeat(MAX_STATUS_CHARS)})).is_some(), "counted in characters");
+        assert_eq!(analysis_status(&json!({"_status": "a\u{202e}b"})), None);
+        assert_eq!(analysis_status(&json!([1, 2])), None);
     }
 
     #[test]
