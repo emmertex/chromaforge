@@ -365,16 +365,35 @@ fn style_section(app: &mut LccApp, ui: &mut egui::Ui) {
 fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
     section(ui, "Saved Locations", true, |ui| {
         let list = app.run("map.locations", json!({})).ok().and_then(|v| v.field("locations").as_array().cloned()).unwrap_or_default();
+        let picked: Vec<u64> = app.session.selected().iter().map(|id| id.0).collect();
         for l in &list {
             let name = l["name"].as_str().unwrap_or("").to_string();
             let private = l["private"].as_bool().unwrap_or(false);
             let row = ui.horizontal(|ui| {
-                let mut p = private;
-                if ui.checkbox(&mut p, "").on_hover_text(tr("Private: photos here are exported without their location")).changed() {
-                    let _ = app.run("map.saveLocation", json!({"name": name, "private": p}));
+                // as in Lightroom Classic: ticked when the selected photos are all inside, mixed when
+                // some are; ticking it moves the selected photos to the location's centre
+                let here = l["selected"].as_u64().unwrap_or(0) as usize;
+                let all = !picked.is_empty() && here == picked.len();
+                let mut ticked = all;
+                let tip = if picked.is_empty() {
+                    tr("Select photos to move them to this location")
+                } else if all {
+                    tr("The selected photos are in this location")
+                } else {
+                    tr("Move the selected photos to this location")
+                };
+                let b = ui
+                    .add_enabled(!picked.is_empty(), egui::Checkbox::without_text(&mut ticked).indeterminate(here > 0 && !all))
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip);
+                crate::widgets::register(ui.ctx(), format!("map:locationHere:{name}"), b.rect);
+                if b.clicked() && !all {
+                    place_at_location(app, ui.ctx(), picked.clone(), &name);
                 }
                 let label = format!("{}{}  ({})", if private { "🔒 " } else { "" }, name, l["photos"].as_u64().unwrap_or(0));
-                if ui.link(label).clicked() {
+                let link = ui.link(label);
+                let link = if private { link.on_hover_text(tr("Private: photos here are exported without their location")) } else { link };
+                if link.clicked() {
                     app.map.active_location = Some(name.clone());
                     let _ = app.run("map.search", json!({"query": name}));
                 }
@@ -416,17 +435,24 @@ fn location_drop(app: &mut LccApp, ui: &mut egui::Ui, rect: egui::Rect, name: &s
     if !pos.is_some_and(|p| rect.contains(p)) {
         return;
     }
-    let Some(centre) = app.session.catalog.saved_location(name).map(|l| l.centre()) else { return };
+    if app.session.catalog.saved_location(name).is_none() {
+        return;
+    }
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.painter().rect_stroke(rect.expand(2.0), 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
     crate::panels::grid::drag_hint(ui.ctx(), crate::i18n::tr_format!("Place at {name}", name = name));
     if released {
         app.ui.dragging_photos = None;
-        let n = ids.len();
-        match app.run("map.geotag", json!({"ids": ids, "lat": centre.lat, "lon": centre.lon})) {
-            Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Geotagged {n} photo(s)", n = n)),
-            Err(e) => app.toast_error(ui.ctx(), e),
-        }
+        place_at_location(app, ui.ctx(), ids, name);
+    }
+}
+
+/// Puts the photos at a saved location's centre (one undo step). The overlay says what changed; only
+/// a refusal is a toast.
+fn place_at_location(app: &mut LccApp, ctx: &egui::Context, ids: Vec<u64>, name: &str) {
+    let Some(centre) = app.session.catalog.saved_location(name).map(|l| l.centre()) else { return };
+    if let Err(e) = app.run("map.geotag", json!({"ids": ids, "lat": centre.lat, "lon": centre.lon})) {
+        app.toast_error(ctx, e);
     }
 }
 

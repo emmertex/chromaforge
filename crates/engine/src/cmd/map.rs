@@ -108,12 +108,14 @@ pub fn in_view(s: &mut crate::Session, filter: &LocationFilter, view: Option<Bou
 
 fn locations_json(s: &crate::Session) -> Value {
     let positions: Vec<LatLon> = s.catalog.photos().filter_map(|p| p.meta.gps.map(|(a, b)| LatLon::new(a, b))).collect();
+    let picked: Vec<LatLon> = s.selected().iter().filter_map(|id| s.catalog.photo(*id)?.meta.gps.map(|(a, b)| LatLon::new(a, b))).collect();
     let list: Vec<Value> = s
         .catalog
         .saved_locations()
         .map(|l| {
             let n = positions.iter().filter(|p| l.contains(**p)).count();
-            json!({"name": l.name, "lat": l.lat, "lon": l.lon, "radius": l.radius, "private": l.private, "photos": n})
+            let here = picked.iter().filter(|p| l.contains(**p)).count();
+            json!({"name": l.name, "lat": l.lat, "lon": l.lon, "radius": l.radius, "private": l.private, "photos": n, "selected": here})
         })
         .collect();
     json!({"locations": list})
@@ -462,7 +464,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             clear_location_metadata
         ),
-        cmd!(query "map.locations", "Saved Locations", [], None, "{} → {locations: [{name, lat, lon, radius (m), private, photos}]}", always, |s, _| Ok(locations_json(s))),
+        cmd!(query "map.locations", "Saved Locations", [], None, "{} → {locations: [{name, lat, lon, radius (m), private, photos, selected: how many of the selected photos are inside}]}", always, |s, _| Ok(locations_json(s))),
         cmd!(
             "map.saveLocation",
             "Save Location",
@@ -545,6 +547,13 @@ mod tests {
             s.execute("map.saveLocation", &json!({"name": "Paris", "lat": 48.8566, "lon": 2.3522, "radius": 2000, "private": true})).unwrap();
             let l = s.execute("map.locations", &json!({})).unwrap();
             assert_eq!(l["locations"][0]["photos"], 2);
+            // `selected` counts the selected photos inside: one of these two is in Paris, then both
+            let before = s.selection.ids.clone();
+            s.selection.ids = vec![ids[0], ids[2]];
+            assert_eq!(s.execute("map.locations", &json!({})).unwrap()["locations"][0]["selected"], 1);
+            s.selection.ids = vec![ids[0], ids[1]];
+            assert_eq!(s.execute("map.locations", &json!({})).unwrap()["locations"][0]["selected"], 2);
+            s.selection.ids = before;
             let inside = s.execute("map.pins", &json!({"filter": "location:paris"})).unwrap();
             assert_eq!(inside["tagged"], 2);
             assert!(s.catalog.is_private_location((48.8566, 2.3522)));
