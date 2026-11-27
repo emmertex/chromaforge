@@ -490,8 +490,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::Watermark { .. }
                     | Dialog::SlideshowExport { .. }
             );
+            let search_choices =
+                if matches!(dlg, Dialog::AdvancedSearch { .. }) { crate::advanced_search::choices(app) } else { Default::default() };
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
-                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
+                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app, &search_choices),
                 Dialog::AutoStack { gap, top } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
