@@ -1851,6 +1851,9 @@ pub struct UiState {
     pub film_dust_view: u8,
     /// The library filter bar above the grid.
     pub filter_bar: bool,
+    /// The filter bar over Develop's loupe (#1317): Develop's own, off until asked for, so filtering there keeps the
+    /// photo instead of going to the Library grid.
+    pub develop_filter_bar: bool,
     /// The filter bar's Metadata columns (issue #218): the field each column lists; empty = hidden.
     pub filter_columns: Vec<String>,
     /// The search box at the top of each Metadata column, by column: the text narrows that
@@ -3034,6 +3037,7 @@ impl Default for UiState {
             window_fullscreen: None,
             // Lightroom Classic shows the Library Filter bar over the Grid (the fork's default)
             filter_bar: true,
+            develop_filter_bar: false,
             filter_columns: Vec::new(),
             filter_column_search: Vec::new(),
             people_search: String::new(),
@@ -3073,6 +3077,16 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Whether this view is Develop's loupe, which carries its own filter bar (#1317).
+    pub fn develop_filter_shown_here(&self) -> bool {
+        self.module == crate::module::ModuleId::Develop && self.view == ViewMode::Detail
+    }
+
+    /// Whether the filter bar this view would show is on: Develop's own over its loupe, else the Library's.
+    pub fn filter_bar_shown(&self) -> bool {
+        if self.develop_filter_shown_here() { self.develop_filter_bar } else { self.filter_bar }
+    }
+
     /// The newest toast on screen.
     pub fn toast(&self) -> Option<&Toast> {
         self.toasts.last()
