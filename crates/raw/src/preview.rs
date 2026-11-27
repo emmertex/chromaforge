@@ -55,7 +55,7 @@ pub fn embedded_preview_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
 /// The colour space a pixel-shift merge's preview says it is in (`PreviewColorSpace` of its preview IFD, DNG tag
 /// 50970: 2 = sRGB, 3 = Adobe RGB); `None` for any other file, DNGs of other writers included.
 fn merged_preview_space(tiff: &Tiff) -> Option<PreviewColorSpace> {
-    if !tiff.ifds.first()?.bytes(t::XMP).is_some_and(crate::merge_provenance::is_marked) {
+    if !tiff.ifds.first()?.bytes(t::XMP).is_some_and(crate::merge_provenance::is_valid) {
         return None;
     }
     tiff.all_ifds().into_iter().find_map(|ifd| match ifd.u16(t::PREVIEW_COLOR_SPACE)? {
