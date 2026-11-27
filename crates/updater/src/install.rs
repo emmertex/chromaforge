@@ -461,7 +461,7 @@ fn msi_update_script(pid: u32, msi: &str, log: &str, note: &str, relaunch: Optio
 }
 
 /// The installer's log, written beside the download.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const MSI_LOG: &str = "update-install.log";
 
 /// How long the helper has to show it is alive. It waits for this process to quit, so a helper that
