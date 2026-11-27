@@ -15,10 +15,18 @@ use crate::headless::Headless;
 use crate::render::Slot;
 use crate::{LccApp, Services};
 
-const T: Duration = Duration::from_secs(30);
+/// How long a wait for something that must come (a render, a picture) may take before the test
+/// gives up. Not a budget: every wait ends as soon as what it waits for is there, and a render takes
+/// seconds on a loaded 4-core machine running the suite in parallel. Only a hang reaches it.
+const T: Duration = Duration::from_secs(180);
+
+/// A raw decode delay that holds the decode until the test changes it: what stands in for a
+/// render that hasn't come is checked with no race against the render.
+const HELD: u64 = u64::MAX;
 
 /// A headless app with `n` raws: their camera JPEGs read at once, a raw decode taking `delay` ms
-/// (changeable while the test runs).
+/// (changeable while the test runs: a decode already waiting ends once the new delay has passed;
+/// [`HELD`] holds it until the test lowers the delay).
 fn raws(n: u64, delay: Arc<AtomicU64>) -> Headless {
     let mut s = lcc_engine::Session::new();
     s.media.preview_loader = Some(Arc::new(|_: &str, edge: usize| {
@@ -27,7 +35,10 @@ fn raws(n: u64, delay: Arc<AtomicU64>) -> Headless {
         Some(lcc_raster::Rgba8 { width: w, height: h, data: vec![[200, 60, 200, 255]; w * h] })
     }));
     s.media.file_loader = Some(Arc::new(move |_, _, _| {
-        std::thread::sleep(Duration::from_millis(delay.load(Ordering::Relaxed)));
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_millis(delay.load(Ordering::Relaxed)) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
         let mut img = lcc_raster::Rgb32f::new(600, 400);
         img.data.fill([0.18, 0.18, 0.18]);
         Ok((img, Default::default()))
@@ -41,6 +52,15 @@ fn raws(n: u64, delay: Arc<AtomicU64>) -> Headless {
     }
     let app = LccApp::new(s, Services { png: None, ..Default::default() });
     Headless::new(app, [1400.0, 900.0], 1.0)
+}
+
+/// Lets held decodes go when dropped, so a failing test leaves no worker waiting.
+struct Release(Arc<AtomicU64>);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
 }
 
 fn exec(h: &mut Headless, command: &str, params: serde_json::Value) {
@@ -111,14 +131,15 @@ fn a_preset_that_crops_shows_cropped_and_toned_in_the_first_picture() {
     d.light.contrast = 30.0;
     d.crop.geometry.rect = lcc_geom::Rect { x0: 0.2, y0: 0.0, x1: 0.8, y1: 1.0 };
     h.app.session.set_develop(PhotoId(2), d, "Preset").unwrap();
-    // the raw is slow: what shows first is a stand-in
-    delay.store(3000, Ordering::Relaxed);
+    // the raw is held: what shows first is a stand-in, whenever it comes
+    let _release = Release(delay.clone());
+    delay.store(HELD, Ordering::Relaxed);
     exec(&mut h, "library.select", json!({"ids": [2]}));
     let mut seen = Vec::new();
     let mut aspects = Vec::new();
     frames(
         &mut h,
-        Duration::from_secs(2),
+        T,
         |h| {
             if let Some((what, d)) = drawn(h, PhotoId(2)) {
                 seen.push((what, d.known));
