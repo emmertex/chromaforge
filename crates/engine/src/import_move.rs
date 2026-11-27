@@ -194,8 +194,9 @@ pub(crate) fn place(src: &Path, dir: &Path, name: &str) -> Result<Placed, String
 
 /// Import → **Copy**: copy `src` into `dir` as `name` (-1, -2… when taken) with the same checks as
 /// a move's copy — a new file (never overwriting one, even one that appears meanwhile), synced to
-/// disk and verified; a bad copy is removed and reported, so a card is never wiped on the strength
-/// of it. Returns the new path.
+/// disk and verified, and its name in the folder synced too, along with any folders made for it; a
+/// bad copy is removed and reported, so a card is never wiped on the strength of it. Returns the new
+/// path.
 ///
 /// `expect` is the content hash the import's probe computed from its full read of the source
 /// ([`lcc_preview::hash_bytes`]): the copy is read back and checked against it, which spares
@@ -203,7 +204,7 @@ pub(crate) fn place(src: &Path, dir: &Path, name: &str) -> Result<Placed, String
 /// (whose recorded metadata and hash would be stale). Without one the copy is compared byte for
 /// byte with the source.
 pub(crate) fn copy_new(src: &Path, dir: &Path, name: &str, expect: Option<lcc_preview::Hash128>) -> Result<PathBuf, String> {
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    create_dir_durable(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.to_string(), String::new()),
@@ -211,7 +212,19 @@ pub(crate) fn copy_new(src: &Path, dir: &Path, name: &str, expect: Option<lcc_pr
     for i in 0..100_000u32 {
         let d = if i == 0 { dir.join(name) } else { dir.join(format!("{stem}-{i}{ext}")) };
         match copy_verified(src, &d, expect) {
-            Ok(()) => return Ok(d),
+            Ok(()) => {
+                // the copy's contents are on disk; its name in the folder must be too before it counts as imported, or a
+                // crash after the card is wiped could lose it (as for a move, issue #1501)
+                if let Err(e) = sync_dir(dir) {
+                    // best effort: the copy is reported failed either way, and a leftover would only be a duplicate
+                    let _ = fs::remove_file(&d);
+                    return Err(format!(
+                        "copy {}: could not make the copy's folder durable ({e}); nothing was imported from it, the original is untouched",
+                        src.display()
+                    ));
+                }
+                return Ok(d);
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("copy {}: {e} (nothing was imported from it; the original is untouched)", src.display())),
         }
