@@ -203,6 +203,12 @@ pub enum PanelId {
     KeywordList,
     /// Library right: the selected photos' metadata.
     Metadata,
+    /// Develop tool row: the Browse Profiles button (the profile browser in the panels' place). Not a
+    /// panel of its own: an entry of the row, so it is shown, hidden and moved as the tools are (#1251).
+    Profiles,
+    /// Develop tool row: the Reset button the Compact layout puts last in the row (the bar under the
+    /// panels keeps its own). Shown, hidden and moved as the tools are (#1251).
+    Reset,
 }
 
 impl PanelId {
@@ -239,7 +245,9 @@ impl PanelId {
             | PanelId::QuickDevelop
             | PanelId::Keywording
             | PanelId::KeywordList
-            | PanelId::Metadata => return None,
+            | PanelId::Metadata
+            | PanelId::Profiles
+            | PanelId::Reset => return None,
         })
     }
 }
