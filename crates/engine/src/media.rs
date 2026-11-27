@@ -212,6 +212,9 @@ pub struct LoadOptions {
     pub pixel_fix: bool,
     /// How the raw's clipped highlights are rebuilt (`sensor.highlightMode`).
     pub highlight: lcc_raw::highlight::Mode,
+    /// Which raw decoder reads each camera ([`crate::raw_decoder::key`] when the options were made): a raw decoded
+    /// before the person chose another decoder for some camera is decoded again.
+    pub decoders: u64,
     /// The file being decoded, set by the filesystem loaders: names the camera body when the raw has
     /// no serial number (`crate::sensor_maps::body_key`). Not a setting: [`DecodedSource::serves`]
     /// ignores it.
@@ -227,6 +230,7 @@ impl Default for LoadOptions {
             camera_look: true,
             pixel_fix: true,
             highlight: Default::default(),
+            decoders: crate::raw_decoder::key(),
             path: None,
         }
     }
@@ -241,6 +245,7 @@ impl LoadOptions {
             camera_look: s.keeps_camera_look(),
             pixel_fix: s.sensor.fixes_pixels(),
             highlight: lcc_raw::highlight::Mode::from_control(s.sensor.highlight_mode),
+            decoders: crate::raw_decoder::key(),
             path: None,
         }
     }
@@ -350,7 +355,8 @@ impl DecodedSource {
                 && (self.options.colour == options.colour || !info.is_some_and(|i| i.colorimetric))
                 && ((self.options.camera == options.camera && self.options.camera_look == options.camera_look) || !info.is_some_and(|i| i.raw))
                 && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw))
-                && (self.options.highlight == options.highlight || !info.is_some_and(|i| i.raw)))
+                && (self.options.highlight == options.highlight || !info.is_some_and(|i| i.raw))
+                && (self.options.decoders == options.decoders || !info.is_some_and(|i| i.raw)))
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,

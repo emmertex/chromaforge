@@ -56,7 +56,7 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
   (JNI VM/activity adoption), `crates/winspool` (Win32 print spooler), `crates/winmsi` (`MsiEnumClientsW` +
   `MsiGetComponentPathW` for the updater), `crates/winjob` (a kill-on-close job object, so the Windows CLI
   launcher's app ends with it), `crates/firstclick` (macOS: replaces `acceptsFirstMouse:` on winit's window view,
-  for the background-click setting), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
+  for the background-click setting), `crates/libraw` (FFI into its C shim over LibRaw, opt-in, see Non-negotiables), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
   production crate root has `#![forbid(unsafe_code)]`. New unsafe need → isolated, well-tested helper crate:
   `// SAFETY:` everywhere, safe API, safe fallback, and a line here naming it.
 - Input-derived numbers are hostile: `get()` not `[i]`/`[a..b]`; checked/saturating math; no division by zero,
@@ -74,7 +74,11 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
 
 ## Non-negotiables
 - **Third-party material** — see the licence/derivation policy below.
-- **Pure Rust** in the product, no C/C++ dependencies; covers our crates and anything we bundle. **Plug-ins are
+- **Pure Rust** in the product, no C/C++ dependencies; covers our crates and anything we bundle. **One exception
+  (2026-11-27, the owner's call):** LibRaw (C++, LGPL-2.1) as an opt-in per-camera raw decoder, isolated in
+  `crates/libraw` behind the engine's `libraw` feature and built only when `LIBRAW_DIR`/`LIBRAW_SYSTEM=1` is set; it
+  only unpacks the mosaic (demosaic and everything after stay Rust), every build without it works, web/Android never
+  have it. Nothing else C/C++ comes in on its back. **Plug-ins are
   exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)), any language
   that compiles to WASM, own licence, untrusted input to the host.
 - **Layering** (`plan/architecture.md` §3, `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.

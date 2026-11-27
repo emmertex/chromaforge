@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 # The upstream project's own AI Denoise model (MIT OR Apache-2.0) is offered as a download
-default = ["denoise", "own-model", "heif"]
+default = ["denoise", "own-model", "heif", "libraw"]
 denoise = ["lcc-engine/denoise", "lcc-cli/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model", "lcc-cli/rawnind-model"]
 realesrgan-model = ["denoise", "lcc-engine/realesrgan-model", "lcc-cli/realesrgan-model"]
@@ -26,6 +26,9 @@ own-model = ["denoise", "lcc-engine/own-model", "lcc-cli/own-model"]
 heif = ["lcc-codecs/heif", "lcc-cli/heif"]
 # Sound for video playback and slideshow music (cpal; links libasound on Linux). See docs/video.md.
 audio-out = ["lcc-engine/audio-out"]
+# LibRaw as a per-camera raw decoder (C++; linked only when LIBRAW_DIR or LIBRAW_SYSTEM=1 is set, see
+# crates/libraw/build.rs; otherwise Settings shows it unavailable).
+libraw = ["lcc-engine/libraw", "lcc-cli/libraw"]
 
 [dependencies]
 # the command-line tool, run when the program is started as `<cli>` (`main`); its features follow

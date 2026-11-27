@@ -135,6 +135,7 @@ pub mod profile_refs;
 pub mod proof;
 pub mod quality_scan;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod raw_decoder;
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
@@ -764,6 +765,9 @@ pub struct Session {
     /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
     /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
     pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder per camera (library label → Auto / lcc-raw / LibRaw; persisted in prefs.json, absent =
+    /// Auto). Installed into [`raw_decoder`], which every raw decode asks.
+    pub raw_decoders: std::collections::BTreeMap<String, raw_decoder::Decoder>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -1054,6 +1058,7 @@ impl Session {
             sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),
+            raw_decoders: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),

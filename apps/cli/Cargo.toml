@@ -44,7 +44,7 @@ serde_json = { workspace = true }
 dhat = { workspace = true, optional = true }
 
 [features]
-default = ["denoise", "heif"]
+default = ["denoise", "heif", "libraw"]
 denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
 realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
@@ -53,6 +53,9 @@ own-model = ["denoise", "lcc-engine/own-model"]
 # every allocation (live/peak bytes in `library.memory` / `ui.inspect`) and writes dhat-heap.json
 # (open it in DHAT's viewer: allocation sites by bytes at the peak). Slows allocation-heavy work.
 dhat-heap = ["dep:dhat"]
+# LibRaw as a per-camera raw decoder (C++; linked only when LIBRAW_DIR or LIBRAW_SYSTEM=1 is set, see
+# crates/libraw/build.rs, otherwise the choice is shown as unavailable).
+libraw = ["lcc-engine/libraw"]
 
 # Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default, as in the app;
 # `--no-default-features --features denoise` leaves HEVC out.

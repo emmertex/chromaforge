@@ -59,6 +59,12 @@ quantization tables and multi-tile geometry) are translated from LibRaw's src/de
 Alex Tutubalin, LibRaw LLC, used under the GNU LGPL 2.1
 (crates/raw/src/vendor/LICENSE-LibRaw-LGPL-2.1.txt; LibRaw also offers CDDL 1.0).
 
+Desktop builds made with LibRaw (the `libraw` feature with LIBRAW_DIR or LIBRAW_SYSTEM=1, see crates/libraw)
+contain or link LibRaw itself (https://github.com/LibRaw/LibRaw), Copyright 2008-2026 LibRaw LLC, unmodified,
+used under the GNU LGPL 2.1 (crates/libraw/LICENSE-LibRaw-LGPL-2.1.txt; LibRaw also offers CDDL 1.0); such a
+binary is offered under GPL-3.0-or-later. The source of the LibRaw version built is at that address; the
+crate's C shim (crates/libraw/shim/shim.cpp) is our own work and calls LibRaw's public API only.
+
 crates/pipeline/src/tone_eq.rs (the Tone Equalizer) is translated from darktable's src/iop/toneequal.c
 (https://github.com/darktable-org/darktable), Copyright 2018-2026 Aurélien Pierre and the darktable developers,
 used under the GNU GPL 3.0 or later (LICENSE-GPL-3.0.txt): the nine-band Gaussian radial-basis correction curve

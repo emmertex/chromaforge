@@ -4925,6 +4925,7 @@ dependencies = [
  "lcc-inpaint",
  "lcc-layout",
  "lcc-lensdb",
+ "lcc-libraw",
  "lcc-merge",
  "lcc-meta",
  "lcc-ml",
@@ -5195,6 +5196,13 @@ dependencies = [
  "lcc-develop",
  "lcc-geom",
  "quick-xml",
+]
+
+[[package]]
+name = "lcc-libraw"
+version = "26.48.1"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
