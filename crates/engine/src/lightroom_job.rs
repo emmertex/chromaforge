@@ -36,16 +36,18 @@ fn cancelled() -> crate::EngineError {
 /// first, before anything changes. The warning goes first: the result window lists only the first
 /// few, and catalog warnings (one per unreadable record) can be many.
 fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate::Result<Option<PathBuf>> {
-    use crate::lightroom_archive::{Kept, MAX_ARCHIVE_BYTES};
+    use crate::lightroom_archive::Kept;
     let Some(dir) = archive_dir else { return Ok(None) };
     // The import index, unlike the archive, is required, and it is written only after the photos
     // are imported: refuse a folder it can't be written to here, rather than import and then fail
     // (a retry could duplicate virtual copies).
     require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this catalog: {e}")))?;
-    let limit = MAX_ARCHIVE_BYTES >> 20;
+    // a quarter of the drive's free space (issue #1312), named when it is passed
+    let limit_bytes = crate::lightroom_archive::archive_limit_for(dir);
+    let limit = size_text(limit_bytes);
     // the warning names the program the catalog comes from
     let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
-    let kept = match crate::lightroom_archive::store_best_effort(dir, data) {
+    let kept = match crate::lightroom_archive::store_best_effort(dir, data, limit_bytes) {
         Ok(kept) => kept,
         Err(e) => {
             data.warnings.insert(0, format!("{program} source archive not saved in {}: {e}; archive skipped", dir.display()));
@@ -55,14 +57,25 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
     Ok(match kept {
         Kept::All(stored) => Some(note_cleanup(stored, dir, data, program)),
         Kept::WithoutSettings(stored) => {
-            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
+            data.warnings.push(format!(
+                "{program} source archive exceeded {limit} (its limit on this drive); archived without history-step and snapshot settings"
+            ));
             Some(note_cleanup(stored, dir, data, program))
         }
         Kept::Nothing => {
-            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archive skipped"));
+            data.warnings.push(format!("{program} source archive exceeded {limit} (its limit on this drive); archive skipped"));
             None
         }
     })
+}
+
+/// `bytes` for a warning: in GiB from 1 GiB, else MiB from 1 MiB, else KiB.
+fn size_text(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GiB", b as f64 / f64::from(1u32 << 30)),
+        b if b >= 1 << 20 => format!("{} MiB", b >> 20),
+        b => format!("{} KiB", b >> 10),
+    }
 }
 
 /// The saved archive's path. Cleanup that failed after it was published is a warning of its own, first
@@ -626,9 +639,11 @@ mod tests {
     #[test]
     fn oversized_archive_keeps_prepared_import_successful_with_warning() {
         for (in_history, warning, archived) in [
-            (true, "Lightroom source archive exceeded 32 MiB; archived without history-step and snapshot settings", true),
-            (false, "Lightroom source archive exceeded 32 MiB; archive skipped", false),
+            (true, "Lightroom source archive exceeded 512 KiB (its limit on this drive); archived without history-step and snapshot settings", true),
+            (false, "Lightroom source archive exceeded 512 KiB (its limit on this drive); archive skipped", false),
         ] {
+            // a limit whose JSON bound (32 MiB, 64 times it) the 40 MiB of settings pass; a drive's is far bigger
+            let _limit = crate::lightroom_archive::test_limit(512 << 10);
             let archive_dir = std::env::temp_dir().join(format!("app-lr-prepared-scale-{in_history}-{}", std::process::id()));
             let mut data = empty_data();
             data.photos = (0..5_000)
