@@ -1,0 +1,17 @@
+[package]
+name = "lcc-diag"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Diag (L0): what was this process doing when it hung, was killed or panicked? Typed spans and events, an in-flight file, a bounded ring and aggregate timings; off unless <PREFIX>_DIAG is set."
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
