@@ -4399,7 +4399,7 @@ mod zoom_sampling_tests {
             tile: crate::region::TileId { col: 0, row: 0 },
             look: 1,
         };
-        let img = lcc_raster::Rgba8 { width: 2, height: 2, data: vec![255; 16] };
+        let img = lcc_raster::Rgba8 { width: 2, height: 2, data: vec![[255; 4]; 4] };
         r.tile_placeholder(&ctx, key, &img);
         let tex = r.tiles.values().next().expect("the tile");
         let meta = ctx.tex_manager().read().meta(tex.tex.id()).cloned().expect("registered");
