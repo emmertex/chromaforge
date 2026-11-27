@@ -1425,10 +1425,7 @@ pub fn import_with(s: &mut Session, paths: &[String], opts: &ImportOptions) -> c
         prepared.plugin_skipped += skipped;
         prepared
     } else {
-        let found = job.expand_report(paths);
-        let mut prepared = job.prepare_all(found.files, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        prepared.skipped = Skipped { unreadable: found.unreadable, unsupported: found.unsupported };
-        prepared
+        job.prepare(paths, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
     };
     // probes a scan left for files not imported now stay for a later import
     s.import_probes.extend(std::mem::take(&mut job.cache));
@@ -1645,10 +1642,11 @@ impl ImportJob {
     /// The file-system half of importing `paths`: expand folders, skip known paths, probe, skip
     /// duplicates by content, read sidecars, copy or place (Move) the files — several at once,
     /// with the names and outcomes of one after another. Nothing in the catalog changes. Stops
-    /// before the next file once `cancel` is set.
+    /// before the next file once `cancel` is set. One batch of every file, as [`import_with`]
+    /// prepares it ([`ImportJob::prepare_all`]).
     pub fn prepare(&mut self, paths: &[String], cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         let found = self.expand_report(paths);
-        let mut prepared = self.prepare_files(found.files, cancel);
+        let mut prepared = self.prepare_all(found.files, cancel);
         prepared.skipped = Skipped { unreadable: found.unreadable, unsupported: found.unsupported };
         prepared
     }
