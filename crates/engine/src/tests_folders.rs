@@ -923,11 +923,9 @@ fn a_date_folder_named_with_other_letter_case_is_renamed_and_its_photos_follow()
     std::fs::create_dir_all(&day).unwrap();
     let a = add_file(&mut s, &day.join("a.jpg").to_string_lossy(), "A");
     let shouted = dir.0.join("LIB").join("Originals").join("2026-10-16");
-    // the fix's premise: the other spelling resolves on disk to the library's own folder (Windows,
-    // macOS); a Linux volume with case folding opens `LIB` but resolves it as spelled
-    let same = matches!((dir.0.join("LIB").canonicalize(), lib.canonicalize()), (Ok(a), Ok(b)) if a == b);
-    if !shouted.is_dir() || !same {
-        lcc_testkit::skip!(System, "this volume tells letter case apart, or doesn't resolve paths to their own spelling");
+    if !shouted.is_dir() {
+        lcc_testkit::skip!(System, "this volume tells letter case apart");
+        return;
     }
     let r = s.execute("folder.rename", &json!({"path": shouted.to_string_lossy(), "name": "Beach"})).unwrap();
     let moved = lib.join("Originals").join("Beach");
