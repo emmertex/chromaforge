@@ -842,45 +842,60 @@ pub(crate) fn probe_all(
             })
             .collect();
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let n = workers(paths.len());
-        if n > 1 {
-            let mut results: Vec<Option<Result<ProbeInfo, String>>> = vec![None; paths.len()];
-            let next = std::sync::atomic::AtomicUsize::new(0);
-            let out = std::sync::Mutex::new(&mut results);
-            std::thread::scope(|sc| {
-                for _ in 0..n {
-                    sc.spawn(|| {
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if i >= paths.len() {
-                                break;
+    // diagnostics (issue #1363): one step per call (a batch, usually), listed in the in-flight file while it runs with
+    // how many of *this call's* files are probed (`done` is the caller's counter and may count other batches too);
+    // `cancelled` when files were left unprobed
+    let mut span = lcc_diag::span_at(
+        lcc_diag::Level::Normal,
+        lcc_diag::Subsystem::Probe,
+        "probe_all",
+        lcc_diag::Class::Top,
+        &[("files", lcc_diag::Val::U64(paths.len() as u64))],
+    );
+    let probed = std::sync::atomic::AtomicUsize::new(0);
+    let probe_one = |p: &String| {
+        let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
+        let r = probe(p);
+        leaf.done(&r);
+        done.fetch_add(1, Relaxed);
+        let mine = probed.fetch_add(1, Relaxed) + 1;
+        span.note("done", lcc_diag::Val::U64(mine as u64));
+        r
+    };
+    let out: Vec<Result<ProbeInfo, String>> = 'probe: {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let n = workers(paths.len());
+            if n > 1 {
+                let mut results: Vec<Option<Result<ProbeInfo, String>>> = vec![None; paths.len()];
+                let next = std::sync::atomic::AtomicUsize::new(0);
+                let out = std::sync::Mutex::new(&mut results);
+                std::thread::scope(|sc| {
+                    for _ in 0..n {
+                        sc.spawn(|| {
+                            loop {
+                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if i >= paths.len() {
+                                    break;
+                                }
+                                if cancel.load(Relaxed) {
+                                    break;
+                                }
+                                let r = probe_one(&paths[i]);
+                                out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
                             }
-                            if cancel.load(Relaxed) {
-                                break;
-                            }
-                            let r = probe(&paths[i]);
-                            done.fetch_add(1, Relaxed);
-                            out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
-                        }
-                    });
-                }
-            });
-            return results.into_iter().map(|r| r.unwrap_or_else(|| Err("not probed".into()))).collect();
-        }
-    }
-    paths
-        .iter()
-        .map(|p| {
-            if cancel.load(Relaxed) {
-                return Err("cancelled".into());
+                        });
+                    }
+                });
+                break 'probe results.into_iter().map(|r| r.unwrap_or_else(|| Err("not probed".into()))).collect();
             }
-            let r = probe(p);
-            done.fetch_add(1, Relaxed);
-            r
-        })
-        .collect()
+        }
+        paths.iter().map(|p| if cancel.load(Relaxed) { Err("cancelled".into()) } else { probe_one(p) }).collect()
+    };
+    let probed = probed.into_inner();
+    span.set("done", lcc_diag::Val::U64(probed as u64));
+    span.finish(if probed < paths.len() { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Ok });
+    out
 }
 
 /// Copy `src` into `dir` as `name` (default: its own name), made unique with -1, -2…; returns the
@@ -1960,6 +1975,13 @@ fn trashed_file_is_gone(cat: &lcc_catalog::Catalog, id: PhotoId) -> bool {
 /// a Move's sources are removed once it is saved). On a failed commit a Move's placed files are
 /// taken back.
 pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
+    // diagnostics (issue #1363): once per batch, so `normal`; ends with its real outcome on every path
+    lcc_diag::traced(lcc_diag::Level::Normal, lcc_diag::Subsystem::Import, "import_commit", &[], crate::diag_outcome, |_| {
+        commit_prepared_inner(s, opts, now, prepared)
+    })
+}
+
+fn commit_prepared_inner(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
     let now = now.to_string();
     let mut report =
         ImportReport { scanned: prepared.scanned, skipped: prepared.skipped, skipped_by_plugin: prepared.plugin_skipped, ..Default::default() };

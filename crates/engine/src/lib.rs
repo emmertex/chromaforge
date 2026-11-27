@@ -241,6 +241,11 @@ pub enum EngineError {
     Other(String),
 }
 
+/// The diagnostics outcome of an engine error (issue #1363): a cancel is `cancelled`, anything else `failed`.
+pub(crate) fn diag_outcome(e: &EngineError) -> lcc_diag::Outcome {
+    if matches!(e, EngineError::Cancelled(_)) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Failed }
+}
+
 pub type Result<T> = std::result::Result<T, EngineError>;
 
 /// One undo step: the inverse op and a label.
