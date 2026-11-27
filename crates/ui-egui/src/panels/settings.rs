@@ -354,6 +354,10 @@ fn tab_strip(ui: &mut egui::Ui, t: &Tokens, tab: &mut String) {
 }
 
 pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
+    crate::settings_search::around(app, ui, tab, |app, ui| tab_body_page(app, ui, t, tab));
+}
+
+fn tab_body_page(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
     match tab {
         "import" => import_tab(app, ui, t),
         "folders" => super::settings_folders::settings_tab(app, ui, t),
@@ -1723,8 +1727,11 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // activity stack, and a write in progress holds the size; this dialog draws it every frame)
     let rendered = &app.session.media.rendered;
     let activity = &app.session.activity;
+    // (read off screen for the Settings search, it starts no count)
+    let off_screen = crate::settings_search::off_screen(ui.ctx());
     let used = rendered
         .disk()
+        .filter(|_| !off_screen)
         .map(|_| rendered.disk_size_now_with(|| activity.start("cache", "Counting the preview cache", lcc_engine::activity::Cancel::No)));
     if matches!(used, Some(None)) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -2392,10 +2399,11 @@ fn appearance(
     let available = ui.available_width();
     let mut cards = |ui: &mut egui::Ui, width: f32| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
-        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
+        // (in the order of the mode buttons above: dark, then light)
         let dark: Vec<_> = DarkTheme::ALL.iter().map(|d| (*d, d.kind())).collect();
         theme_card(ui, t, "Dark Theme", !light_active, &dark, &mut s.dark_theme, &mut s.favorite_themes, width);
+        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
+        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
     };
     if available < 440.0 {
         ui.vertical(|ui| cards(ui, available));
