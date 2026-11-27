@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": " ({n} tidak dapat dibaca)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · salinan belum selesai: {n} (sebuah file mungkin masih muncul di {folder}, di luar pustaka)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · salinan belum selesai: {n} (file mungkin masih muncul di folder tujuannya, di luar pustaka)",
+  " · {n} not added to the library: {e}": " · {n} tidak ditambahkan ke pustaka: {e}",
+  " · {n} not imported: a drive stopped responding": " · {n} tidak diimpor: sebuah drive berhenti merespons",
   "+ Create “{new}”": "+ Buat “{new}”",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} diterima, {pending} untuk ditinjau, {rejected} ditolak",

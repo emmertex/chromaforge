@@ -79,6 +79,7 @@ fn describe(item: Option<&PreparedItem>, dest: &Path) -> String {
         None => "not started".into(),
         Some(PreparedItem::Ready(r)) => format!("ready {} {} placed={}", r.stored.replace(d.as_ref(), "<dest>"), r.info.format, r.placed.is_some()),
         Some(PreparedItem::Failed(p, e)) => format!("failed {p}: {}", e.replace(d.as_ref(), "<dest>")),
+        Some(PreparedItem::Interrupted(why, e)) => format!("interrupted {:?} {}: {}", why.why, why.path, e.replace(d.as_ref(), "<dest>")),
         Some(_) => "other".into(),
     }
 }
@@ -147,9 +148,10 @@ fn transfers_keep_todays_results_order_and_names() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// An abandoned copy is "outcome unknown"; when its thread completes later, the file exists at
-/// the destination (nothing in the import's results points at it) and the source is kept. The
-/// other copy into the same volume finishes.
+/// An abandoned copy is "outcome unknown", typed as such with the drive and the folder a stray
+/// file may appear in; when its thread completes later, the file exists at the destination
+/// (nothing in the import's results points at it) and the source is kept. The other copy into
+/// the same volume finishes.
 #[test]
 fn an_abandoned_copy_is_outcome_unknown_and_may_complete_later() {
     let base = temp_dir("abandoned");
@@ -167,8 +169,11 @@ fn an_abandoned_copy_is_outcome_unknown_and_may_complete_later() {
     let done = run.done.clone();
     let got = run.join();
     match got.first() {
-        Some(Some(PreparedItem::Failed(p, e))) => {
-            assert!(p.ends_with("a.nef"));
+        Some(Some(PreparedItem::Interrupted(why, e))) => {
+            assert!(why.path.ends_with("a.nef"));
+            assert_eq!(why.why, Interruption::OutcomeUnknown);
+            assert_eq!(why.folder.as_deref().map(Path::new), Some(held.as_path()), "where a stray file may appear");
+            assert_eq!(why.volume.as_deref().map(Path::new), Some(ssd.as_path()), "the destination stopped responding");
             assert!(e.starts_with("outcome unknown: ") && e.contains("the original is kept"), "{e}");
         }
         _ => panic!("{}", describe(got.first().and_then(Option::as_ref), &ssd)),
@@ -267,6 +272,7 @@ fn cancel_at_the_dng_step_keeps_the_raw_copy() {
             assert_eq!(Path::new(&r.stored), ssd.join("raw.nef"), "the raw copy");
             assert_eq!(r.info.format, "NEF");
             assert!(Path::new(&r.stored).is_file());
+            assert_eq!(r.dng_not_made, Some(ImportWarningCode::DngCancelled), "and the report will say the DNG wasn't made");
         }
         other => panic!("{}", describe(other.and_then(Option::as_ref), &ssd)),
     }
@@ -301,7 +307,10 @@ fn a_stall_at_the_dng_step_is_outcome_unknown() {
     clock.advance(STALL_WITH_BYTES);
     let got = run.join();
     match got.first() {
-        Some(Some(PreparedItem::Failed(_, e))) => assert!(e.starts_with("outcome unknown: "), "{e}"),
+        Some(Some(PreparedItem::Interrupted(why, e))) => {
+            assert!(e.starts_with("outcome unknown: "), "{e}");
+            assert_eq!((why.why, why.volume.as_deref().map(Path::new)), (Interruption::OutcomeUnknown, Some(ssd.as_path())));
+        }
         other => panic!("{}", describe(other.and_then(Option::as_ref), &ssd)),
     }
     *gate.0.lock().unwrap() = true;

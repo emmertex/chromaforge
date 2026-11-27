@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": " ({n} não pôde ser lida)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · cópias não concluídas: {n} (um arquivo ainda pode aparecer em {folder}, fora da biblioteca)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · cópias não concluídas: {n} (arquivos ainda podem aparecer nas pastas de destino, fora da biblioteca)",
+  " · {n} not added to the library: {e}": " · {n} não adicionado(s) à biblioteca: {e}",
+  " · {n} not imported: a drive stopped responding": " · {n} não importado(s): uma unidade parou de responder",
   " · {queued} waiting": " · {queued} aguardando",
   "+ Create “{new}”": "+ Criar “{new}”",
   ", ": ", ",

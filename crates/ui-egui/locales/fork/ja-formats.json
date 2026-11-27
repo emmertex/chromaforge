@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": "（{n} 枚を読み込めません）",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": "・未完了のコピー：{n}件（ライブラリ外の {folder} にファイルが現れる可能性があります）",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": "・未完了のコピー：{n}件（ライブラリ外のコピー先フォルダーにファイルが現れる可能性があります）",
+  " · {n} not added to the library: {e}": "・{n}件はライブラリに追加されませんでした：{e}",
+  " · {n} not imported: a drive stopped responding": "・{n}件は読み込まれませんでした：ドライブが応答しなくなりました",
   " · {queued} waiting": " · 待機中 {queued}",
   "+ Create “{new}”": "+「{new}」を作成",
   ", ": "、",
