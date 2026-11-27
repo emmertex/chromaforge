@@ -119,6 +119,21 @@ imported on its own (a rebuilt catalog, a re-imported folder) the catalog list i
 found in the library by file name and capture time; a frame that is not there stays in the list as not found, and the
 exposure counter is the file's own record of it.
 
+**A file is untrusted input.** The block is read from files that may be crafted, so it is bounded: a packet over
+1 MiB is not read; a block is used only when it is well formed and within its limits (a shot count of 4, 8, 16 or 32; at
+most that many frames, each numbered 1 to the shot count and none twice; a reference frame within the shot count; a scale
+of 1 to 8; file names of at most 512 bytes and capture times of at most 64; a sensor window inside its sensor). Anything
+else, and anything malformed, is no block, and the DNG reads as the normal DNG it is.
+
+**Forward compatibility.** Only those structural limits make a block invalid. A value a newer version may have added or
+changed (the `Method`, `GateVerdict` or `Reason` text, the `Engine` number) that this version does not know reads as
+unknown or none and never makes the block, the file or the library unreadable: the frames are still found. Concretely:
+a `Method` other than `registered` or `plain` means how it was made is unknown; a verdict or reason it does not know is
+none; an `Engine` it does not know is kept as a number and a missing or unreadable one is 0; `Tiles` above 100 000 is 0;
+`GainsApplied` is true only when it says `true`; a `MergedAt` that is not a short ISO 8601 time is none; and `Models` is
+used only when it holds at most one entry per shot, each of four finite numbers within range (a shift of at most 1000
+sites, a rotation and a scale of at most 0.1), else it is dropped whole.
+
 ## Known differences from NX Studio's merge
 
 Measured on two 16-shot series, against NX Studio output with chromatic-aberration correction off:

@@ -11,6 +11,7 @@ mod crx_properties;
 mod dng;
 mod dng_digest;
 mod gpr_corpus;
+mod hostile_pixel_shift;
 mod lossy_dng;
 mod merged_dng;
 mod nrw_be16;
