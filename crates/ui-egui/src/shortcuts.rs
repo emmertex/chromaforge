@@ -621,6 +621,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     let popup_open = popup_open || app.ui.dragging_section.is_some();
     // the activity list (`panels::activity`) is a popup too: Esc closes it, and only it; Enter waits
     let popup_open = popup_open || app.activity_list;
+    // so is the Map's list of saved locations a search matched (`map::side`): Esc closes it, not the module
+    let popup_open = popup_open || !app.map.location_matches.is_empty();
     let (module_keys, mut consumed) = (classic::module_keys(app.ui.module), Vec::new());
     classic::deferred_tabs(&mut app.deferred_tabs, keymap, &mut fire);
     // the mouse's Back / Forward buttons: the previous / next photo, as ← / → (issue #3303)

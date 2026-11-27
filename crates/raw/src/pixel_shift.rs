@@ -251,8 +251,9 @@ pub fn series_shot_count(headers: &[FrameHeader]) -> Result<u16, SeriesError> {
     }
 }
 
-/// Check that `headers` (in any order) are one complete series and put them in series order.
-pub fn detect(headers: &[FrameHeader]) -> Result<Series, SeriesError> {
+/// What every frame of one series shares: a frame number and a shot count (the same), and the same camera, lens,
+/// exposure, raw size and image area. Gives the shot count.
+fn common(headers: &[FrameHeader]) -> Result<u16, SeriesError> {
     let first = headers.first().ok_or(SeriesError::Empty)?;
     for (i, h) in headers.iter().enumerate() {
         if h.index.is_none_or(|v| v == 0) || h.shot_count.is_none() {
@@ -279,6 +280,48 @@ pub fn detect(headers: &[FrameHeader]) -> Result<Series, SeriesError> {
     if headers.iter().any(|h| h.raw_size != first.raw_size || h.image_area != first.image_area || h.sensor_region != first.sensor_region) {
         return Err(SeriesError::MixedGeometry);
     }
+    Ok(count)
+}
+
+/// Check that `headers` could be frames of one series of `count` shots, whichever frames of it they are (some may be
+/// missing): the same camera, exposure and geometry, each frame number once and within the shot count, exposure counters
+/// that follow the frame numbers and capture times that do too. For confirming that photos a file names as its frames
+/// are what it says; an empty set passes.
+pub fn check_subset(headers: &[FrameHeader], count: u16) -> Result<(), SeriesError> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+    if common(headers)? != count {
+        return Err(SeriesError::MixedCount(headers.len()));
+    }
+    if headers.len() > usize::from(count) {
+        return Err(SeriesError::Incomplete { have: headers.len(), count: usize::from(count) });
+    }
+    let mut order: Vec<usize> = (0..headers.len()).collect();
+    order.sort_by_key(|&i| headers.get(i).and_then(|h| h.index));
+    for w in order.windows(2) {
+        let (Some(a), Some(b)) = (w.first().and_then(|&i| headers.get(i)), w.get(1).and_then(|&i| headers.get(i))) else { continue };
+        let (ia, ib) = (a.index.unwrap_or(0), b.index.unwrap_or(0));
+        if ia == ib {
+            return Err(SeriesError::Duplicate(ia));
+        }
+        if ib > count {
+            return Err(SeriesError::NoIndex(w.get(1).map_or(0, |i| i + 1)));
+        }
+        let counter_steps = a.counter.zip(b.counter).is_some_and(|(x, y)| y == x.wrapping_add(u32::from(ib - ia)));
+        if !counter_steps {
+            return Err(SeriesError::CounterGap);
+        }
+        if a.time_ms.zip(b.time_ms).is_none_or(|(x, y)| y < x) {
+            return Err(SeriesError::TimeGap);
+        }
+    }
+    Ok(())
+}
+
+/// Check that `headers` (in any order) are one complete series and put them in series order.
+pub fn detect(headers: &[FrameHeader]) -> Result<Series, SeriesError> {
+    let count = common(headers)?;
     // by frame number
     let mut order: Vec<usize> = (0..headers.len()).collect();
     order.sort_by_key(|&i| headers[i].index);
@@ -310,7 +353,7 @@ pub fn detect(headers: &[FrameHeader]) -> Result<Series, SeriesError> {
     // none (about 0.12 s between exposures) to many seconds, so no absolute limit would fit every series.
     let times: Option<Vec<i64>> = order.iter().map(|&i| headers[i].time_ms).collect();
     let Some(times) = times else { return Err(SeriesError::TimeGap) };
-    let mut gaps: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    let mut gaps: Vec<i64> = times.windows(2).map(|w| w[1].saturating_sub(w[0])).collect();
     if gaps.iter().any(|g| *g < 0) {
         return Err(SeriesError::TimeGap);
     }
@@ -318,7 +361,7 @@ pub fn detect(headers: &[FrameHeader]) -> Result<Series, SeriesError> {
     sorted.sort_unstable();
     let median = sorted.get(sorted.len() / 2).copied().unwrap_or(0);
     let tolerance = (median / 2).max(MIN_JITTER_MS);
-    if gaps.drain(..).any(|g| (g - median).abs() > tolerance) {
+    if gaps.drain(..).any(|g| g.saturating_sub(median).saturating_abs() > tolerance) {
         return Err(SeriesError::TimeGap);
     }
     Ok(Series { count, order })
