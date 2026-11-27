@@ -780,7 +780,7 @@ pub fn plugin_fields_ns() -> String {
 pub const FILTERS_PREFIX: &str = "lcpx";
 
 /// Namespace of a photo's pixel-filter plug-in stack in sidecars (prefix [`FILTERS_PREFIX`]): `lcpx:filters`, a
-/// seq of `{lcpx:plugin, lcpx:moduleHash, lcpx:name, lcpx:enabled, lcpx:stage, lcpx:params, lcpx:analysis}`
+/// seq of `{lcpx:plugin, lcpx:moduleHash, lcpx:name, lcpx:enabled, lcpx:stage, lcpx:params, lcpx:analysis, lcpx:mask}`
 /// (`params` and `analysis` as JSON text). Under the app's homepage: `<homepage>/ns/plugin-filters/1.0/`.
 pub fn plugin_filters_ns() -> String {
     format!("{}/ns/plugin-filters/1.0/", lcc_brand::HOMEPAGE.trim_end_matches('/'))
@@ -800,6 +800,8 @@ pub struct XmpPluginFilter {
     pub params: String,
     /// JSON text; empty when the filter has no analysis.
     pub analysis: String,
+    /// JSON text (`{"id":…,"invert":…}`); empty when the filter applies to the whole frame.
+    pub mask: String,
 }
 
 /// Longest text one stack entry part may have when read ([`plugin_filters`]); longer entries are skipped.
@@ -827,6 +829,7 @@ pub fn plugin_filters(d: &XmpData, max: usize) -> Option<Vec<XmpPluginFilter>> {
                 stage: part("stage")?,
                 params: part("params")?,
                 analysis: part("analysis")?,
+                mask: part("mask")?,
             };
             (!e.plugin.is_empty()).then_some(e)
         })
@@ -1067,6 +1070,7 @@ pub fn write_xmp_filters(
                 ("stage", &f.stage),
                 ("params", &f.params),
                 ("analysis", &f.analysis),
+                ("mask", &f.mask),
             ] {
                 if !v.is_empty() {
                     x.push_str(&format!("      <{p}:{k}>{}</{p}:{k}>\n", partial_escape(v.as_str())));
