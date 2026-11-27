@@ -5,8 +5,10 @@
 //!   state after op `N` in catalog format `V` ([`VERSION`]); replaced atomically (temp + fsync +
 //!   rename).
 //! - `catalog.log` — JSON lines, one per op applied after the snapshot:
-//!   `{"seq":N,"crc":C,"op":{…}}` where `C` is the CRC-32 of the op's JSON text. Appends are
-//!   fsynced before [`Journal::append`] returns.
+//!   `{"seq":N,"crc":C,"op":{…}}` where `C` is the CRC-32 of the op's JSON text. Natively, appends
+//!   are handed to a writer thread of the log's own and are durable once [`Journal::flush`] returns
+//!   (the engine waits for it before a command reports success); elsewhere they are fsynced before
+//!   [`Journal::append`] returns.
 //!
 //! Loading = snapshot + replay of the records with `seq > snapshot seq`. Recovery rules:
 //! - a **torn final record** (crash mid-append: truncated line or bad CRC at the end) is dropped
