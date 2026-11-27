@@ -1569,6 +1569,9 @@ pub(crate) fn nodes_ui(
     bar_bottom: Option<f32>,
 ) {
     ui.set_min_width(220.0);
+    // a menu is as wide as its widest row, as a native one: a row's name never wraps onto a second line, which a
+    // menu whose rows are all short (Develop) otherwise did at its first frame's width (#1316)
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     menu_text_style(ui);
     for n in nodes {
         match n {
