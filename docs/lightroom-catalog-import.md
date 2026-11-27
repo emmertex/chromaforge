@@ -164,7 +164,7 @@ was, and nothing is imported; it is never skipped table by table, so no photo co
 a table holds. `<PREFIX>_LIGHTROOM_IMPORT_MEMORY=<GiB>` sets the budget instead (more on a computer
 whose other apps can wait, less to keep room for them). Of each `AgLibraryFile` row only its folder
 and file name are kept, and of `Adobe_AdditionalMetadata` only the XMP packet, which each photo then
-takes over rather than copies. These bounds limit work and decoded data: a catalog within the
+takes over rather than copies. The import is committed and saved 20,000 changes at a time and the parts fold into one undo step, so the session never holds a second copy of the whole import waiting to be saved; a failure takes every part back. If the app stops partway (a crash, power loss), the parts already saved stay in the library and importing the catalog again adds the rest, though virtual copies saved before the stop may come in twice, because the import index is written when the import ends. These bounds limit work and decoded data: a catalog within the
 page-count cap may still exceed a record limit. Inspection and import can be cancelled between pages.
 The open file and source path are checked again after all tables are read. Close Lightroom before
 importing: metadata checks detect ordinary concurrent changes, but are not SQLite snapshot isolation.
