@@ -34,7 +34,7 @@ but it is a command of its own: give it a key in Help → Keyboard Shortcuts and
 the selected photos, as the Photo → Set Color Label → None row does (which then shows the key). Rejection marks a photo for
 culling; it does not delete the original or remove it from the library.
 Setting or clearing a colour label, whether by a key, menu or swatch, is reported by the on-screen
-overlay (Settings → Interface → On-Screen Overlay, "Show changes"), as ratings and flags are, using the
+overlay (Settings → Notifications → Image and Library edits, "Show changes"), as ratings and flags are, using the
 colour or your custom label name; no toast repeats it.
 Labelled thumbnails have a translucent matching colour on the square-grid surround, photo-grid
 footer (translucent, over the bottom of the photo) and Detail filmstrip surround. The white active-photo outline remains clear.

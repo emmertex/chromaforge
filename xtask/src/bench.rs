@@ -1,5 +1,6 @@
-//! `cargo xtask bench [FILE] [--only P,P…] [--strict] [--threshold PCT] [--save-baseline]`: run the
-//! performance probes in [`PROBES`] (render, Library grid at 100k, TIFF ZIP export, keyword tree, start-up at 100k, wheel-scroll at 100k), record
+//! `cargo xtask bench [FILE] [--only P,P…] [--export-dir DIR] [--strict] [--threshold PCT] [--save-baseline]`: run
+//! the performance probes in [`PROBES`] (render, Library grid at 100k, TIFF ZIP export, keyword tree, start-up at
+//! 100k, wheel-scroll at 100k, 45 MP export: `--export-dir` gives it real raws instead of synthetic ones), record
 //! the results in `target/bench/history.jsonl` (one JSON object per run, with git revision, host and load
 //! average), check them against the budgets in [`BUDGETS`] and compare with this machine's stored baseline
 //! (`target/bench/baseline.json`, written by `--save-baseline`; the previous run on this host when there is
@@ -37,9 +38,10 @@ pub fn parse(output: &str) -> BTreeMap<String, f64> {
             };
             for part in body.split(',') {
                 let toks: Vec<&str> = part.split_whitespace().collect();
-                if let [v, "ms", kind] = toks[..]
+                // (`N MB peak` and `N % busy`, export45's memory and GPU columns, are recorded but never compared)
+                if let [v, unit, kind] = toks[..]
                     && let Ok(v) = v.parse::<f64>()
-                    && matches!(kind, "wall" | "cpu")
+                    && matches!((unit, kind), ("ms", "wall" | "cpu") | ("MB", "peak") | ("%", "busy"))
                 {
                     out.insert(format!("{name}/{backend}/{kind}"), v);
                 }
@@ -85,6 +87,8 @@ pub const PROBES: &[Probe] = &[
     probe("keywords", &["test", "--release", "-q", "-p", "lcc-catalog", "--lib", "probe_keyword_tree_cost", "--", "--nocapture"]),
     probe("startup", &["run", "--release", "-q", "-p", "lcc-ui-egui", "--example", "startup_bench"]), // 100k-photo library (4.1)
     probe("wheel", &["test", "--release", "-q", "-p", "lcc-ui-egui", "--lib", "tests_viewperf::wheel_scroll_100k_frame", "--", "--nocapture"]), // 4.8
+    // 45 MP raws to 2048 px and full-size JPEGs, per stage, CPU, GPU busy, peak memory (#1377); `--export-dir DIR`: real raws
+    probe("export45", &["run", "--release", "-q", "-p", "lcc-engine", "--example", "export45_bench", "--"]),
 ];
 
 /// A wall-clock ceiling on one metric. `enforce: false` is reported but never fails `--strict`: a known miss
@@ -189,7 +193,10 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let file = args
         .iter()
         .enumerate()
-        .find(|(i, a)| !a.starts_with("--") && !i.checked_sub(1).and_then(|j| args.get(j)).is_some_and(|p| matches!(*p, "--threshold" | "--only")))
+        .find(|(i, a)| {
+            !a.starts_with("--")
+                && !i.checked_sub(1).and_then(|j| args.get(j)).is_some_and(|p| matches!(*p, "--threshold" | "--only" | "--export-dir"))
+        })
         .map(|(_, s)| s.to_string());
     let file = file.or_else(|| {
         let default = root.join("corpus/raw/arw-sony-a7m3-compressed.arw");
@@ -202,6 +209,11 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
         let input = if p.takes_file { file.as_deref() } else { None };
         if let Some(f) = input {
             cmd.arg(f);
+        }
+        if p.name == "export45"
+            && let Some(d) = opt("--export-dir")
+        {
+            cmd.args(["--dir", d]);
         }
         let shown = if p.takes_file { input.unwrap_or("(procedural 24 MP source)") } else { "" };
         eprintln!("$ cargo {} {shown}", p.cargo.join(" "));
@@ -355,6 +367,18 @@ window pan (new window, warm src):     cpu: 912.0 ms wall, 2210.5 ms cpu  |  gpu
         *now.get_mut("grid 100k | wheel-scroll frame/cpu/wall").unwrap() = 20.0;
         let r = regressions(&compared(&prev), &compared(&now), 0.2);
         assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn export45_memory_and_gpu_columns_are_recorded_but_not_compared() {
+        let line = "export 45 MP to 2048 px, per photo:  cpu: 900.0 ms wall, 3100.0 ms cpu, 2650 MB peak  |  gpu: 700.0 ms wall, 2900.0 ms cpu, 2700 MB peak, 31.5 % busy\nexport 45 MP to 2048 px, stage raw decode:  cpu: 310.0 ms wall  |  gpu: 305.0 ms wall";
+        let m = parse(line);
+        assert_eq!(m["export 45 MP to 2048 px, per photo/gpu/busy"], 31.5);
+        assert_eq!(m["export 45 MP to 2048 px, per photo/cpu/peak"], 2650.0);
+        assert_eq!(m["export 45 MP to 2048 px, stage raw decode/gpu/wall"], 305.0);
+        let c = compared(&m);
+        assert!(c.keys().all(|k| k.ends_with("/cpu") || k.ends_with("/wall")), "{c:?}");
+        assert!(c.contains_key("export 45 MP to 2048 px, per photo/gpu/cpu"));
     }
 
     #[test]
