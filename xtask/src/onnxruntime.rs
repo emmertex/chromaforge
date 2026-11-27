@@ -116,11 +116,7 @@ const PLATFORMS: &[Platform] = &[
 
 /// This machine's platform key (`linux-x86_64`, …).
 fn host() -> String {
-    let os = match std::env::consts::OS {
-        "macos" => "macos",
-        other => other,
-    };
-    format!("{os}-{}", std::env::consts::ARCH)
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
