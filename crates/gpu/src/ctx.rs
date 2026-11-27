@@ -15,6 +15,11 @@ struct Module {
 
 const MODULES: &[Module] = &[
     Module {
+        src: include_str!("wgsl/demosaic.wgsl"),
+        bindings: &[("mos", false, "f32"), ("gr", true, "f32"), ("lab", true, "f32"), ("homo", true, "u32"), ("rgb_out", true, "f32")],
+        entries: &["ahd_green", "ahd_to_lab", "ahd_homogeneity", "ahd_choose"],
+    },
+    Module {
         src: include_str!("wgsl/finish.wgsl"),
         bindings: &[
             ("img", false, "f32"),

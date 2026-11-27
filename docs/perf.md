@@ -192,6 +192,12 @@ bin_sharpness`) is the visual check: SSIM against a full AHD demosaic ≥ 0.998 
 px; on a zone plate 0.96–0.998 binned by 2, against 0.64–0.80 for the old box fit to 2560 px. Crops are written to
 `target/bench/bin-sharpness/`.
 
+Step 3 of #1377: a Bayer raw's full-size AHD runs on the GPU (`lcc_gpu::demosaic`, `docs/gpu-pipeline.md`). On this
+container's software Vulkan (lavapipe, `<PREFIX>_GPU_SOFTWARE=1`) it is bit-identical to the CPU's in every Bayer phase
+and across strip seams, and the export path takes it (`gpu` column 17 % busy, 2 photos at full size). That machine's
+"GPU" is the same 4 cores, so the time there (demosaic stage 2.84 s against 1.65 s on the CPU) says nothing about a
+real card; `<PREFIX>_GPU_DEMOSAIC=0` against the default on a machine with one is the comparison to make.
+
 ## Start-up (`cargo xtask bench`, `startup_bench`; plan item 4.1, #979)
 
 `cargo run --release -p lcc-ui-egui --example startup_bench -- [DIR] [PHOTOS]` makes a synthetic library (default

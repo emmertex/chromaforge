@@ -24,6 +24,7 @@ JSON line for each command says why it failed. If the app does crash, please rep
 
 - GPU problems: start with `<PREFIX>_GPU=0` (CPU only) to confirm, or pick a backend with
   `<PREFIX>_GPU_BACKEND=vulkan|metal|dx12|gl` (`off` also disables the GPU). Settings has a GPU rendering switch too.
+  `<PREFIX>_GPU_DEMOSAIC=0` keeps only the full-size raw demosaic on the CPU (it runs on the GPU otherwise).
 - The window stopped drawing and the app ended with "its window stopped drawing: the graphics driver lost the …
   renderer's GPU device": the library and settings were saved first. From the next start the window uses the next
   renderer (Windows: Vulkan → DX12 → GL → OpenGL; Windows on ARM: DX12 → Vulkan → GL → OpenGL) and keeps trying the lost one last; `<PREFIX>_GPU_BACKEND=dx12`
