@@ -166,7 +166,8 @@ impl OriginalsReader {
     /// `next` (the photos [`unread`] would list after it, at most [`AHEAD_BATCHES`] batches of
     /// them) ahead. A cancel drops what was read ahead. `cancel` stays linked to the reads ahead:
     /// once it is set no further read starts, between calls too (a call with another flag drops
-    /// what was read ahead and links its own).
+    /// what was read ahead and links its own; so a caller passes one flag for all of a run's
+    /// batches, or its reads ahead are never used).
     pub fn read(
         &mut self,
         batch: Vec<Unread>,
