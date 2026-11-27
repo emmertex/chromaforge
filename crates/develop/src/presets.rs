@@ -211,6 +211,16 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
             out.insert("retouch".into(), serde_json::to_value(crate::Retouch::default()).unwrap_or(Value::Null));
         }
     }
+    // a plug-in filter's measurement describes the photo it was taken on: copy / paste, sync and presets carry the
+    // entry without it, so a target reads "Not measured yet" rather than filtering with another photo's numbers
+    // (#1394). A roll measurement (`_roll`, measured on several photos together) is meant to be shared and stays.
+    if let Some(Value::Array(stack)) = out.get_mut("plugin_filters") {
+        for e in stack.iter_mut().filter_map(Value::as_object_mut) {
+            if !e.get("analysis").and_then(|a| a.get("_roll")).is_some_and(|r| !r.is_null()) {
+                e.remove("analysis");
+            }
+        }
+    }
     // the Camera colour is left out of the settings while it is Auto; a preset or a sync of the Profile group still
     // carries it, so that applying it turns a Colorimetric photo back to Auto
     if let Some(Value::Object(profile)) = out.get_mut("profile") {
