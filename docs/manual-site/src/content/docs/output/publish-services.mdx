@@ -14,6 +14,7 @@ import { Aside } from '@astrojs/starlight/components';
 - A published collection groups its photos: **New Photos to Publish**, **Modified Photos to Re-Publish**, **Published Photos**, **Deleted Photos to Remove**.
 - **Publish** renders and sends; re-publishing replaces; removing a photo deletes it at the destination.
 - **Mark as Up-to-Date** clears a state without sending.
+- Hard Drive: one folder per collection. Two photos with the same file name become `a.jpg` and `a-2.jpg`. After a publish that stopped partway (the app closed, a crash), the next one sends those photos again but recognises a file already there with the same contents, so no `-2` copies appear.
 - SFTP: one folder per collection; the host key is remembered on first use.
 - Immich: collections become albums; send renders, originals or both.
 - Plug-in services: a [plug-in](../../automate/plugins/) can add an online service. It gets the service's settings, each collection's name, and each photo's title, caption and keywords; it can show the site's comments in **Library ▸ Review Comments**.

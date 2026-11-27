@@ -6593,6 +6593,25 @@ pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
     (px.round() as usize).clamp(128, 512)
 }
 
+/// Whether the strip scrolls to centre the active photo at index `i` of `n`, its cells `cell_w` wide, with
+/// `left..right` in view: when that photo or a neighbour of it is not wholly in view. A strip too narrow to show
+/// three whole cells asks only for the photo itself.
+pub(crate) fn film_should_follow(i: usize, n: usize, cell_w: f32, left: f32, right: f32) -> bool {
+    let whole = |j: usize| {
+        let l = j as f32 * cell_w;
+        l >= left - 0.5 && l + cell_w <= right + 0.5
+    };
+    if !whole(i) {
+        return true;
+    }
+    if right - left < cell_w * 3.0 {
+        return false;
+    }
+    let before = i.checked_sub(1).is_some_and(|j| !whole(j));
+    let after = i + 1 < n && !whole(i + 1);
+    before || after
+}
+
 /// The filmstrip's scroll offset after its cells change from `old_w` to `new_w` points wide: the
 /// photo at index `at` (the active one) stays where it was on screen; with none, the first photo
 /// in view does.
@@ -6720,8 +6739,9 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             for (i, id) in ids.iter().enumerate() {
                 let cr = Rect::from_min_size(pos2(area.left() + i as f32 * cell_w, area.top()), vec2(cell_w, area.height()));
                 let local = Rect::from_min_size(pos2(i as f32 * cell_w, 0.0), cr.size());
-                // centred when it is (partly) off screen; a click on a visible thumbnail leaves the strip alone
-                if follow && Some(*id) == active && !(local.left() >= vp.left() && local.right() <= vp.right()) {
+                // centred when it, or a neighbour beside it, is (partly) off screen, as in Lightroom Classic: the
+                // last whole thumbnail in view already scrolls the strip, so the next one is never half hidden (#1319)
+                if follow && Some(*id) == active && film_should_follow(i, ids.len(), cell_w, vp.left(), vp.right()) {
                     ui.scroll_to_rect(cr, Some(egui::Align::Center));
                 }
                 if !local.intersects(vp.expand2(vec2(cell_w * 4.0, 0.0))) {

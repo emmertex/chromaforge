@@ -1712,7 +1712,8 @@ fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
     {
         let (mut s, id, dir) = library_with_transparent_png("export-alpha");
         for (format, depth) in [("png", 8), ("png", 16), ("tiff", 8), ("tiff", 16), ("tiff", 32), ("webp", 8)] {
-            let o = ExportOptions::from_json(&json!({"format": format, "bitDepth": depth}));
+            // (exact colours: WebP lossless here; the lossy WebP default is checked below)
+            let o = ExportOptions::from_json(&json!({"format": format, "bitDepth": depth, "webpLossless": true}));
             let e = export_photo(&mut s, id, &o, 1).unwrap();
             let d = lcc_codecs::decode(&e.bytes, Default::default()).unwrap();
             assert!(d.has_alpha, "{format} {depth}-bit keeps alpha");
@@ -1731,6 +1732,14 @@ fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
                 assert!(e.bytes.windows(10).any(|w| w == [0x52, 0x01, 3, 0, 1, 0, 0, 0, 1, 0]), "{depth}-bit TIFF alpha is associated");
             }
         }
+        // lossy WebP (the default where libwebp is built in) keeps the alpha too, with the colour close
+        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "webp"})), 1).unwrap();
+        let d = lcc_codecs::decode(&e.bytes, Default::default()).unwrap();
+        assert!(d.has_alpha, "lossy webp keeps alpha");
+        let a = d.alpha.as_ref().unwrap();
+        assert!(a.get(2, 2) < 0.02 && a.get(150, 100) > 0.98, "lossy webp: transparent corner, opaque middle");
+        let mid = d.to_srgb8().get(150, 100);
+        assert!(mid[0].abs_diff(200) <= 12 && mid[1].abs_diff(40) <= 12 && mid[2].abs_diff(30) <= 12, "lossy webp colour {mid:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
     // JPEG (and the other formats without alpha in this export) composites a transparent source onto
@@ -1842,7 +1851,9 @@ fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
     s.execute("crop.set", &json!({"angle": 10.0})).unwrap();
     s.execute("develop.set", &json!({"ids": [id.0], "control": "light.exposure", "value": 0.7})).unwrap();
     for format in ["png", "tiff", "webp"] {
-        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format})), 1).unwrap();
+        // (exact colours: WebP lossless; lossy WebP subsamples the colour of a soft edge)
+        let o = ExportOptions::from_json(&json!({"format": format, "webpLossless": true}));
+        let e = export_photo(&mut s, id, &o, 1).unwrap();
         let d = lcc_codecs::decode(&e.bytes, Default::default()).unwrap();
         assert!(d.has_alpha, "{format}");
         let px = d.to_srgb8();

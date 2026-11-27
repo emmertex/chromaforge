@@ -180,3 +180,21 @@ fn the_filmstrip_header_filters_by_flag_rating_and_label_in_lightroom_order() {
     h.settle(SETTLE);
     assert_eq!(h.app.session.filter.labels_shown().unwrap_or_default(), vec![lcc_catalog::ColorLabel::Red]);
 }
+
+// #1319: like Lightroom Classic, the last (or first) whole thumbnail in view already scrolls the strip
+#[test]
+fn filmstrip_follows_from_the_last_whole_thumbnail() {
+    use crate::panels::detail::film_should_follow;
+    // ten 100 pt cells, 0..450 in view: cells 0-3 whole, cell 4 half shown
+    let f = |i| film_should_follow(i, 10, 100.0, 0.0, 450.0);
+    assert!(!f(0), "the first photo has nothing before it");
+    assert!(!f(2));
+    assert!(f(3), "the last whole thumbnail scrolls: the next one is half hidden");
+    assert!(f(4), "a half-shown thumbnail scrolls");
+    assert!(f(8), "off screen scrolls");
+    // scrolled to the end: the last photo has nothing after it
+    assert!(!film_should_follow(9, 10, 100.0, 550.0, 1000.0));
+    assert!(film_should_follow(6, 10, 100.0, 550.0, 1000.0), "the first whole thumbnail after a half-hidden one");
+    // a strip narrower than three cells asks only for the photo itself
+    assert!(!film_should_follow(1, 10, 100.0, 100.0, 250.0));
+}
