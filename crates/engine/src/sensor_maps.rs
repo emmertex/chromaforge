@@ -3,8 +3,9 @@
 //! **Where:** one JSON file per body in [`dir`] (`<PREFIX>_SENSOR_MAPS`, else `<config>/sensor-maps`), like the
 //! camera profiles: a sensor belongs to a camera body, not to a library, so a map survives new libraries, re-imports
 //! and removed folders, and one body shooting into several libraries builds one map. The files hold positions,
-//! counts, dates and exposure figures — never image content. A damaged or hostile file is set aside (renamed
-//! `.bad`) with a warning and a new map starts.
+//! counts, dates and exposure figures — never image content. A file with a few damaged entries keeps the rest (the
+//! original copied aside); one that doesn't read at all is set aside (renamed `<body>.json.<time>.bad`, so a second
+//! damage never overwrites the first) with a warning and a new map starts. A failed save is tried again.
 //!
 //! **Body:** [`body_key`] — the body's serial number when the file has one, else `file:XX` from the first two
 //! characters of the file name (as `feat/camera-profiling` names bodies, so the two agree). A map also records its
@@ -372,7 +373,8 @@ impl BodyMap {
         let when = shot.captured.clone().unwrap_or_default();
         let mut index: HashMap<(u32, u32, u8), usize> = self.pixels.iter().enumerate().map(|(i, p)| ((p.x, p.y, p.s), i)).collect();
         let mut hit = vec![false; self.pixels.len()];
-        for d in found {
+        // (a non-finite level can't be stored: JSON writes it as null and the map would no longer load, #1417)
+        for d in found.iter().filter(|d| d.level.is_finite()) {
             match index.get(&(d.x, d.y, d.s)).copied() {
                 Some(i) => {
                     let Some(p) = self.pixels.get_mut(i) else { continue };
@@ -884,8 +886,9 @@ fn read_file(body: &str) -> Option<BodyMap> {
     let path = dir()?.join(file_name(body));
     let meta = std::fs::metadata(&path).ok()?;
     let bad = |why: String| {
-        log::warn!("sensor map {}: {why}; starting a new one (the old file is kept as .bad)", path.display());
-        let _ = std::fs::rename(&path, path.with_extension("json.bad"));
+        let kept = bad_path(&path);
+        log::warn!("sensor map {}: {why}; starting a new one (the old file is kept as {})", path.display(), kept.display());
+        let _ = std::fs::rename(&path, kept);
         None
     };
     if meta.len() > MAX_FILE {
@@ -898,8 +901,49 @@ fn read_file(body: &str) -> Option<BodyMap> {
     match serde_json::from_str::<BodyMap>(&text) {
         Ok(m) if m.valid() && m.body == body => Some(m),
         Ok(_) => bad("not a valid map for this body".into()),
-        Err(e) => bad(e.to_string()),
+        // one damaged entry (an unknown kind, a null level) costs that entry, not the body's whole map (#1417)
+        Err(e) => match read_leniently(&text) {
+            Some((m, dropped)) if m.valid() && m.body == body => {
+                let kept = bad_path(&path);
+                log::warn!("sensor map {}: {e}; left out {dropped} damaged entries (the old file is kept as {})", path.display(), kept.display());
+                let _ = std::fs::copy(&path, kept);
+                Some(m)
+            }
+            _ => bad(e.to_string()),
+        },
     }
+}
+
+/// A map read entry by entry: the pixel and dust entries that don't read are dropped (and counted), the rest kept.
+/// `None` when the file isn't a JSON object or what's left still doesn't read as a map.
+fn read_leniently(text: &str) -> Option<(BodyMap, usize)> {
+    let mut v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let obj = v.as_object_mut()?;
+    let mut dropped = 0;
+    if let Some(a) = obj.get_mut("pixels").and_then(serde_json::Value::as_array_mut) {
+        let n = a.len();
+        a.retain(|e| PixelEntry::deserialize(e).is_ok());
+        dropped += n - a.len();
+    }
+    if let Some(a) = obj.get_mut("dust").and_then(serde_json::Value::as_array_mut) {
+        let n = a.len();
+        a.retain(|e| DustEntry::deserialize(e).is_ok());
+        dropped += n - a.len();
+    }
+    let m = serde_json::from_value::<BodyMap>(v).ok()?;
+    Some((m, dropped))
+}
+
+/// Where a damaged map file is kept: next to it, named by the time, so a second damage never overwrites the first.
+fn bad_path(path: &std::path::Path) -> PathBuf {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+    let mut p = path.with_extension(format!("json.{stamp}.bad"));
+    let mut n = 1u32;
+    while p.exists() && n < 100 {
+        p = path.with_extension(format!("json.{stamp}-{n}.bad"));
+        n += 1;
+    }
+    p
 }
 
 impl Registry {
@@ -913,13 +957,19 @@ impl Registry {
         self.maps.get_mut(body)
     }
 
+    /// Write `body`'s map. Its unsaved count is cleared only once the file is written, so a failed save is tried
+    /// again by the next photo and by [`flush`] (#1417).
     fn save(&mut self, body: &str) -> Result<(), String> {
-        self.unsaved.remove(body);
-        let (Some(dir), Some(m)) = (dir(), self.maps.get(body)) else { return Ok(()) };
+        let (Some(dir), Some(m)) = (dir(), self.maps.get(body)) else {
+            self.unsaved.remove(body);
+            return Ok(());
+        };
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let json = serde_json::to_vec(m).map_err(|e| e.to_string())?;
         let path = dir.join(file_name(body));
-        lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| format!("{}: {e}", path.display()))
+        lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.unsaved.remove(body);
+        Ok(())
     }
 
     fn refresh_fixes(&mut self, body: &str, before: Option<u64>) {

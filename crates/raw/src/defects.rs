@@ -288,6 +288,11 @@ impl<'a> View<'a> {
         } else {
             return None;
         };
+        // extreme (corrupt or crafted) float samples can overflow the difference; such a level would poison the
+        // stored sensor map (#1417)
+        if !excess.is_finite() {
+            return None;
+        }
         let dark = kind == DefectKind::Dead;
         (self.isolated(x, y, s, excess, dark, noise, buf) && self.alone(x, y, s, excess, dark)).then_some(Defect {
             x: x as u32,

@@ -558,6 +558,16 @@ pub fn bin_factor(raw: &lcc_raw::RawImage, max_edge: usize) -> Option<usize> {
     [8usize, 6, 4, 3, 2].into_iter().find(|&k| raw.can_bin(k) && (long / k >= need || (k == 3 && !raw.can_bin(2) && long / k >= need3)))
 }
 
+/// The block an export bins a raw by ([`crate::media::LoadOptions::keep_binned`], #1377): the smallest that the
+/// sensor allows and that leaves at least `edge` pixels on the long side. Smallest, not largest: a box over a larger
+/// block aliases the detail between its own Nyquist limit and the output's (the `bin_sharpness` example's zone
+/// plate: SSIM 0.96 against a full demosaic with a block of 4 at 1024 px from 45 MP, 0.998 with a block of 2).
+pub fn export_bin_factor(raw: &lcc_raw::RawImage, edge: usize) -> Option<usize> {
+    let c = raw.crop.clipped(raw.active_area.width, raw.active_area.height);
+    let long = if c.width > 1 && c.height > 1 { c.width.max(c.height) } else { raw.active_area.width.max(raw.active_area.height) };
+    [2usize, 3, 4, 6, 8].into_iter().find(|&k| raw.can_bin(k)).filter(|&k| long / k >= edge.max(1))
+}
+
 /// Decode a file into a linear Rec.2020 image no larger than `max_edge`, oriented.
 ///
 /// Runs on a rayon worker: its many short parallel loops then start on the worker's own queue
@@ -746,7 +756,7 @@ fn load_bytes_now(
         let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
-            None => lcc_raw::decode(&bytes),
+            None => crate::raw_decoder::decode(&bytes),
         };
         let mut raw = match decoded.map_err(|e| preview_reason(&bytes, e)) {
             Ok(r) => r,
@@ -840,7 +850,7 @@ fn load_bytes_now(
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
         let t0 = web_time::Instant::now();
-        let bin = bin_factor(&raw, max_edge);
+        let bin = if options.keep_binned { export_bin_factor(&raw, max_edge) } else { bin_factor(&raw, max_edge) };
         // (binned: block means, and which colours had a clipped sample in each block)
         let binned = match bin {
             Some(k) => raw.develop_binned_masked(k, HIGHLIGHT_CLIP).map_err(|e| e.to_string())?,
@@ -880,7 +890,8 @@ fn load_bytes_now(
             colour.apply(&mut img);
             stages.push(("colour", t0.elapsed()));
             // a full-size render keeps the picture (fitting it to its own size would copy it, ~390 MB at 33 MP)
-            let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Box) } else { img };
+            // (an export's binned source keeps its size: the pipeline takes it to the output in one Lanczos step)
+            let img = if !options.keep_binned && img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Box) } else { img };
             stages.push(("fit", t0.elapsed()));
             let img = img.into_oriented(raw.orientation);
             stages.push(("orient", t0.elapsed()));

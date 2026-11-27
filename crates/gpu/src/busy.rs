@@ -6,11 +6,13 @@
 //! submission waits in the queue behind others, and its callback can run a little after it finished, at the next
 //! poll), not a hardware utilisation counter; on a machine whose exports keep the card fed, the two agree closely.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 static ON: AtomicBool = AtomicBool::new(false);
+/// Holders of [`hold`]: they read differences of [`busy_time`], so metering for them never resets the total.
+static HOLDERS: AtomicUsize = AtomicUsize::new(0);
 static STATE: Mutex<State> = Mutex::new(State { in_flight: 0, since: None, busy: Duration::ZERO });
 
 struct State {
@@ -33,7 +35,23 @@ pub fn set_metering(on: bool) {
 
 /// Whether submissions are metered.
 pub fn metering() -> bool {
-    ON.load(Ordering::Relaxed)
+    ON.load(Ordering::Relaxed) || HOLDERS.load(Ordering::Relaxed) > 0
+}
+
+/// Meter submissions while the returned guard lives, without resetting the total: for a reader of how [`busy_time`]
+/// changes over a stretch of work (an export batch sizing its lanes, #1377).
+pub fn hold() -> Hold {
+    HOLDERS.fetch_add(1, Ordering::Relaxed);
+    Hold(())
+}
+
+/// Metering held on ([`hold`]).
+pub struct Hold(());
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        HOLDERS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Time the GPU had work in flight since metering started.

@@ -24,6 +24,7 @@ lcc-geom = { path = "crates/geom" }
 lcc-faces = { path = "crates/faces" }
 lcc-sysmem = { path = "crates/sysmem" }
 lcc-diag = { path = "crates/diag" }
+lcc-libraw = { path = "crates/libraw" }
 lcc-hdrmeta = { path = "crates/hdrmeta" }
 lcc-gpumem = { path = "crates/gpumem" }
 lcc-onnxrt = { path = "crates/onnxrt" }
@@ -134,6 +135,8 @@ ab_glyph = { version = "0.2", default-features = false, features = ["std"] }  # 
 png = "0.18"
 tiff = "0.11"
 image-webp = "0.2"
+# lossy WebP export (libwebp, C; AGENTS.md → "Rust first", #1482): its safe wrapper, without the `image` integration
+webp = { version = "0.3", default-features = false }
 exr = { version = "1.74", default-features = false } # BSD-3-Clause, pure Rust (no unsafe) OpenEXR; scene-linear export
 moxcms = { version = "0.9", default-features = false, features = ["lut"] }
 jxl-oxide = { version = "0.12", default-features = false }
