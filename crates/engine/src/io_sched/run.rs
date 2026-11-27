@@ -150,6 +150,8 @@ struct Call<'a, T> {
     seq: u64,
     cancelling: bool,
     remaining: usize,
+    /// Monotonic ns spent running jobs on the calling thread since the last tick (not lateness).
+    inline_ns: u64,
 }
 
 /// Run `jobs` per volume, at most `workers` at once on one volume (today's `workers()`), and when
@@ -228,6 +230,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         seq: 0,
         cancelling: false,
         remaining,
+        inline_ns: 0,
     };
     call.run();
     let (outcomes, metrics): (Vec<_>, Vec<_>) = call.slots.into_iter().map(|s| (s.outcome.unwrap_or(JobOutcome::NotStarted), s.metrics)).unzip();
@@ -265,6 +268,15 @@ fn run_single<T: Send + 'static>(ctx: &Arc<IoContext>, job: IoJob<T>, succeeded:
     let metrics = vec![Some(metrics)];
     log_metrics(&metrics);
     Report { outcomes: vec![outcome], metrics }
+}
+
+/// Whether a tick `dm` ns of the monotonic clock after the last one, `inline` of them spent running
+/// a job on the calling thread, came so late that the computer slept in between: more than
+/// [`WAKE_JUMP`] past the tick's period, where the monotonic clock counts sleep
+/// ([`IoContext::late_tick_is_wake`]).
+fn woke_late(ctx: &IoContext, dm: u64, inline: u64) -> bool {
+    let period = u64::try_from(ctx.tick.as_nanos()).unwrap_or(u64::MAX);
+    ctx.late_tick_is_wake && dm.saturating_sub(inline) > period.saturating_add(WAKE_JUMP)
 }
 
 /// Per-volume totals of a call (R9): debug log, and stderr under `<PREFIX>_PROFILE`.
@@ -324,12 +336,14 @@ impl<T: Send + 'static> Call<'_, T> {
             }
             let (now, wall) = (clock.mono(), clock.wall());
             let (dm, dw) = (now.saturating_sub(prev_mono), wall.saturating_sub(prev_wall));
-            if dw > dm.saturating_add(WAKE_JUMP) {
+            let late = woke_late(self.ctx, dm, std::mem::take(&mut self.inline_ns));
+            if dw > dm.saturating_add(WAKE_JUMP) || late {
                 log::info!("io: the computer woke from sleep: every volume gets a grace period");
                 self.ctx.shared.note_wake(now);
             }
             (prev_mono, prev_wall) = (now, wall);
-            self.tick(now, dm);
+            // (a late tick's gap was the sleep, not the volumes' silence)
+            self.tick(now, if late { 0 } else { dm });
             self.ctx.ticks.fetch_add(1, Ordering::Relaxed);
             if self.remaining == 0 {
                 break;
@@ -493,6 +507,7 @@ impl<T: Send + 'static> Call<'_, T> {
         let (result, metrics) = execute(task.run, &task.job);
         let _ = task.job.try_finish();
         let now = self.clock_now();
+        self.inline_ns = self.inline_ns.saturating_add(metrics.wall);
         self.finish(Finished { index: i, result, metrics }, now);
         true
     }

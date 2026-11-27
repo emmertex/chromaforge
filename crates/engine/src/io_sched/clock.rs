@@ -1,6 +1,8 @@
 //! The scheduler's clocks, injectable so tests can step time: a monotonic clock (which doesn't
 //! advance while the computer sleeps, on macOS and Linux) and the wall clock (which does). A wall
-//! clock that jumps past the monotonic one marks a wake from sleep (§5.2 of the I/O spec).
+//! clock that jumps past the monotonic one marks a wake from sleep (§5.2 of the I/O spec). On
+//! Windows the monotonic clock (QueryPerformanceCounter) counts the sleep too, so there a tick
+//! that comes far later than it was due marks the wake instead ([`INSTANT_COUNTS_SLEEP`]).
 // (on wasm32 no job runs: the gate only consults this when a job is installed)
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
@@ -8,6 +10,10 @@ use std::sync::OnceLock;
 
 /// Nanoseconds in a second.
 pub(crate) const SEC: u64 = 1_000_000_000;
+
+/// Whether the monotonic clock keeps counting while the computer sleeps (Windows), so a wake
+/// shows as a late tick rather than as a wall-clock jump.
+pub(crate) const INSTANT_COUNTS_SLEEP: bool = cfg!(windows);
 
 /// Both clocks, in nanoseconds.
 pub(crate) trait Clock: Send + Sync {

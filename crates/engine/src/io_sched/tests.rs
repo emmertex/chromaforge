@@ -39,8 +39,10 @@ impl H {
     pub(super) fn with_reader(reader: MountReader) -> H {
         let clock = Arc::new(FakeClock::default());
         clock.advance(1000 * SEC);
-        let ctx = Arc::new(IoContext::new(clock.clone(), reader, Duration::from_millis(1)));
-        H { clock, ctx }
+        let mut ctx = IoContext::new(clock.clone(), reader, Duration::from_millis(1));
+        // (tests step the clock by whole stall times: no late tick is a wake unless a test says so)
+        ctx.late_tick_is_wake = false;
+        H { clock, ctx: Arc::new(ctx) }
     }
 
     pub(super) fn advance(&self, nanos: u64) {
@@ -567,6 +569,55 @@ fn a_wake_from_sleep_gives_120_s() {
             h.advance(1);
             call.settle(&h, 3);
             assert!(call.finished(), "120 s after the wake");
+        }
+        latch.release();
+        call.join();
+    }
+}
+
+/// Where the monotonic clock counts sleep (Windows), a tick more than 5 s later than its period
+/// is a wake: the gap isn't silence, and every volume gets 120 s from it. Gap at, just below and
+/// just above the period + 5 s; then the grace's end, stepped as a running computer does.
+#[test]
+fn a_late_tick_is_a_wake_where_the_clock_counts_sleep() {
+    let period = 1_000_000u64; // H's tick: 1 ms
+    let start_hung = |h: &H| {
+        let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+        let call = h.start(hanging("/a", 2, &latch, &started, true), 4);
+        wait_until(|| started.load(Ordering::SeqCst) == 2, "start");
+        call.settle(h, 3);
+        (call, latch)
+    };
+    // step the clocks together, at most 1 s a tick (no step is late)
+    let run_for = |h: &H, call: &Call, nanos: u64| {
+        let mut left = nanos;
+        while left > 0 && !call.finished() {
+            let step = left.min(SEC);
+            h.advance(step);
+            call.settle(h, 2);
+            left -= step;
+        }
+    };
+    for (gap, wake) in [(period + WAKE_JUMP - 1, false), (period + WAKE_JUMP, false), (period + WAKE_JUMP + 1, true), (60 * SEC, true)] {
+        let clock = Arc::new(FakeClock::default());
+        clock.advance(1000 * SEC);
+        let mut ctx = IoContext::new(clock.clone(), list(&["/", "/a"]), Duration::from_millis(1));
+        ctx.late_tick_is_wake = true;
+        let h = H { clock, ctx: Arc::new(ctx) };
+        let (call, latch) = start_hung(&h);
+        // one late tick (both clocks move together, as on Windows)
+        h.advance(gap);
+        call.settle(&h, 3);
+        if gap >= STALL_WITH_BYTES {
+            assert!(!call.finished(), "a 60 s sleep doesn't stall the volume at once");
+        }
+        run_for(&h, &call, STALL_WITH_BYTES);
+        assert_eq!(call.finished(), !wake, "gap {gap}: 30 s more of silence stalls only without a wake");
+        if wake {
+            run_for(&h, &call, STALL_GRACE - STALL_WITH_BYTES - 2 * SEC);
+            assert!(!call.finished(), "within 120 s of the wake");
+            run_for(&h, &call, 3 * SEC);
+            assert!(call.finished(), "after 120 s of silence since the wake");
         }
         latch.release();
         call.join();

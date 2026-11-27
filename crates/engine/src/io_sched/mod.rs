@@ -46,6 +46,10 @@ pub(crate) struct IoContext {
     pub(crate) spawn_budget: AtomicUsize,
     /// Bookkeeping ticks run (tests wait on it).
     pub(crate) ticks: AtomicU64,
+    /// A tick that comes more than [`shared::WAKE_JUMP`] late is a wake from sleep too: on
+    /// Windows, where the monotonic clock counts the sleep (so the wall clock doesn't jump past
+    /// it); elsewhere the wall-clock jump alone tells (tests set it).
+    pub(crate) late_tick_is_wake: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +62,7 @@ impl IoContext {
             mount_wait: mounts::MOUNT_WAIT,
             spawn_budget: AtomicUsize::new(usize::MAX),
             ticks: AtomicU64::new(0),
+            late_tick_is_wake: clock::INSTANT_COUNTS_SLEEP,
         }
     }
 
