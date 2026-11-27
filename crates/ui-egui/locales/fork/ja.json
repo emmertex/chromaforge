@@ -224,6 +224,7 @@
   "Apply earlier": "前に適用",
   "Apply later": "後に適用",
   "Apply no longer picks this reference; photos that use it keep it": "適用でこの参照写真は選ばれなくなります。使用中の写真はそのまま保持します",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "写真のマスクのいずれかがある部分だけにフィルターを適用し、その範囲に応じて混ぜ合わせます",
   "Apply the reference that fits this photo": "この写真に合う参照写真を適用",
   "Apply the same edit": "同じ編集を適用",
   "Apply to All": "すべてに適用",
@@ -1901,6 +1902,7 @@
   "Midtone Hue": "中間調の色相",
   "Midtone Luminance": "中間調の輝度",
   "Midtone Saturation": "中間調の彩度",
+  "Missing mask": "見つからないマスク",
   "Modern": "モダン",
   "Modern Histogram": "モダンヒストグラム",
   "Modern Layout": "モダンレイアウト",
@@ -3692,6 +3694,7 @@
   "Whiten": "ホワイトニング",
   "Whiter, brighter teeth: the yellow is taken out gently.": "より白く明るい歯に：黄ばみをやさしく取り除きます。",
   "Who": "人物",
+  "Whole Photo": "写真全体",
   "Wide (16:9)": "ワイド (16:9)",
   "Widescreen": "ワイドスクリーン",
   "Width (pixels)": "幅（ピクセル）",
@@ -4009,8 +4012,5 @@
   "↑ This device has changes still to send": "↑ このデバイスにはまだ送信する変更があります",
   "↓ Another device has changes still to fetch": "↓ 別のデバイスにまだ取得する変更があります",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-ドラッグで水平補正、⇧G でガイド付き Upright、変形中はグリッドを表示。",
-  "★ Favorites": "★ お気に入り",
-  "Whole Photo": "写真全体",
-  "Missing mask": "見つからないマスク",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "写真のマスクのいずれかがある部分だけにフィルターを適用し、その範囲に応じて混ぜ合わせます"
+  "★ Favorites": "★ お気に入り"
 }

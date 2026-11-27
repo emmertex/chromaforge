@@ -224,6 +224,7 @@
   "Apply earlier": "Aplicar antes",
   "Apply later": "Aplicar después",
   "Apply no longer picks this reference; photos that use it keep it": "Aplicar ya no elige esta referencia; las fotos que la usan la conservan",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Aplicar el filtro solo donde está una de las máscaras de la foto, mezclado según su cobertura",
   "Apply the reference that fits this photo": "Aplicar la referencia que corresponde a esta foto",
   "Apply the same edit": "Aplicar la misma edición",
   "Apply to All": "Aplicar a todo",
@@ -1896,6 +1897,7 @@
   "Midtone Hue": "Tono de medios tonos",
   "Midtone Luminance": "Luminancia de medios tonos",
   "Midtone Saturation": "Saturación de medios tonos",
+  "Missing mask": "Máscara ausente",
   "Modern": "Moderno",
   "Modern Histogram": "Histograma moderno",
   "Modern Layout": "Diseño moderno",
@@ -3690,6 +3692,7 @@
   "Whiten": "Blanquear",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Dientes más blancos y luminosos: el amarillo se elimina con suavidad.",
   "Who": "Quién",
+  "Whole Photo": "Foto completa",
   "Wide (16:9)": "Panorámico (16:9)",
   "Widescreen": "Pantalla ancha",
   "Width (pixels)": "Ancho (píxeles)",
@@ -4010,8 +4013,5 @@
   "↑ This device has changes still to send": "↑ Este dispositivo aún tiene cambios por enviar",
   "↓ Another device has changes still to fetch": "↓ Otro dispositivo aún tiene cambios por obtener",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-arrastrar para enderezar, ⇧G Upright guiado, una cuadrícula al transformar.",
-  "★ Favorites": "★ Favoritos",
-  "Whole Photo": "Foto completa",
-  "Missing mask": "Máscara ausente",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Aplicar el filtro solo donde está una de las máscaras de la foto, mezclado según su cobertura"
+  "★ Favorites": "★ Favoritos"
 }

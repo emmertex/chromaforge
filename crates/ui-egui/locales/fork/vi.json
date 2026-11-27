@@ -249,6 +249,7 @@
   "Apply later": "Áp dụng sau",
   "Apply movement every": "Áp dụng chuyển động mỗi",
   "Apply no longer picks this reference; photos that use it keep it": "Áp dụng không còn chọn ảnh tham chiếu này; các ảnh đang dùng vẫn giữ nó",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Chỉ áp dụng bộ lọc ở nơi có một trong các mặt nạ của ảnh, pha trộn theo độ phủ của nó",
   "Apply the reference that fits this photo": "Áp dụng ảnh tham chiếu phù hợp với ảnh này",
   "Apply the same edit": "Áp dụng cùng chỉnh sửa",
   "Apply to All": "Áp dụng cho tất cả",
@@ -2062,6 +2063,7 @@
   "Midtone Hue": "Sắc độ vùng trung tính",
   "Midtone Luminance": "Độ sáng vùng trung tính",
   "Midtone Saturation": "Độ bão hòa vùng trung tính",
+  "Missing mask": "Thiếu mặt nạ",
   "Mixer": "Bộ trộn",
   "Modern": "Hiện đại",
   "Modern Histogram": "Histogram hiện đại",
@@ -4025,6 +4027,7 @@
   "Whiten": "Làm trắng",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Răng trắng sáng hơn: màu vàng được khử nhẹ nhàng.",
   "Who": "Ai",
+  "Whole Photo": "Toàn bộ ảnh",
   "Whole names": "Tên đầy đủ",
   "Why?": "Tại sao?",
   "Wide": "Rộng",
@@ -4257,8 +4260,5 @@
   "‹ Library": "‹ Thư viện",
   "↑ This device has changes still to send": "↑ Thiết bị này còn thay đổi cần gửi",
   "↓ Another device has changes still to fetch": "↓ Một thiết bị khác còn thay đổi cần tải về",
-  "★ Favorites": "★ Yêu thích",
-  "Whole Photo": "Toàn bộ ảnh",
-  "Missing mask": "Thiếu mặt nạ",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Chỉ áp dụng bộ lọc ở nơi có một trong các mặt nạ của ảnh, pha trộn theo độ phủ của nó"
+  "★ Favorites": "★ Yêu thích"
 }

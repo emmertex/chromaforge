@@ -236,6 +236,7 @@
   "Apply later": "Tillämpa senare",
   "Apply movement every": "Tillämpa rörelse var",
   "Apply no longer picks this reference; photos that use it keep it": "Använd väljer inte längre den här referensen; foton som använder den behåller den",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Använd filtret bara där en av fotots masker finns, blandat efter dess täckning",
   "Apply the reference that fits this photo": "Använd den referens som passar det här fotot",
   "Apply the same edit": "Använd samma redigering",
   "Apply to All": "Använd på alla",
@@ -1971,6 +1972,7 @@
   "Midtone Hue": "Nyans för mellantoner",
   "Midtone Luminance": "Luminans för mellantoner",
   "Midtone Saturation": "Mättnad för mellantoner",
+  "Missing mask": "Saknad mask",
   "Mixer": "Mixer",
   "Modern": "Modern",
   "Modern Histogram": "Modernt histogram",
@@ -3843,6 +3845,7 @@
   "Whiten": "Bleka",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Vitare, ljusare tänder: det gula tas bort varsamt.",
   "Who": "Vem",
+  "Whole Photo": "Hela fotot",
   "Why?": "Varför?",
   "Wide": "Bred",
   "Wide (16:9)": "Bred (16:9)",
@@ -4063,8 +4066,5 @@
   "© Year Name": "© År Namn",
   "‹ Library": "‹ Bibliotek",
   "↑ This device has changes still to send": "↑ Den här enheten har ändringar kvar att skicka",
-  "↓ Another device has changes still to fetch": "↓ En annan enhet har ändringar kvar att hämta",
-  "Whole Photo": "Hela fotot",
-  "Missing mask": "Saknad mask",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Använd filtret bara där en av fotots masker finns, blandat efter dess täckning"
+  "↓ Another device has changes still to fetch": "↓ En annan enhet har ändringar kvar att hämta"
 }

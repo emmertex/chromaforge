@@ -233,6 +233,7 @@
   "Apply later": "Zastosuj później",
   "Apply movement every": "Stosuj ruch co",
   "Apply no longer picks this reference; photos that use it keep it": "Zastosuj nie wybiera już tego odniesienia; zdjęcia, które go używają, zachowują je",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Zastosuj filtr tylko tam, gdzie jest jedna z masek zdjęcia, zmieszany według jej pokrycia",
   "Apply the reference that fits this photo": "Zastosuj odniesienie pasujące do tego zdjęcia",
   "Apply the same edit": "Zastosuj tę samą zmianę",
   "Apply to All": "Zastosuj do wszystkich",
@@ -1976,6 +1977,7 @@
   "Midtone Hue": "Odcień tonów średnich",
   "Midtone Luminance": "Luminancja tonów średnich",
   "Midtone Saturation": "Nasycenie tonów średnich",
+  "Missing mask": "Brakująca maska",
   "Modern": "Nowoczesny",
   "Modern Histogram": "Nowoczesny histogram",
   "Modern Layout": "Nowoczesny układ",
@@ -3815,6 +3817,7 @@
   "Whiten": "Wybielanie",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Bielsze, jaśniejsze zęby: żółty odcień jest delikatnie usuwany.",
   "Who": "Kto",
+  "Whole Photo": "Całe zdjęcie",
   "Whole names": "Całe nazwy",
   "Wide": "Szeroki",
   "Wide (16:9)": "Szeroki (16:9)",
@@ -4040,8 +4043,5 @@
   "‹ Library": "‹ Biblioteka",
   "↑ This device has changes still to send": "↑ To urządzenie ma jeszcze zmiany do wysłania",
   "↓ Another device has changes still to fetch": "↓ Inne urządzenie ma jeszcze zmiany do pobrania",
-  "★ Favorites": "★ Ulubione",
-  "Whole Photo": "Całe zdjęcie",
-  "Missing mask": "Brakująca maska",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Zastosuj filtr tylko tam, gdzie jest jedna z masek zdjęcia, zmieszany według jej pokrycia"
+  "★ Favorites": "★ Ulubione"
 }

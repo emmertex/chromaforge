@@ -244,6 +244,7 @@
   "Apply later": "მოგვიანებით გამოყენება",
   "Apply movement every": "მოძრაობის გამოყენება ყოველ",
   "Apply no longer picks this reference; photos that use it keep it": "გამოყენება ამ საცნობარო ფოტოს აღარ აირჩევს; ფოტოები, რომლებიც მას იყენებენ, შეინარჩუნებენ",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "ფილტრი გამოიყენე მხოლოდ იქ, სადაც ფოტოს ერთ-ერთი ნიღაბია, მისი დაფარვის მიხედვით შერეული",
   "Apply the reference that fits this photo": "ამ ფოტოსთვის შესაფერისი საცნობარო ფოტოს გამოყენება",
   "Apply the same edit": "იგივე რედაქტირების გამოყენება",
   "Apply to All": "ყველაზე გამოყენება",
@@ -2039,6 +2040,7 @@
   "Midtone Hue": "შუალედური ტონების ფერის ტონი",
   "Midtone Luminance": "შუალედური ტონების სიკაშკაშე",
   "Midtone Saturation": "შუალედური ტონების გაჯერება",
+  "Missing mask": "ნიღაბი აკლია",
   "Mixer": "მიქშერი",
   "Modern": "თანამედროვე",
   "Modern Histogram": "თანამედროვე ჰისტოგრამა",
@@ -3980,6 +3982,7 @@
   "Whiten": "გათეთრება",
   "Whiter, brighter teeth: the yellow is taken out gently.": "უფრო თეთრი, ნათელი კბილები: სიყვითლე ნაზად შორდება.",
   "Who": "ვინ",
+  "Whole Photo": "მთელი ფოტო",
   "Whole names": "სრული სახელები",
   "Why?": "რატომ?",
   "Wide": "ფართო",
@@ -4201,8 +4204,5 @@
   "‹ Library": "‹ ბიბლიოთეკა",
   "↑ This device has changes still to send": "↑ ამ მოწყობილობას ჯერ კიდევ აქვს გასაგზავნი ცვლილებები",
   "↓ Another device has changes still to fetch": "↓ სხვა მოწყობილობას ჯერ კიდევ აქვს ჩამოსატვირთი ცვლილებები",
-  "★ Favorites": "★ რჩეულები",
-  "Whole Photo": "მთელი ფოტო",
-  "Missing mask": "ნიღაბი აკლია",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "ფილტრი გამოიყენე მხოლოდ იქ, სადაც ფოტოს ერთ-ერთი ნიღაბია, მისი დაფარვის მიხედვით შერეული"
+  "★ Favorites": "★ რჩეულები"
 }

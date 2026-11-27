@@ -231,6 +231,7 @@
   "Apply earlier": "Применить раньше",
   "Apply later": "Применить позже",
   "Apply no longer picks this reference; photos that use it keep it": "«Применить» больше не выбирает этот эталон; фото, которые его используют, сохраняют его",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Применять фильтр только там, где находится одна из масок фото, смешивая по её покрытию",
   "Apply the reference that fits this photo": "Применить эталон, подходящий к этому фото",
   "Apply the same edit": "Применить ту же правку",
   "Apply to All": "Применить ко всем",
@@ -1905,6 +1906,7 @@
   "Midtone Hue": "Тон средних тонов",
   "Midtone Luminance": "Яркость средних тонов",
   "Midtone Saturation": "Насыщенность средних тонов",
+  "Missing mask": "Маска отсутствует",
   "Missing metadata ({camera}, {title}…) leaves an empty gap; a name that comes out empty keeps the original name.": "Отсутствующие метаданные ({camera}, {title}…) оставляют пустое место; если имя получается пустым, сохраняется исходное.",
   "Model": "Модель",
   "Modern": "Современный",
@@ -3663,6 +3665,7 @@
   "Whiten": "Отбелить",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Белее и светлее зубы: желтизна убирается мягко.",
   "Who": "Кто",
+  "Whole Photo": "Всё фото",
   "Wide (16:9)": "Широкий (16:9)",
   "Widescreen": "Широкоэкранный",
   "Width (pixels)": "Ширина (пикселей)",
@@ -4016,8 +4019,5 @@
   "≥  at least": "≥  не менее",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘-перетаскивание для выравнивания, ⇧G Upright по направляющим, сетка во время трансформации.",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）",
-  "Whole Photo": "Всё фото",
-  "Missing mask": "Маска отсутствует",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Применять фильтр только там, где находится одна из масок фото, смешивая по её покрытию"
+  "繁體中文（台灣）": "繁體中文（台灣）"
 }

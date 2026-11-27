@@ -215,6 +215,7 @@
   "Apply later": "Použít později",
   "Apply movement every": "Použít pohyb každých",
   "Apply no longer picks this reference; photos that use it keep it": "Použít tuto referenci už nevybere; fotografie, které ji používají, si ji ponechají",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Použít filtr jen tam, kde je jedna z masek fotografie, smíchaný podle jejího pokrytí",
   "Apply the reference that fits this photo": "Použít referenci, která odpovídá této fotografii",
   "Apply the same edit": "Použít stejnou úpravu",
   "Apply to All": "Použít na vše",
@@ -1846,6 +1847,7 @@
   "Midtone Hue": "Odstín středních tónů",
   "Midtone Luminance": "Jas středních tónů",
   "Midtone Saturation": "Sytost středních tónů",
+  "Missing mask": "Chybějící maska",
   "Modern": "Moderní",
   "Modern Histogram": "Moderní histogram",
   "Modern Layout": "Moderní rozložení",
@@ -3560,6 +3562,7 @@
   "Whiten": "Vybělit",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Bělejší, jasnější zuby: žlutý nádech se jemně odstraní.",
   "Who": "Kdo",
+  "Whole Photo": "Celá fotografie",
   "Wide (16:9)": "Široký (16:9)",
   "Wide range: slow base speed with a very high peak for sweeping adjustments.": "Široký rozsah: pomalá základní rychlost s velmi vysokou špičkou pro rozmáchlé úpravy.",
   "Widescreen": "Širokoúhlé",
@@ -3763,8 +3766,5 @@
   "© Year Name": "© Rok Jméno",
   "‹ Library": "‹ Knihovna",
   "↑ This device has changes still to send": "↑ Toto zařízení má ještě změny k odeslání",
-  "↓ Another device has changes still to fetch": "↓ Jiné zařízení má ještě změny ke stažení",
-  "Whole Photo": "Celá fotografie",
-  "Missing mask": "Chybějící maska",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Použít filtr jen tam, kde je jedna z masek fotografie, smíchaný podle jejího pokrytí"
+  "↓ Another device has changes still to fetch": "↓ Jiné zařízení má ještě změny ke stažení"
 }

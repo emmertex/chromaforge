@@ -231,6 +231,7 @@
   "Apply later": "Käytä myöhemmin",
   "Apply movement every": "Liikkeen käyttöväli",
   "Apply no longer picks this reference; photos that use it keep it": "Käytä ei enää valitse tätä viitekuvaa; sitä käyttävät kuvat säilyttävät sen",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Käytä suodinta vain siellä, missä jokin kuvan maskeista on, sen peittävyyden mukaan sekoitettuna",
   "Apply the reference that fits this photo": "Käytä tähän kuvaan sopivaa viitekuvaa",
   "Apply the same edit": "Käytä samaa muokkausta",
   "Apply to All": "Käytä kaikkiin",
@@ -1926,6 +1927,7 @@
   "Midtone Hue": "Keskisävyjen sävy",
   "Midtone Luminance": "Keskisävyjen kirkkaus",
   "Midtone Saturation": "Keskisävyjen värikylläisyys",
+  "Missing mask": "Puuttuva maski",
   "Mixer": "Sekoitin",
   "Modern": "Moderni",
   "Modern Histogram": "Moderni histogrammi",
@@ -3765,6 +3767,7 @@
   "Whiten": "Valkaise",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Valkoisemmat, kirkkaammat hampaat: keltaisuus poistetaan hellävaraisesti.",
   "Who": "Kuka",
+  "Whole Photo": "Koko kuva",
   "Why?": "Miksi?",
   "Wide (16:9)": "Leveä (16:9)",
   "Wide range: slow base speed with a very high peak for sweeping adjustments.": "Laaja alue: hidas perusnopeus ja erittäin korkea huippu laajoihin säätöihin.",
@@ -4002,8 +4005,5 @@
   "↑ This device has changes still to send": "↑ Tällä laitteella on vielä lähetettäviä muutoksia",
   "↓ Another device has changes still to fetch": "↓ Toisella laitteella on vielä haettavia muutoksia",
   "日本語": "日本語",
-  "繁體中文（台灣）": "繁體中文（台灣）",
-  "Whole Photo": "Koko kuva",
-  "Missing mask": "Puuttuva maski",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Käytä suodinta vain siellä, missä jokin kuvan maskeista on, sen peittävyyden mukaan sekoitettuna"
+  "繁體中文（台灣）": "繁體中文（台灣）"
 }

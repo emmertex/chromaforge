@@ -230,6 +230,7 @@
   "Apply later": "Terapkan nanti",
   "Apply movement every": "Terapkan gerakan setiap",
   "Apply no longer picks this reference; photos that use it keep it": "Terapkan tidak lagi memilih referensi ini; foto yang memakainya tetap menyimpannya",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Terapkan filter hanya di tempat salah satu masker foto berada, dicampur menurut cakupannya",
   "Apply the reference that fits this photo": "Terapkan referensi yang cocok untuk foto ini",
   "Apply the same edit": "Terapkan edit yang sama",
   "Apply to All": "Terapkan ke semua",
@@ -1931,6 +1932,7 @@
   "Midtone Hue": "Hue midtone",
   "Midtone Luminance": "Luminans midtone",
   "Midtone Saturation": "Saturasi midtone",
+  "Missing mask": "Masker hilang",
   "Mixer": "Pencampur",
   "Modern": "Modern",
   "Modern Histogram": "Histogram modern",
@@ -3779,6 +3781,7 @@
   "Whiten": "Putihkan",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Gigi lebih putih dan cerah: warna kuning dikurangi dengan lembut.",
   "Who": "Siapa",
+  "Whole Photo": "Seluruh foto",
   "Why?": "Mengapa?",
   "Wide (16:9)": "Lebar (16:9)",
   "Wide range: slow base speed with a very high peak for sweeping adjustments.": "Rentang lebar: kecepatan dasar lambat dengan puncak sangat tinggi untuk penyesuaian besar.",
@@ -3995,8 +3998,5 @@
   "‹ Library": "‹ Pustaka",
   "↑ This device has changes still to send": "↑ Perangkat ini masih punya perubahan untuk dikirim",
   "↓ Another device has changes still to fetch": "↓ Perangkat lain masih punya perubahan untuk diambil",
-  "★ Favorites": "★ Favorit",
-  "Whole Photo": "Seluruh foto",
-  "Missing mask": "Masker hilang",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Terapkan filter hanya di tempat salah satu masker foto berada, dicampur menurut cakupannya"
+  "★ Favorites": "★ Favorit"
 }

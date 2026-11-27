@@ -220,6 +220,7 @@
   "Apply earlier": "提前应用",
   "Apply later": "稍后应用",
   "Apply no longer picks this reference; photos that use it keep it": "应用时不再选择此参考照片；正在使用它的照片会保留它",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "仅在照片的某个蒙版所在处应用滤镜，按其覆盖程度混合",
   "Apply the reference that fits this photo": "应用适合此照片的参考照片",
   "Apply the same edit": "应用相同的编辑",
   "Apply to All": "应用于全部",
@@ -1864,6 +1865,7 @@
   "Midtone Hue": "中间调色相",
   "Midtone Luminance": "中间调明亮度",
   "Midtone Saturation": "中间调饱和度",
+  "Missing mask": "蒙版缺失",
   "Modern": "现代",
   "Modern Histogram": "现代直方图",
   "Modern Layout": "现代布局",
@@ -3627,6 +3629,7 @@
   "Whiten": "美白",
   "Whiter, brighter teeth: the yellow is taken out gently.": "更白更亮的牙齿：温和地去除发黄。",
   "Who": "人物",
+  "Whole Photo": "整张照片",
   "Wide (16:9)": "宽屏 (16:9)",
   "Widescreen": "宽屏",
   "Width (pixels)": "宽度（像素）",
@@ -3932,8 +3935,5 @@
   "↑ This device has changes still to send": "↑ 此设备仍有更改待发送",
   "↓ Another device has changes still to fetch": "↓ 另一台设备仍有更改待获取",
   "⌘-drag to straighten, ⇧G Guided Upright, a grid while transforming.": "⌘ 拖动以拉直，⇧G 引导式垂直，变换时显示网格。",
-  "★ Favorites": "★ 收藏",
-  "Whole Photo": "整张照片",
-  "Missing mask": "蒙版缺失",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "仅在照片的某个蒙版所在处应用滤镜，按其覆盖程度混合"
+  "★ Favorites": "★ 收藏"
 }

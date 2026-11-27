@@ -207,6 +207,7 @@
   "Apply earlier": "Застосувати раніше",
   "Apply later": "Застосувати пізніше",
   "Apply no longer picks this reference; photos that use it keep it": "«Застосувати» більше не вибирає цей еталон; фото, які його використовують, зберігають його",
+  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Застосовувати фільтр лише там, де є одна з масок фото, змішуючи за її покриттям",
   "Apply the reference that fits this photo": "Застосувати еталон, що відповідає цьому фото",
   "Apply the same edit": "Застосувати ту саму правку",
   "Apply to All": "Застосувати до всіх",
@@ -1806,6 +1807,7 @@
   "Midtone Hue": "Тон середніх тонів",
   "Midtone Luminance": "Яскравість середніх тонів",
   "Midtone Saturation": "Насиченість середніх тонів",
+  "Missing mask": "Маска відсутня",
   "Modern": "Сучасний",
   "Modern Histogram": "Сучасна гістограма",
   "Modern Layout": "Сучасний макет",
@@ -3538,6 +3540,7 @@
   "Whiten": "Відбілити",
   "Whiter, brighter teeth: the yellow is taken out gently.": "Біліші й світліші зуби: жовтизна прибирається м’яко.",
   "Who": "Хто",
+  "Whole Photo": "Усе фото",
   "Wide (16:9)": "Широкий (16:9)",
   "Widescreen": "Широкоекранний",
   "Width (pixels)": "Ширина (пікселі)",
@@ -3761,8 +3764,5 @@
   "‹ Library": "‹ Бібліотека",
   "↑ This device has changes still to send": "↑ Цей пристрій має ще не надіслані зміни",
   "↓ Another device has changes still to fetch": "↓ Інший пристрій має зміни для завантаження",
-  "★ Favorites": "★ Улюблені",
-  "Whole Photo": "Усе фото",
-  "Missing mask": "Маска відсутня",
-  "Apply the filter only where one of the photo's masks is, blended by its coverage": "Застосовувати фільтр лише там, де є одна з масок фото, змішуючи за її покриттям"
+  "★ Favorites": "★ Улюблені"
 }
