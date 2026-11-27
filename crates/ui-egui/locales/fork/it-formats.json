@@ -40,6 +40,7 @@
   "Changes from {device} are dated {minutes} minutes in the future, so they are held back until then. Set the clock on {device} to the right time.": "Le modifiche da {device} sono datate {minutes} minuti nel futuro, quindi vengono trattenute fino ad allora. Regola l'orologio di {device}.",
   "Chart · greys about {cct:.0} K": "Target · grigi a circa {cct:.0} K",
   "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Controllati {checked} di {total} file DNG: {intact} integri, {damaged} danneggiati, {unverifiable} non verificabili",
+  "Click {}%": "Clic {}%",
   "Closest: {name}, {percent:.0}%": "Più simile: {name}, {percent:.0}%",
   "Collection imported: {n} photos found, {m} not in this catalog": "Raccolta importata: {n} foto trovate, {m} non in questo catalogo",
   "Confirm all {}": "Conferma tutti ({})",
@@ -334,6 +335,5 @@
   "“{name}” has its old settings again": "«{name}» ha di nuovo le impostazioni precedenti",
   "“{name}” is new. What may the other devices syncing this catalog have of it?": "«{name}» è nuova. Cosa possono averne gli altri dispositivi che sincronizzano questo catalogo?",
   "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "«{name}» prende le impostazioni della foto attiva. Nome, gruppo, posizione e contrassegni restano.",
-  "★{n} at or above": "★{n} e oltre",
-  "Click {}%": "Clic {}%"
+  "★{n} at or above": "★{n} e oltre"
 }

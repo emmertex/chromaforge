@@ -37,6 +37,7 @@
   "Changes from {device} are dated {minutes} minutes in the future, so they are held back until then. Set the clock on {device} to the right time.": "Изменения с устройства {device} датированы на {minutes} мин вперёд, поэтому они отложены до этого времени. Установите правильное время на {device}.",
   "Chart · greys about {cct:.0} K": "Мишень · серые около {cct:.0} K",
   "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Проверено файлов DNG: {checked} из {total}. Целых: {intact}, повреждённых: {damaged}, непроверяемых: {unverifiable}",
+  "Click {}%": "Щелчок {}%",
   "Closest: {name}, {percent:.0}%": "Ближе всего к {name}: {percent:.0}%",
   "Collection imported: {n} photos found, {m} not in this catalog": "Коллекция импортирована: найдено фото: {n}, нет в каталоге: {m}",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Цветовое пространство: Rec. 2020 {curve} (HDR AVIF)",
@@ -328,6 +329,5 @@
   "“{name}” has its old settings again": "У «{name}» снова прежние настройки",
   "“{name}” is new. What may the other devices syncing this catalog have of it?": "«{name}»: новая. Что из неё могут получать другие устройства, синхронизирующие этот каталог?",
   "“{name}” takes the active photo's settings. Its name, group, place and marks stay.": "«{name}» получает настройки активного фото. Название, группа, место и отметки сохраняются.",
-  "★{n} at or above": "★{n} и выше",
-  "Click {}%": "Щелчок {}%"
+  "★{n} at or above": "★{n} и выше"
 }
