@@ -183,6 +183,8 @@ pub use errors::{AiModel, ErrorKind};
 pub use fonts::{CraftFont, craft_fonts};
 use lcc_catalog::{Catalog, Filter, Op, PhotoId, Sort};
 use lcc_develop::DevelopSettings;
+/// A measurement's status line (`_status`, ABI v1.1, #1398), for the Plug-in Filters panel.
+pub use lcc_filters::analysis_status as plugin_analysis_status;
 pub use media::{RenderJob, SourceLevel};
 use serde_json::Value;
 pub use view::{Browse, FilterChip, LibrarySource, Selection, SelectionState, filter_chips};
