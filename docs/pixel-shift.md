@@ -117,7 +117,20 @@ format 19: the frames' photos and the reference; format 22: `registration`, a fi
 hence the new format number: a library opened by this build is upgraded and older builds refuse it). When a merged DNG is
 imported on its own (a rebuilt catalog, a re-imported folder) the catalog list is restored from this block: each frame is
 found in the library by file name and capture time; a frame that is not there stays in the list as not found, and the
-exposure counter is the file's own record of it.
+exposure counter is the file's own record of it. The block is untrusted input, so a frame is found in the library
+only when everything agrees. The photo is in the merged file's folder, has the frame's file name and capture time and is not
+a merge itself; its own maker note says it is that frame (the number and exposure counter the block lists, the block's shot
+count); and all the photos found together are frames of one series (same camera, exposure and geometry, counters and capture
+times that follow the frame numbers). Otherwise none is found: they stay in the list as not found, and Delete Merge Sources
+has nothing to act on. Several merges of one stack may list the same frames; each is checked on its own, and Delete Merge
+Sources acts only on photos that are still there and still agree with the recorded file name, so after the first one a
+second finds the frames missing and touches nothing else.
+
+A frame's header is read from the first 512 KB of its file; a note that is truncated, has tags of the wrong type or count,
+offsets outside the file or loops, whose frame-number tags disagree, or whose counters wrap gives a header with no frame
+number or a clean refusal, in bounded work (a date is bounded before it is used, all arithmetic on times is saturating,
+counters wrap). Seeded mutation tests of both readers run in the normal test suite (`crates/raw/tests/it/hostile_pixel_shift.rs`,
+`merged_dng.rs`; `LCC_FUZZ_ITERS` makes them longer).
 
 **A file is untrusted input.** The block is read from files that may be crafted, so it is bounded: a packet over
 1 MiB is not read; a block is used only when it is well formed and within its limits (a shot count of 4, 8, 16 or 32; at
