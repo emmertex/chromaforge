@@ -1642,7 +1642,7 @@ pub fn fs_reduced_loader() -> ReducedLoader {
 
 /// Bytes per pixel a plain (non-raw) decode holds at its peak: the 8-bit samples plus the whole image widened to
 /// float (13 for grey, 15 for RGB; measured in #1476). 16-bit samples add a few more.
- const DECODE_BYTES_PER_PIXEL: u64 = 18;
+const DECODE_BYTES_PER_PIXEL: u64 = 18;
 /// The same with an ICC profile a lookup table converts (`IccKind::NeedsCms`): two more float copies (39 measured).
 const CMS_DECODE_BYTES_PER_PIXEL: u64 = 39;
 /// How far into a file an ICC profile's signature is looked for.
