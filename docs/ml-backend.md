@@ -92,6 +92,11 @@ filter-chips bar), an explicit hardware selector dropdown in Settings ▸ AI Mod
 choose the hardware device (Automatic, specific detected GPU, or CPU), view active hardware status and fallback reasons,
 and toggle background indexing.
 
+**ONNX Runtime** (`crates/onnxrt`, [`docs/onnxruntime.md`](onnxruntime.md)): desktop builds can run `.onnx` models
+through ONNX Runtime on the graphics card (its WebGPU plug-in, Core ML or CUDA), loaded at run time from beside the
+app. AI Denoise and AI Super Resolution use it first, checked against the CPU; `ml.status` reports it as
+`onnxRuntime`. The other models move onto it next.
+
 ## What's next
 
 In the order of the plan on issue #491:
