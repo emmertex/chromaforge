@@ -200,11 +200,9 @@ pub fn cache_share(budget: usize) -> usize {
 /// A weighted semaphore over bytes of working memory: [`WorkGate::acquire`] waits while other
 /// holders already use the limit (one holder may always proceed, whatever its size).
 pub struct WorkGate {
-    /// Bytes held and the limit. Held is a `u128`: callers weigh work with saturating maths, so a
-    /// permit may hold `usize::MAX`, and the exact total of several such permits still fits, so
-    /// releasing one in any order leaves the others counted (issue #2576).
-    state: Mutex<(u128, usize)>,
-    cv: Condvar,
+    /// The held bytes, the limit and the waiters' condition (shared with the I/O jobs that hold
+    /// or wait for its permits, so abandoning one wakes its waiters at once).
+    core: std::sync::Arc<GateCore>,
     /// Acquires that had to wait, and their total wait (ms): what a benchmark reports as memory
     /// holding work back.
     waits: std::sync::atomic::AtomicU64,
@@ -215,20 +213,87 @@ pub struct WorkGate {
 pub struct Permit<'a> {
     gate: &'a WorkGate,
     bytes: usize,
+    /// The I/O job holding it ([`WorkGate::acquire_for_job`]), whose recorded bytes it clears
+    /// when dropped.
+    job: Option<std::sync::Arc<crate::io_sched::JobState>>,
 }
 
-impl WorkGate {
-    pub fn new(limit: usize) -> WorkGate {
-        WorkGate { state: Mutex::new((0, limit)), cv: Condvar::new(), waits: Default::default(), waited_ms: Default::default() }
-    }
+/// Why [`WorkGate::acquire_for_job`] refused a job its memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GateError {
+    /// The scheduler abandoned the job (its volume stopped responding, or the user cancelled):
+    /// it ends without reading.
+    Abandoned,
+    /// The user cancelled while the job waited for memory for an optional last step (a copy's
+    /// Copy as DNG): it skips that step and keeps what it has done (the raw copy).
+    Skipped,
+    /// The request can never fit: reads that are not returning hold memory (the most of it on
+    /// `volume`), and the request's bytes don't fit beside it under the limit.
+    CannotFit { volume: String },
+}
 
+impl std::fmt::Display for GateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GateError::Abandoned => f.write_str("abandoned"),
+            GateError::Skipped => f.write_str("skipped: the import was cancelled"),
+            GateError::CannotFit { volume } => write!(f, "memory held by a read that is not returning (on {volume})"),
+        }
+    }
+}
+
+/// A [`WorkGate`]'s state and its waiters' condition.
+pub(crate) struct GateCore {
+    /// Bytes held and the limit. Held is a `u128`: callers weigh work with saturating maths, so a
+    /// permit may hold `usize::MAX`, and the exact total of several such permits still fits, so
+    /// releasing one in any order leaves the others counted (issue #2576).
+    state: Mutex<(u128, usize)>,
+    cv: Condvar,
+}
+
+impl GateCore {
     fn lock(&self) -> std::sync::MutexGuard<'_, (u128, usize)> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Wake every waiter to look again (an I/O job holding or waiting for a permit was abandoned).
+    /// The lock is taken first, so a waiter between its look and its wait can't miss it.
+    pub(crate) fn wake(&self) {
+        drop(self.lock());
+        self.cv.notify_all();
+    }
+}
+
+/// Whether a request of `bytes` must wait with `held` of `limit` held: never for 0 bytes (they
+/// hold nothing) or when nothing is held (one holder may always proceed); else when they don't
+/// fit. The one admission rule of [`WorkGate::acquire`] and [`WorkGate::acquire_for_job`].
+fn over(held: u128, limit: usize, bytes: usize) -> bool {
+    bytes > 0 && held > 0 && held.saturating_add(bytes as u128) > limit as u128
+}
+
+/// How long [`WorkGate::acquire_for_job`] waits between looks at the stranded memory while
+/// abandoned jobs are outstanding (their own clocks run, so it must look again).
+const JOB_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+/// … and while none is: every change it waits for (a permit dropped, a new limit, its own job
+/// or a holder abandoned) wakes it at once; this only bounds a wake missed by another gate.
+const JOB_IDLE_STEP: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl WorkGate {
+    pub fn new(limit: usize) -> WorkGate {
+        WorkGate {
+            core: std::sync::Arc::new(GateCore { state: Mutex::new((0, limit)), cv: Condvar::new() }),
+            waits: Default::default(),
+            waited_ms: Default::default(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (u128, usize)> {
+        self.core.lock()
+    }
+
     pub fn set_limit(&self, limit: usize) {
         self.lock().1 = limit;
-        self.cv.notify_all();
+        self.core.cv.notify_all();
     }
 
     /// Acquires that waited so far, and their total wait (ms).
@@ -242,42 +307,190 @@ impl WorkGate {
         (usize::try_from(g.0).unwrap_or(usize::MAX), g.1)
     }
 
-    /// Hold `bytes`, waiting until they fit (or nothing else is held). Even `usize::MAX` bytes on
-    /// a gate whose limit is `usize::MAX` make the next holder wait.
+    /// Hold `bytes`, waiting until they fit (or nothing else is held; 0 bytes never wait). Even
+    /// `usize::MAX` bytes on a gate whose limit is `usize::MAX` make the next holder wait.
     pub fn acquire(&self, bytes: usize) -> Permit<'_> {
         let mut g = self.lock();
-        let over = |g: &(u128, usize)| g.0 > 0 && g.0.saturating_add(bytes as u128) > g.1 as u128;
-        let start = over(&g).then(web_time::Instant::now);
-        while over(&g) {
-            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        let start = over(g.0, g.1, bytes).then(web_time::Instant::now);
+        while over(g.0, g.1, bytes) {
+            g = self.core.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
         if let Some(t) = start {
-            self.waits.fetch_add(1, Ordering::Relaxed);
-            self.waited_ms.fetch_add(u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+            self.count_wait(t.elapsed());
         }
         g.0 = g.0.saturating_add(bytes as u128);
-        Permit { gate: self, bytes }
+        Permit { gate: self, bytes, job: None }
+    }
+
+    /// One acquire that waited `d`: in the gate's counters and this thread's [`gate_wait_nanos`].
+    fn count_wait(&self, d: std::time::Duration) {
+        self.waits.fetch_add(1, Ordering::Relaxed);
+        self.waited_ms.fetch_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        GATE_WAIT.with(|w| w.set(w.get().saturating_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))));
+    }
+
+    /// Hold `bytes` for an I/O job of the scheduler ([`crate::io_sched`]): as [`WorkGate::acquire`]
+    /// when the thread runs no job; for a job, a wait that can end in an error.
+    ///
+    /// - Admission is tried first, by `acquire`'s own rule (a request of 0 bytes, or any when
+    ///   nothing is held, or one that fits, is admitted at once).
+    /// - The job's abandon flag set: [`GateError::Abandoned`] at once (the scheduler wakes the
+    ///   gate when it abandons a job that holds or waits for its permits); its skip flag set
+    ///   (cancel, at a copy's DNG step): [`GateError::Skipped`], as fast (the request wakes it too).
+    /// - Only a request the gate would not admit now is checked for "cannot fit": abandoned jobs
+    ///   stalled on their own clocks hold A > 0 bytes and A + B exceeds the limit, so held never
+    ///   falls low enough ([`GateError::CannotFit`], naming the volume holding the most). The
+    ///   registry is only locked for this while abandoned jobs are outstanding.
+    /// - Else it waits however long (a legitimate holder may keep memory for minutes), re-reading
+    ///   the limit at every wake ([`set_budget`] may change it), with the job marked "at the gate"
+    ///   so its volume's stall clock pauses.
+    ///
+    /// On a grant the gate adds the bytes, then the job records them; the permit's drop clears
+    /// the job's record before the gate subtracts, so A never exceeds what is held. Waits count
+    /// in [`WorkGate::waits`] and the thread's [`gate_wait_nanos`] as `acquire`'s do.
+    pub fn acquire_for_job(&self, bytes: usize) -> Result<Permit<'_>, GateError> {
+        let Some(job) = current_job() else { return Ok(self.acquire(bytes)) };
+        if job.is_abandoned() {
+            return Err(GateError::Abandoned);
+        }
+        if job.skip_requested() {
+            return Err(GateError::Skipped);
+        }
+        let need = bytes as u128;
+        let mut g = self.lock();
+        // (before the abandon flag is read below: an abandon after this finds the gate to wake)
+        job.attach_gate(&self.core);
+        let shared = job.shared();
+        let mut start: Option<web_time::Instant> = None;
+        let result = loop {
+            if job.is_abandoned() {
+                break Err(GateError::Abandoned);
+            }
+            if job.skip_requested() {
+                break Err(GateError::Skipped);
+            }
+            if !over(g.0, g.1, bytes) {
+                g.0 = g.0.saturating_add(need);
+                job.permit_add(bytes);
+                break Ok(());
+            }
+            let outstanding = shared.as_ref().is_some_and(|s| s.has_entries());
+            if outstanding && let Some(shared) = &shared {
+                // (lock order: the gate, then the registry)
+                let (stranded, volume) = shared.stranded(job.now());
+                if stranded > 0 && stranded.saturating_add(need) > g.1 as u128 {
+                    job.record_gate_failure(volume.clone());
+                    break Err(GateError::CannotFit { volume: volume.map(|v| v.name().to_string()).unwrap_or_default() });
+                }
+            }
+            if start.is_none() {
+                start = Some(web_time::Instant::now());
+                job.set_at_gate(true);
+            }
+            let step = if outstanding { JOB_WAIT_STEP } else { JOB_IDLE_STEP };
+            g = match self.core.cv.wait_timeout(g, step) {
+                Ok((g, _)) => g,
+                Err(e) => e.into_inner().0,
+            };
+        };
+        drop(g);
+        if let Some(t) = start {
+            job.set_at_gate(false);
+            self.count_wait(t.elapsed());
+        }
+        result.map(|()| Permit { gate: self, bytes, job: Some(job) })
     }
 
     /// Hold `bytes` without waiting (interactive work): counted, so background work waits for it.
     pub fn acquire_urgent(&self, bytes: usize) -> Permit<'_> {
         let mut g = self.lock();
         g.0 = g.0.saturating_add(bytes as u128);
-        Permit { gate: self, bytes }
+        Permit { gate: self, bytes, job: None }
     }
 }
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
+        // (the job's record first, then the gate: what abandoned jobs hold never exceeds what is held)
+        if let Some(job) = &self.job {
+            job.permit_sub(self.bytes);
+        }
         let mut g = self.gate.lock();
         g.0 = g.0.saturating_sub(self.bytes as u128);
         drop(g);
-        self.gate.cv.notify_all();
+        // (every waiter: which ones fit now depends on each one's size)
+        self.gate.core.cv.notify_all();
     }
 }
 
 thread_local! {
     static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The I/O job this thread runs ([`with_job`]).
+    static JOB: std::cell::RefCell<Option<std::sync::Arc<crate::io_sched::JobState>>> = const { std::cell::RefCell::new(None) };
+    /// Nanoseconds this thread has waited at work gates ([`gate_wait_nanos`]).
+    static GATE_WAIT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `f` as the I/O job `job` (`None`: as no job), restoring the thread's previous job after,
+/// a panic included.
+pub(crate) fn with_job<R>(job: Option<std::sync::Arc<crate::io_sched::JobState>>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<std::sync::Arc<crate::io_sched::JobState>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            JOB.with(|j| *j.borrow_mut() = prev);
+        }
+    }
+    let prev = JOB.with(|j| j.replace(job));
+    let _restore = Restore(prev);
+    f()
+}
+
+/// The I/O job this thread runs, if any.
+pub(crate) fn current_job() -> Option<std::sync::Arc<crate::io_sched::JobState>> {
+    JOB.with(|j| j.borrow().clone())
+}
+
+/// Nanoseconds this thread has spent waiting at work gates ([`WorkGate::acquire`],
+/// [`WorkGate::acquire_for_job`]); the scheduler reads it before and after a job.
+pub fn gate_wait_nanos() -> u64 {
+    GATE_WAIT.with(|w| w.get())
+}
+
+/// While held, the thread's I/O job counts as computing (pure CPU: its volume's stall clock
+/// pauses, up to ten stall times). Hold it only around CPU work, never around a filesystem call.
+pub(crate) struct Computing(Option<std::sync::Arc<crate::io_sched::JobState>>);
+
+/// Mark the thread's I/O job computing until the guard drops (no-op without a job, or inside an
+/// outer guard).
+pub(crate) fn computing() -> Computing {
+    Computing(current_job().filter(|j| j.begin_computing()))
+}
+
+/// While held, the thread's I/O job is flushing a file it wrote to disk (`sync_all`): the time
+/// the device takes to write what the page cache holds, which no byte counter sees. Its volumes'
+/// stall clocks pause as for [`computing`], and as there only up to ten stall times, so a flush
+/// that never returns still ends in a stall. (Not in the I/O spec, which counts written bytes
+/// only: a large file written into a big page cache moves its bytes in moments and then spends
+/// size ÷ device speed in the flush, e.g. 66 s for 2 GB at 30 MB/s.)
+pub(crate) fn flushing() -> Computing {
+    computing()
+}
+
+/// Run `flush` (a file's `sync_all`/`sync_data`) as [`flushing`]: the one way an I/O job flushes
+/// what it wrote (a copy's file, Copy as DNG's temp file), so every such flush pauses the stall
+/// clock alike.
+pub(crate) fn while_flushing<T>(flush: impl FnOnce() -> T) -> T {
+    let _flushing = flushing();
+    flush()
+}
+
+impl Drop for Computing {
+    fn drop(&mut self) {
+        if let Some(j) = &self.0 {
+            j.end_computing();
+        }
+    }
 }
 
 /// Run `f` as background work (grid thumbnails, neighbour prefetch): its decodes wait at the

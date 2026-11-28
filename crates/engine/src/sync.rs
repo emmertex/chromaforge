@@ -834,21 +834,21 @@ impl SyncWork {
             progress.checked.fetch_add(n, Relaxed);
         };
         if let Some((mut job, files)) = import {
-            for chunk in files.chunks(crate::import::batch_size()) {
-                if cancel.load(Relaxed) {
-                    return;
-                }
-                let prepared = job.prepare_files(chunk.to_vec(), cancel);
+            let mut taken = true;
+            // batch by batch, in order, while the reads of every volume run at once
+            job.prepare_stream(files, cancel, |prepared| {
                 // (a batch Cancel cut short left files undone: it is not counted, so the count
                 // says whether everything was done; its files that were ready are still sent. A
                 // Cancel after its last file was prepared cut nothing: the batch says so itself)
                 if !prepared.cut_short {
-                    step(chunk.len());
+                    step(prepared.scanned);
                 }
                 // (the files are added in place: a batch nobody takes leaves nothing behind on disk)
-                if !send(SyncStep::Import(prepared)) {
-                    return;
-                }
+                taken = send(SyncStep::Import(prepared));
+                taken
+            });
+            if !taken {
+                return;
             }
         }
         if cancel.load(Relaxed) {

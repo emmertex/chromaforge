@@ -16,6 +16,7 @@ import Shot from '../../../components/Shot.astro';
 - **Locate Missing File…** (**Photo** menu): point one photo at its file.
 - **Folders** panel: **Move Folder To…** and **Rename Folder…** relink photos; **Synchronize** imports new files and relinks moved ones.
 - Metadata changed outside the app: a badge shows *changed on disk* or *conflict*; **Read Metadata from File** / **Save Metadata to File** ask before overwriting.
+- **Reload from Disk** (**Photo ▸ File**) re-reads files changed outside the app, in the background, as one undo step. A file it can't read (gone, unreadable, on a drive that isn't responding) is left as it was, and its message counts it: *Reload from Disk (2 could not be read)*.
 - Missing files are listed, never silently dropped; Delete only removes from the catalog unless you choose **Delete from Disk**.
 - **Library ▸ Previews**: build or discard previews to browse without the originals.
 

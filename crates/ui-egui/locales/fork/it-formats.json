@@ -1,5 +1,10 @@
 {
   " ({n} could not be read)": " ({n} illeggibili)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · copie non completate: {n} (un file potrebbe ancora comparire in {folder}, fuori dalla libreria)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · copie non completate: {n} (dei file potrebbero ancora comparire nelle cartelle di destinazione, fuori dalla libreria)",
+  " · {n} not added to the library: {e}": " · non aggiunti alla libreria: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · non importati: {n} (un'unità ha smesso di rispondere)",
+  " · {n} not imported: the app's file reader stopped; import them again": " · non importati: {n} (il lettore di file dell’app si è fermato; importali di nuovo)",
   "+ Create “{new}”": "+ Crea «{new}»",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} accettate, {pending} da rivedere, {rejected} scartate",

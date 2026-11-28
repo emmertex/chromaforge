@@ -331,7 +331,7 @@ impl LightroomJob {
     }
 
     /// Read/probe/stage all source data off the owner thread.
-    pub fn prepare(&mut self, cancel: &AtomicBool) -> crate::Result<PreparedLightroom> {
+    pub fn prepare(&mut self, cancel: &std::sync::Arc<AtomicBool>) -> crate::Result<PreparedLightroom> {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
@@ -406,7 +406,9 @@ fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom
 
     let undo0 = s.undo.len();
     prepared.normal.revalidate_add(s);
-    let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+    // (each photo's sidecar is kept, to compare with the catalog's values once they are applied)
+    let options =
+        ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, keep_sidecars: true, ..ImportOptions::default() };
     let now = prepared.now.clone();
     let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
@@ -631,11 +633,11 @@ mod tests {
     fn a_cancelled_read_is_cancelled_by_kind() {
         let mut session = crate::Session::new();
         let mut job = LightroomJob::new(&mut session, PathBuf::from("/nonexistent/cancelled.lrcat"), false).unwrap();
-        let Err(e) = job.prepare(&AtomicBool::new(true)) else { panic!("cancelled before it started") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(true))) else { panic!("cancelled before it started") };
         assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
         // the `error` text clients see is unchanged
         assert_eq!(e.to_string(), "invalid parameters for `library.importLightroom`: Lightroom import cancelled");
-        let Err(e) = job.prepare(&AtomicBool::new(false)) else { panic!("no such catalog") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))) else { panic!("no such catalog") };
         assert_ne!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
     }
 

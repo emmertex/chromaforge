@@ -57,6 +57,7 @@ pub fn color_data(color: &FrameColor) -> ColorData {
                 as_shot_white_xy: None,
                 baseline_exposure: 0.0,
                 white_extension_ev: 0.0,
+                raw_baseline_exposure: 0.0,
                 baseline_sharpness: None,
                 profile: Default::default(),
                 kelvin_presets: None,

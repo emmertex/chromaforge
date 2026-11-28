@@ -1,5 +1,10 @@
 {
   " ({n} could not be read)": " (не читається: {n})",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · незавершені копії: {n} (файл ще може з'явитися в {folder}, поза бібліотекою)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · незавершені копії: {n} (файли ще можуть з'явитися в теках призначення, поза бібліотекою)",
+  " · {n} not added to the library: {e}": " · не додано до бібліотеки: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · не імпортовано: {n} (диск перестав відповідати)",
+  " · {n} not imported: the app's file reader stopped; import them again": " · не імпортовано: {n} (засіб читання файлів застосунку зупинився; імпортуйте їх знову)",
   "+ Create “{new}”": "+ Створити «{new}»",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": прийнято {accepted}, на перевірку {pending}, відхилено {rejected}",

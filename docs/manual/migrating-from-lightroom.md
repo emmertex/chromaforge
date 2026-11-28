@@ -29,7 +29,10 @@ Photos you already edited in <app> keep their edits; `updateExisting=true` repla
 
 The photos appear as soon as the catalog is read: <app> doesn't wait for the original files. It reads them
 afterwards in the background (**Reading originals** on the activity stack, which you can stop), filling in the
-content hash, file size, lens data and other facts only the file has. Your ratings, keywords and edits are there from
+content hash, file size, lens data and other facts only the file has. Other work on the same drive meanwhile (a
+Reload, Find Missing, an import review) takes turns with it, so a few files aren't held up behind thousands. While
+it saves what it has read, the next files are already being read, from several drives at once when they are on
+several. Your ratings, keywords and edits are there from
 the start. If you stop it, quit, or a drive is unplugged, the rest is read the next time the library opens (any photo whose
 file hasn't been read yet, including missing originals from earlier imports, is tried once each time the library
 opens). Because files aren't read during the import, a photo already in the library under another path is added
@@ -74,6 +77,11 @@ instead of landing on another photo. A single catalog record that can't be read 
 out on its own, and the result window says how many were left out of which table; the rest of that table still
 imports. The photo behind such a record keeps only what its files say. If the record is in a table every import
 needs (photos, files, folders), the result also says that photos may be missing. Text with invalid characters is imported with replacement characters, also counted in the result.
+
+The catalog's values win over XMP sidecars next to the originals. A sidecar that says something else (keywords
+added in Photo Mechanic, a newer copyright) marks its photo as a metadata conflict, counted in the result; Read
+Metadata from File takes the sidecar's values, Save Metadata to File writes the catalog's. A sidecar that agrees
+starts in step.
 
 ## Safety
 

@@ -1,0 +1,2 @@
+### Lightroom imports say which sidecars disagree
+- After a Lightroom Classic catalog import, a photo whose XMP sidecar says something other than the catalog (keywords added in another app, a different copyright) is marked with a metadata conflict, and the result says how many there are. Photos whose sidecar agrees start in step, instead of every photo showing "changed in the catalog". The catalog's values are imported either way; Read Metadata from File takes the sidecar's (#1312).

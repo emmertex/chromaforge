@@ -24,6 +24,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::bounded_read::on;
+use crate::io_sched::job::{ByteKind, Side};
+
 /// A photo put in place by [`place`]; its source is untouched.
 #[derive(Clone, Debug)]
 pub(crate) struct Placed {
@@ -89,6 +92,65 @@ pub(crate) fn copy_threads() -> Vec<std::thread::ThreadId> {
     COPY_THREADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
+/// What a copy into a held folder does (tests only, [`hold_copies_into`]).
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) enum Hold {
+    /// Wait, once its bytes are written and before the flush, until the gate opens.
+    Wait(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>),
+    /// Panic, once its bytes are written.
+    Panic,
+    /// Wait inside the flush (as a flush to a slow device does) until the gate opens.
+    InFlush(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>),
+}
+
+#[cfg(test)]
+static HOLDS: std::sync::Mutex<Vec<(PathBuf, Hold)>> = std::sync::Mutex::new(Vec::new());
+
+/// Copies into `dir` (any thread) hold as `hold` says until [`release_copies_into`] (tests only):
+/// a fake hung or failing destination for real copies.
+#[cfg(test)]
+pub(crate) fn hold_copies_into(dir: &Path, hold: Hold) {
+    HOLDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((dir.to_path_buf(), hold));
+}
+
+/// Copies into `dir` go on: a waiting copy resumes, later ones run as usual (tests only).
+#[cfg(test)]
+pub(crate) fn release_copies_into(dir: &Path) {
+    let mut holds = HOLDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (_, h) in holds.iter().filter(|(d, _)| d == dir) {
+        if let Hold::Wait(g) | Hold::InFlush(g) = h {
+            *g.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            g.1.notify_all();
+        }
+    }
+    holds.retain(|(d, _)| d != dir);
+}
+
+#[cfg(test)]
+fn held(dst: &Path, flushing: bool) {
+    let hold = HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(d, _)| Some(d.as_path()) == dst.parent())
+        .map(|(_, h)| h.clone());
+    match hold {
+        Some(Hold::Wait(g)) if !flushing => wait_open(&g),
+        Some(Hold::InFlush(g)) if flushing => wait_open(&g),
+        Some(Hold::Panic) if !flushing => panic!("copy into {} (injected)", dst.display()),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+fn wait_open(g: &(std::sync::Mutex<bool>, std::sync::Condvar)) {
+    let mut open = g.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    while !*open {
+        open = g.1.wait(open).unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
+
 fn injected(f: Fault) -> bool {
     #[cfg(test)]
     {
@@ -149,6 +211,7 @@ pub(crate) fn sidecars_of(src: &Path) -> Vec<(PathBuf, bool)> {
 /// Put `src` into `dir` as `name` (-1, -2… when taken) with its sidecars, leaving the source
 /// untouched. On failure nothing is left at the destination.
 pub(crate) fn place(src: &Path, dir: &Path, name: &str) -> Result<Placed, String> {
+    on(Side::Dest);
     create_dir_durable(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
@@ -168,7 +231,10 @@ pub(crate) fn place(src: &Path, dir: &Path, name: &str) -> Result<Placed, String
     }
     let Some(dst) = dst else { return Err(format!("move {}: no free name in {}", src.display(), dir.display())) };
     let mut placed = Placed { src: src.to_path_buf(), dst, sidecars: Vec::new() };
-    for (sc, stem_named) in sidecars_of(src) {
+    on(Side::Source);
+    let sidecars = sidecars_of(src);
+    on(Side::Dest);
+    for (sc, stem_named) in sidecars {
         let sc_ext = sc.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "xmp".into());
         let sc_dst =
             if stem_named { placed.dst.with_extension(&sc_ext) } else { PathBuf::from(format!("{}.{sc_ext}", placed.dst.to_string_lossy())) };
@@ -204,6 +270,7 @@ pub(crate) fn place(src: &Path, dir: &Path, name: &str) -> Result<Placed, String
 /// (whose recorded metadata and hash would be stale). Without one the copy is compared byte for
 /// byte with the source.
 pub(crate) fn copy_new(src: &Path, dir: &Path, name: &str, expect: Option<lcc_preview::Hash128>) -> Result<PathBuf, String> {
+    on(Side::Dest);
     create_dir_durable(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
@@ -338,6 +405,7 @@ fn create_dir_durable(dir: &Path) -> io::Result<()> {
 fn link_or_copy(src: &Path, dst: &Path) -> io::Result<()> {
     let force_copy = injected(Fault::NoLink) || injected(Fault::FailWrite) || injected(Fault::Corrupt);
     if !force_copy && !is_symlink(src) {
+        on(Side::Dest);
         match fs::hard_link(src, dst) {
             Ok(()) => {
                 let (a, b) = (fs::metadata(src)?, fs::metadata(dst)?);
@@ -359,9 +427,16 @@ fn link_or_copy(src: &Path, dst: &Path) -> io::Result<()> {
 /// Copy into a new file, sync it to disk and verify it: against `expect` (the probe's hash of the
 /// source) when given, else byte for byte against the source. On any failure the partial copy is
 /// removed.
+///
+/// Every byte read, written and read back counts for the thread's I/O job on the volume it moved
+/// on (the source's reads on the source, the writes and the read-back on the destination), each
+/// call first tells the job which volume it is on, and the flush counts as
+/// [`crate::memory::flushing`].
 pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::Hash128>) -> io::Result<()> {
+    on(Side::Dest);
     let mut out = OpenOptions::new().write(true).create_new(true).open(dst)?;
     let r = (|| {
+        on(Side::Source);
         let mut inp = File::open(src)?;
         if injected(Fault::FailWrite) {
             out.write_all(b"partial")?;
@@ -373,11 +448,21 @@ pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::
             COPY_THREADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(std::thread::current().id());
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
+        #[cfg(test)]
+        held(dst, false);
         if injected(Fault::Corrupt) {
             out.write_all(b"!")?;
         }
-        lcc_catalog::safe_file::sync_file(&out, false)?;
+        // (the device writes what the page cache holds: seconds per gigabyte on a slow drive)
+        on(Side::Dest);
+        crate::memory::while_flushing(|| {
+            #[cfg(test)]
+            held(dst, true);
+            lcc_catalog::safe_file::sync_file(&out, false)
+        })?;
+        on(Side::Source);
         if let Ok(m) = fs::metadata(src).and_then(|m| m.modified()) {
+            on(Side::Dest);
             let _ = out.set_modified(m);
         }
         match expect {
@@ -401,21 +486,35 @@ pub(crate) fn copy_verified(src: &Path, dst: &Path, expect: Option<lcc_preview::
 /// SMB, against 17 MB/s in 1 MiB writes (upstream issue #3561).
 pub(crate) const COPY_CHUNK: usize = 1 << 20;
 
-/// Copy `from` into `to` in writes of about [`COPY_CHUNK`], however little each read returns.
-/// Returns the number of bytes copied. Still `io::copy`, through a [`io::BufWriter`] of that
-/// capacity: on Linux std sees through the `BufWriter` to the files and copies in the kernel
-/// (`copy_file_range`, `sendfile`), and where the kernel declines, the copy std falls back to
-/// fills the buffer, so the writes stay large.
+/// Copy `from` into `to` in writes of [`COPY_CHUNK`], however little each read returns.
+/// Returns the number of bytes copied. Each write waits until the buffer is full (or the source
+/// ends), so the writes stay large on a share where every write waits for the server.
+///
+/// The reads and the writes are separate calls, each counted for the thread's I/O job on its own
+/// volume and preceded by telling the job which volume it is on: a slow card or destination shows
+/// its progress to the I/O scheduler (one 2 GB clip at 50 MB/s takes 40 s), and a copy that stops
+/// inside a write is judged on its destination, not on the card it reads (§5.2). Linux's in-kernel
+/// copy, which would hide which of the two a stuck copy waits on, is given up for this: one more
+/// pass over each byte in memory.
 pub(crate) fn copy_in_chunks<W: Write>(from: &mut impl Read, to: &mut W) -> io::Result<u64> {
-    let mut out = io::BufWriter::with_capacity(COPY_CHUNK, to);
-    let n = io::copy(from, &mut out)?;
-    out.flush()?;
-    Ok(n)
+    let mut from = crate::bounded_read::counting(from);
+    let mut to = crate::bounded_read::counting_writer(to);
+    let mut buf = vec![0u8; COPY_CHUNK];
+    let mut total = 0u64;
+    loop {
+        let n = fill(&mut from, &mut buf)?;
+        let Some(chunk) = buf.get(..n).filter(|c| !c.is_empty()) else { break };
+        to.write_all(chunk)?;
+        total = total.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+    to.flush()?;
+    Ok(total)
 }
 
 /// [`lcc_preview::hash_bytes`] of a file's content, read in chunks.
 fn hash_file(path: &Path) -> io::Result<lcc_preview::Hash128> {
-    let mut f = File::open(path)?;
+    on(Side::Dest);
+    let mut f = crate::bounded_read::counting_as(ByteKind::ReadBack, File::open(path)?);
     let mut h = lcc_preview::Hasher128::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -427,12 +526,20 @@ fn hash_file(path: &Path) -> io::Result<lcc_preview::Hash128> {
     }
 }
 
-/// Do two files hold the same bytes?
+/// Do two files hold the same bytes? `a` is on a copy's source, `b` on its destination (each
+/// read counted on its own volume).
 pub(crate) fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
-    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+    on(Side::Source);
+    let la = fs::metadata(a)?.len();
+    on(Side::Dest);
+    if la != fs::metadata(b)?.len() {
         return Ok(false);
     }
-    let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
+    on(Side::Source);
+    let fa = File::open(a)?;
+    on(Side::Dest);
+    let fb = File::open(b)?;
+    let (mut fa, mut fb) = (crate::bounded_read::counting(fa), crate::bounded_read::counting_as(ByteKind::ReadBack, fb));
     let (mut ba, mut bb) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
     loop {
         let (na, nb) = (fill(&mut fa, &mut ba)?, fill(&mut fb, &mut bb)?);
@@ -446,7 +553,7 @@ pub(crate) fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
 }
 
 /// Read until `buf` is full or the file ends.
-fn fill(f: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+fn fill(f: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut n = 0;
     while let Some(rest) = buf.get_mut(n..).filter(|r| !r.is_empty()) {
         match f.read(rest) {
