@@ -875,6 +875,9 @@ mod tests {
             assert!(wrote.iter().chain(&back).all(|&n| n > 0 && n <= PROGRESS_CHUNK), "{len}: {wrote:?} {back:?}");
             assert_eq!(wrote.len(), len.div_ceil(PROGRESS_CHUNK), "{len}: {wrote:?}");
             assert_eq!(heard.synced_inside.get(), 1, "{len}: the temp file's sync, through `flushing`");
+            // Unix only: on Windows a directory cannot be opened, so there is no folder sync to
+            // hear (`sync_dir` ignores the error; NTFS journals the rename itself).
+            #[cfg(unix)]
             assert!(syncs_on_this_thread() - syncs > 1, "{len}: and the folder's, outside it");
             let _ = fs::remove_dir_all(&d);
         }
