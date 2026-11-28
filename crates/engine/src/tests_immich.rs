@@ -257,14 +257,17 @@ fn import_records_sha1_and_the_backfill_fills_old_photos() {
     let p = s.catalog.photos().next().unwrap();
     assert_eq!(p.sha1.as_deref(), Some(lcc_hash::sha1_bytes(&png(1)).to_hex().as_str()));
 
-    // an older catalog: photos without SHA-1 get it in the background
+    // an older catalog: photos without SHA-1 get it in the background (read from their files at import, so
+    // with a content hash: one never read is left to read-originals, which records the SHA-1 itself)
     let b = dir.join("b.png");
     std::fs::write(&b, png(2)).unwrap();
     let id = s.catalog.alloc_photo_id();
-    let ph = Photo::new(id, Source::File { path: b.to_string_lossy().into() }, "b.png", "PNG", 40, 30, "now");
+    let mut ph = Photo::new(id, Source::File { path: b.to_string_lossy().into() }, "b.png", "PNG", 40, 30, "now");
+    ph.content_hash = Some("hash-b".into());
     s.catalog.apply(Op::AddPhoto { photo: Box::new(ph) }).unwrap();
     let gone = s.catalog.alloc_photo_id();
-    let ph = Photo::new(gone, Source::File { path: dir.join("missing.png").to_string_lossy().into() }, "missing.png", "PNG", 1, 1, "now");
+    let mut ph = Photo::new(gone, Source::File { path: dir.join("missing.png").to_string_lossy().into() }, "missing.png", "PNG", 1, 1, "now");
+    ph.content_hash = Some("hash-missing".into());
     s.catalog.apply(Op::AddPhoto { photo: Box::new(ph) }).unwrap();
     let v = pump_until(&mut s, |s, v| s.catalog.photo(id).unwrap().sha1.is_some() && v["sha1"]["active"] == false);
     assert_eq!(s.catalog.photo(id).unwrap().sha1.as_deref(), Some(lcc_hash::sha1_bytes(&png(2)).to_hex().as_str()));

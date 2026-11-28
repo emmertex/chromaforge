@@ -30,6 +30,7 @@ lcc-pipeline = { workspace = true }
 lcc-develop = { workspace = true }
 chrono = { workspace = true }
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 lcc-mcp = { workspace = true }
 # marking this process as the CLI, so it never installs an update over the app (`main_with`)
 lcc-updater = { workspace = true }
@@ -44,15 +45,20 @@ serde_json = { workspace = true }
 dhat = { workspace = true, optional = true }
 
 [features]
-default = ["denoise", "heif"]
+default = ["denoise", "heif", "libraw"]
 denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
 realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
 own-model = ["denoise", "lcc-engine/own-model"]
+# ONNX Runtime for the AI features on the graphics card (docs/onnxruntime.md); the app turns it on
+onnxruntime = ["lcc-engine/onnxruntime"]
 # Heap profiling: `cargo run --release -p lcc-cli --features dhat-heap -- snapshot …` counts
 # every allocation (live/peak bytes in `library.memory` / `ui.inspect`) and writes dhat-heap.json
 # (open it in DHAT's viewer: allocation sites by bytes at the peak). Slows allocation-heavy work.
 dhat-heap = ["dep:dhat"]
+# LibRaw as a per-camera raw decoder (C++; linked only when LIBRAW_DIR or LIBRAW_SYSTEM=1 is set, see
+# crates/libraw/build.rs, otherwise the choice is shown as unavailable).
+libraw = ["lcc-engine/libraw"]
 
 # Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default, as in the app;
 # `--no-default-features --features denoise` leaves HEVC out.

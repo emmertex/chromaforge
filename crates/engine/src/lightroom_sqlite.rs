@@ -14,11 +14,13 @@ use std::sync::{Arc, Mutex};
 
 const MAX_PAGE_ID: u32 = 16_777_216;
 const MAX_COLUMNS: usize = 16_384;
+/// The rows a whole-table read (the schema, a test's) collects.
 const MAX_ROWS: usize = 1_000_000;
 const MAX_CELLS: usize = 4_000_000;
 pub(crate) const MAX_WAL_BYTES: u64 = 1 << 30;
 const MAX_VISITED_BTREE_PAGES: usize = MAX_CELLS;
 const MAX_PAYLOAD: usize = 64 * 1024 * 1024;
+/// The payload a whole-table read (the schema, a test's) collects.
 const MAX_TABLE_PAYLOAD: usize = 256 * 1024 * 1024;
 const MAX_OVERFLOW_PAGES: usize = 1_048_576;
 const MAX_BTREE_DEPTH: usize = 64;
@@ -342,8 +344,8 @@ enum TextEncoding {
 
 /// Walk state: pages visited (cycle guard and visited-page budget), the payload decoded so far, and the consumer
 /// each row is handed to as it is decoded, so a table's memory is what the consumer keeps, not the table's size.
-/// `payload_budget` caps the total payload: `MAX_TABLE_PAYLOAD` for walks whose consumer keeps every row, and for
-/// every walk the database's own size. An honest table's payloads never add up to more than the database; a hostile
+/// `payload_budget` caps the total payload: `MAX_TABLE_PAYLOAD` for the schema walk, and for every walk the
+/// database's own size. An honest table's payloads never add up to more than the database; a hostile
 /// one can point many cells at the same record or overflow chain, and a streaming walk must not decode that forever.
 /// `strict` walks (the schema) fail on the first bad record; the others skip it and count it in `stats`, so one
 /// oversized or malformed record costs that record, never the whole table (issue #1311).
@@ -354,7 +356,26 @@ struct WalkState<'f> {
     strict: bool,
     stats: WalkStats,
     sink: &'f mut dyn FnMut(Record) -> Result<(), String>,
+    /// Reads a record past `MAX_PAYLOAD` instead of skipping it: each of its large values goes, piece by piece, to the
+    /// filter this gives for its column (`None`: the record is skipped as before).
+    large: Option<LargeValues<'f>>,
 }
+
+/// A consumer of one large text or blob value, fed a piece at a time (issue #1311): it keeps what it needs and gives
+/// the value the record carries in its place.
+pub(crate) trait ValueFilter {
+    fn feed(&mut self, piece: &[u8]) -> Result<(), String>;
+    fn finish(self: Box<Self>) -> Result<Value, String>;
+}
+
+/// The filter for column `index` of a large record (`text`: a text value, else a blob), or `None` for a column whose
+/// large value can't be read in pieces.
+pub(crate) type LargeValues<'f> = &'f dyn Fn(usize, bool) -> Option<Box<dyn ValueFilter>>;
+
+/// A value of a large record bigger than this goes to its column's filter; smaller ones are read as usual.
+const LARGE_VALUE: usize = 1 << 20;
+/// The most header a large record may have (a few bytes per column).
+const MAX_LARGE_HEADER: usize = 1 << 20;
 
 /// What a table walk left out or read approximately: records it could not read (with the first reason), and text
 /// values that were not valid UTF-8 and were read with replacement characters.
@@ -584,7 +605,7 @@ impl Database {
     ) -> Result<Vec<Record>, String> {
         let mut out = Vec::new();
         let stats =
-            self.walk_rows(rootpage, ncols, cancel, visited_page_budget, Some(MAX_TABLE_PAYLOAD), &mut |record| keep_row(&mut out, record))?;
+            self.walk_rows(rootpage, ncols, cancel, visited_page_budget, Some(MAX_TABLE_PAYLOAD), None, &mut |record| keep_row(&mut out, record))?;
         if let Some(why) = stats.first_skip {
             return Err(why);
         }
@@ -593,7 +614,9 @@ impl Database {
 
     /// Stream a table B-tree's rows to `sink` in rowid order, decoding up to `ncols` values per record. Only one
     /// record (bounded by `MAX_PAYLOAD`) is held at a time, so a table of any size costs what `sink` keeps; pages are
-    /// read from the file one at a time. An error from `sink` (or cancellation) stops the walk and is returned.
+    /// read from the file one at a time. An error from `sink` (or cancellation) stops the walk and is returned. What
+    /// the caller keeps of the rows is its to bound (the catalog reader charges a memory budget, issue #1361); the
+    /// walk itself may visit as many pages as the file has, each once.
     pub(crate) fn for_each_row_with_cancel(
         &self,
         rootpage: u32,
@@ -601,26 +624,26 @@ impl Database {
         cancel: &std::sync::atomic::AtomicBool,
         sink: &mut dyn FnMut(Record) -> Result<(), String>,
     ) -> Result<WalkStats, String> {
-        self.walk_rows(rootpage, ncols, cancel, MAX_VISITED_BTREE_PAGES, None, sink)
+        self.walk_rows(rootpage, ncols, cancel, self.visited_page_budget(), None, None, sink)
     }
 
-    /// [`Database::for_each_row_with_cancel`] for consumers that keep every row: the walk stops past a million rows
-    /// or `MAX_TABLE_PAYLOAD` bytes of payload.
-    pub(crate) fn for_each_kept_row_with_cancel(
+    /// The pages one table walk may visit: every page of the file, and never fewer than `MAX_VISITED_BTREE_PAGES`
+    /// (issue #1361: a catalog's large tables have no row cap).
+    fn visited_page_budget(&self) -> usize {
+        usize::try_from(self.page_count).unwrap_or(usize::MAX).max(MAX_VISITED_BTREE_PAGES)
+    }
+
+    /// [`Database::for_each_row_with_cancel`] that also reads records past `MAX_PAYLOAD`, handing each of their large
+    /// values to `large`'s filter for its column, in constant memory (issue #1311).
+    pub(crate) fn for_each_row_with_large(
         &self,
         rootpage: u32,
         ncols: usize,
         cancel: &std::sync::atomic::AtomicBool,
+        large: LargeValues<'_>,
         sink: &mut dyn FnMut(Record) -> Result<(), String>,
     ) -> Result<WalkStats, String> {
-        let mut rows = 0usize;
-        self.walk_rows(rootpage, ncols, cancel, MAX_VISITED_BTREE_PAGES, Some(MAX_TABLE_PAYLOAD), &mut |record| {
-            if rows >= MAX_ROWS {
-                return Err("SQLite table contains more than one million records".into());
-            }
-            rows += 1;
-            sink(record)
-        })
+        self.walk_rows(rootpage, ncols, cancel, self.visited_page_budget(), None, Some(large), sink)
     }
 
     fn walk_rows(
@@ -630,6 +653,7 @@ impl Database {
         cancel: &std::sync::atomic::AtomicBool,
         visited_page_budget: usize,
         payload_budget: Option<usize>,
+        large: Option<LargeValues<'_>>,
         sink: &mut dyn FnMut(Record) -> Result<(), String>,
     ) -> Result<WalkStats, String> {
         check_cancelled(cancel)?;
@@ -642,7 +666,7 @@ impl Database {
         let alias = self.rowid_aliases.get(&rootpage).copied();
         let database_size = usize::try_from(self.page_count).unwrap_or(usize::MAX).saturating_mul(self.page_size);
         let payload_budget = payload_budget.map_or(database_size, |budget| budget.min(database_size));
-        let mut state = WalkState { seen: HashSet::new(), payload_total: 0, payload_budget, strict: false, stats: WalkStats::default(), sink };
+        let mut state = WalkState { seen: HashSet::new(), payload_total: 0, payload_budget, strict: false, stats: WalkStats::default(), sink, large };
         self.visit_table(rootpage, ncols, alias, 0, cancel, visited_page_budget, &mut state)?;
         check_cancelled(cancel)?;
         Ok(state.stats)
@@ -661,12 +685,18 @@ impl Database {
         alias: Option<usize>,
         cancel: &std::sync::atomic::AtomicBool,
         lossy: &mut usize,
+        large: Option<LargeValues<'_>>,
     ) -> Result<Vec<Value>, String> {
-        if payload_len > MAX_PAYLOAD {
+        let mut values = if payload_len <= MAX_PAYLOAD {
+            let payload = self.payload(page, at, payload_len, cancel)?;
+            decode_record(&payload, ncols, self.encoding, lossy)?
+        } else if let Some(large) = large {
+            let mut reader = LargeRecord::new(ncols, self.encoding, large);
+            self.payload_chunks(page, at, payload_len, cancel, &mut |_| Ok(()), &mut |piece| reader.feed(piece, lossy))?;
+            reader.finish()?
+        } else {
             return Err("SQLite record payload is too large".into());
-        }
-        let payload = self.payload(page, at, payload_len, cancel)?;
-        let mut values = decode_record(&payload, ncols, self.encoding, lossy)?;
+        };
         if let Some(index) = alias {
             if index >= values.len() {
                 return Err("INTEGER PRIMARY KEY column is missing from record".into());
@@ -762,7 +792,7 @@ impl Database {
                         }
                     }
                     let mut lossy = 0usize;
-                    let values = match self.leaf_record(&page, at, payload_len, rowid, ncols, alias, cancel, &mut lossy) {
+                    let values = match self.leaf_record(&page, at, payload_len, rowid, ncols, alias, cancel, &mut lossy, state.large) {
                         Ok(values) => values,
                         Err(error) => {
                             // cancellation, a failing source file, and schema walks still stop the walk
@@ -818,6 +848,32 @@ impl Database {
     }
 
     fn payload(&self, page: &[u8], cell_at: usize, payload_len: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<Vec<u8>, String> {
+        let out = std::cell::RefCell::new(Vec::new());
+        self.payload_chunks(
+            page,
+            cell_at,
+            payload_len,
+            cancel,
+            &mut |capacity| out.borrow_mut().try_reserve_exact(capacity).map_err(|_| "unable to reserve bounded SQLite payload".to_string()),
+            &mut |piece| {
+                out.borrow_mut().extend_from_slice(piece);
+                Ok(())
+            },
+        )?;
+        Ok(out.into_inner())
+    }
+
+    /// A record's payload handed to `piece` a page at a time (the cell's local part, then each overflow page's), so a
+    /// record of any size is read in constant memory. `reserve` is told first how many bytes will come at most.
+    fn payload_chunks(
+        &self,
+        page: &[u8],
+        cell_at: usize,
+        payload_len: usize,
+        cancel: &std::sync::atomic::AtomicBool,
+        reserve: &mut dyn FnMut(usize) -> Result<(), String>,
+        piece: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
         check_cancelled(cancel)?;
         let usable = self.page_size.checked_sub(self.reserved).ok_or("invalid usable page size")?;
         if usable < 8 {
@@ -851,12 +907,11 @@ impl Database {
             .checked_mul(usable.checked_sub(4).ok_or("SQLite usable page size is too small")?)
             .ok_or("SQLite overflow capacity overflow")?;
         let capacity = local.checked_add(overflow_bytes).ok_or("SQLite payload capacity overflow")?.min(payload_len);
-        let mut out = Vec::new();
-        out.try_reserve_exact(capacity).map_err(|_| "unable to reserve bounded SQLite payload")?;
-        out.extend_from_slice(page.get(cell_at..local_end).ok_or("truncated SQLite cell payload")?);
+        reserve(capacity)?;
+        piece(page.get(cell_at..local_end).ok_or("truncated SQLite cell payload")?)?;
         let mut remaining = payload_len.checked_sub(local).ok_or("SQLite payload length is too small")?;
         if remaining == 0 {
-            return Ok(out);
+            return Ok(());
         }
         let overflow_at = local_end;
         match overflow_at.checked_add(4) {
@@ -876,14 +931,14 @@ impl Database {
             let overflow = self.page(next, cancel)?;
             let take = remaining.min(usable.checked_sub(4).ok_or("SQLite usable page size is too small")?);
             let end = 4usize.checked_add(take).ok_or("overflow payload offset")?;
-            out.extend_from_slice(overflow.get(4..end).ok_or("truncated SQLite overflow page")?);
+            piece(overflow.get(4..end).ok_or("truncated SQLite overflow page")?)?;
             remaining -= take;
             check_cancelled(cancel)?;
             if remaining > 0 {
                 next = be_u32_at(&overflow, 0)?;
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     fn parse_schema(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<SchemaInfo, String> {
@@ -899,6 +954,7 @@ impl Database {
             strict: true,
             stats: WalkStats::default(),
             sink: &mut |record| keep_row(&mut rows, record),
+            large: None,
         };
         self.visit_table(1, 5, None, 0, cancel, MAX_VISITED_BTREE_PAGES, &mut state)?;
         for record in rows {
@@ -1025,6 +1081,175 @@ fn parse_wal(wal: &[u8], page_size: usize) -> Result<WalOverlay, String> {
         overlay.insert(page_id, frame.get(24..).ok_or("truncated WAL page")?.to_vec());
     }
     Ok(WalOverlay { page_size, frame_count, pages: overlay, page_count })
+}
+
+/// A record past `MAX_PAYLOAD`, read from its payload's pieces (issue #1311): its header and small values are held as
+/// usual, each large text or blob value goes to its column's [`ValueFilter`] as it comes, so the record costs what
+/// the filters keep.
+struct LargeRecord<'f> {
+    ncols: usize,
+    encoding: TextEncoding,
+    large: LargeValues<'f>,
+    /// The header while it is read; then empty.
+    header: Vec<u8>,
+    serials: Option<Vec<u64>>,
+    /// The value being read: its index, its bytes still to come, and where they go.
+    column: usize,
+    left: usize,
+    small: Vec<u8>,
+    filter: Option<Box<dyn ValueFilter>>,
+    values: Vec<Value>,
+}
+
+/// A serial type's value kind (12 blob, 13 text, else the number kinds) and length in bytes.
+fn serial_len(serial: u64) -> Result<(u8, usize), String> {
+    Ok(match serial {
+        0 | 8 | 9 => (0, 0),
+        1 => (1, 1),
+        2 => (2, 2),
+        3 => (3, 3),
+        4 => (4, 4),
+        5 => (5, 6),
+        6 | 7 => (6, 8),
+        10 | 11 => return Err("reserved SQLite serial type".into()),
+        n => {
+            let text = n % 2 == 1;
+            (if text { 13 } else { 12 }, usize_from_u64((n - if text { 13 } else { 12 }) / 2, "SQLite field length")?)
+        }
+    })
+}
+
+impl<'f> LargeRecord<'f> {
+    fn new(ncols: usize, encoding: TextEncoding, large: LargeValues<'f>) -> Self {
+        LargeRecord {
+            ncols,
+            encoding,
+            large,
+            header: Vec::new(),
+            serials: None,
+            column: 0,
+            left: 0,
+            small: Vec::new(),
+            filter: None,
+            values: Vec::new(),
+        }
+    }
+
+    fn feed(&mut self, mut piece: &[u8], lossy: &mut usize) -> Result<(), String> {
+        while !piece.is_empty() {
+            let Some(serials) = &self.serials else {
+                piece = self.feed_header(piece)?;
+                continue;
+            };
+            if self.left == 0 && self.filter.is_none() && self.small.is_empty() {
+                // the next value starts
+                let Some(&serial) = serials.get(self.column) else {
+                    return Err("SQLite record body is longer than its header says".into());
+                };
+                let (kind, len) = serial_len(serial)?;
+                self.left = len;
+                if len > LARGE_VALUE {
+                    let filter = (self.large)(self.column, kind == 13).ok_or("SQLite record value is too large")?;
+                    self.filter = Some(filter);
+                } else {
+                    self.small.try_reserve_exact(len).map_err(|_| "unable to reserve SQLite value")?;
+                }
+                if len == 0 {
+                    self.end_value(lossy)?;
+                    continue;
+                }
+            }
+            let take = self.left.min(piece.len());
+            let (now, rest) = piece.split_at(take);
+            match &mut self.filter {
+                Some(f) => f.feed(now)?,
+                None => self.small.extend_from_slice(now),
+            }
+            self.left -= take;
+            piece = rest;
+            if self.left == 0 {
+                self.end_value(lossy)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Take header bytes from `piece`; returns what follows the header.
+    fn feed_header<'p>(&mut self, piece: &'p [u8]) -> Result<&'p [u8], String> {
+        let mut at = 0;
+        let want = match read_varint(&self.header, &mut at) {
+            Ok(n) if self.header.len() >= at => usize_from_u64(n, "record header length")?,
+            _ => {
+                // the header's length is still to come: a byte at a time (a varint is at most 9)
+                let (first, rest) = piece.split_at(1);
+                self.header.extend_from_slice(first);
+                if self.header.len() > 9 {
+                    return Err("SQLite record header is malformed".into());
+                }
+                return Ok(rest);
+            }
+        };
+        if want > MAX_LARGE_HEADER || want < at {
+            return Err("invalid SQLite record header length".into());
+        }
+        let take = want.saturating_sub(self.header.len()).min(piece.len());
+        let (now, rest) = piece.split_at(take);
+        self.header.extend_from_slice(now);
+        if self.header.len() == want {
+            let mut serials = Vec::new();
+            while at < want {
+                if serials.len() >= self.ncols {
+                    return Err("SQLite record has more columns than table schema".into());
+                }
+                serials.push(read_varint(&self.header, &mut at)?);
+            }
+            if at != want {
+                return Err("SQLite record header is malformed".into());
+            }
+            self.header = Vec::new();
+            // values of no length (NULL, 0, 1) are taken at once
+            self.serials = Some(serials);
+            self.take_empty_values()?;
+        }
+        Ok(rest)
+    }
+
+    fn take_empty_values(&mut self) -> Result<(), String> {
+        while let Some(&serial) = self.serials.as_ref().and_then(|s| s.get(self.column)) {
+            if serial_len(serial)?.1 != 0 {
+                break;
+            }
+            let mut body = 0;
+            let mut lossy = 0;
+            self.values.push(serial_value(&[], &mut body, serial, self.encoding, &mut lossy)?.0);
+            self.column += 1;
+        }
+        Ok(())
+    }
+
+    fn end_value(&mut self, lossy: &mut usize) -> Result<(), String> {
+        let serial = self.serials.as_ref().and_then(|s| s.get(self.column)).copied().ok_or("SQLite record header is malformed")?;
+        let value = match self.filter.take() {
+            Some(f) => f.finish()?,
+            None => {
+                let mut body = 0;
+                let bytes = std::mem::take(&mut self.small);
+                serial_value(&bytes, &mut body, serial, self.encoding, lossy)?.0
+            }
+        };
+        self.values.push(value);
+        self.column += 1;
+        self.take_empty_values()
+    }
+
+    fn finish(mut self) -> Result<Vec<Value>, String> {
+        let n = self.serials.as_ref().map_or(0, Vec::len);
+        if self.serials.is_none() || self.column < n || self.left > 0 {
+            return Err("SQLite record body is truncated".into());
+        }
+        self.values.resize(self.ncols, Value::Null);
+        Ok(self.values)
+    }
 }
 
 fn decode_record(payload: &[u8], ncols: usize, encoding: TextEncoding, lossy: &mut usize) -> Result<Vec<Value>, String> {
@@ -2429,7 +2654,6 @@ mod tests {
         .unwrap();
         assert_eq!((count, sum), (ROWS, 7 * ROWS as i64));
         assert!(db.read_table(2, 1).is_err(), "collecting a whole table stays capped");
-        assert!(db.for_each_kept_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).is_err(), "a kept walk stays capped");
         // A sink error stops the walk and is returned.
         let mut seen = 0;
         let stopped = db.for_each_row_with_cancel(2, 1, &never_cancel, &mut |_| {
@@ -2534,7 +2758,7 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("3 records") && n.contains("left out")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("replacement characters")), "{notes:?}");
         // a kept walk skips the same way; a cancelled one still stops
-        assert_eq!(db.for_each_kept_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).map(|s| s.skipped), Ok(3));
+        assert_eq!(db.for_each_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).map(|s| s.skipped), Ok(3));
         assert!(db.for_each_row_with_cancel(2, 1, &AtomicBool::new(true), &mut |_| Ok(())).is_err());
         assert!(WalkStats::default().notes("T").is_empty(), "a clean walk adds no warning");
     }
@@ -2553,5 +2777,77 @@ mod column_limit_tests {
         assert!(parse_create_table(&sql).unwrap_err().contains("too many columns"));
         assert!(parse_create_table("CREATE TABLE t (a TEXT, a INTEGER)").unwrap_err().contains("duplicate"));
         assert!(parse_create_table("CREATE TABLE t (a TEXT, A INTEGER)").unwrap_err().contains("duplicate"));
+    }
+}
+
+#[cfg(test)]
+mod large_record_tests {
+    use super::*;
+
+    fn varint(mut value: u64) -> Vec<u8> {
+        let mut out = vec![(value & 0x7f) as u8];
+        value >>= 7;
+        while value != 0 {
+            out.push((value & 0x7f) as u8 | 0x80);
+            value >>= 7;
+        }
+        out.reverse();
+        out
+    }
+
+    /// Keeps the length and the first byte of what it is fed.
+    struct Count(usize, Option<u8>);
+    impl ValueFilter for Count {
+        fn feed(&mut self, piece: &[u8]) -> Result<(), String> {
+            self.1 = self.1.or(piece.first().copied());
+            self.0 += piece.len();
+            Ok(())
+        }
+        fn finish(self: Box<Self>) -> Result<Value, String> {
+            Ok(Value::Text(format!("{} {:?}", self.0, self.1)))
+        }
+    }
+
+    /// Issue #1311: a record past the size limit is read in pieces, however they split, its large value through the
+    /// column's filter, its small ones as usual; a large value of a column without a filter, or a cut record, fails.
+    #[test]
+    fn a_large_record_is_read_in_pieces() {
+        let big = vec![7u8; LARGE_VALUE + 10];
+        let text = b"hello";
+        // id (1-byte int), a large blob, NULL, a text
+        let serials = [varint(1), varint(12 + 2 * big.len() as u64), varint(0), varint(13 + 2 * text.len() as u64)].concat();
+        let header_len = serials.len() + 1;
+        let mut payload = [varint(header_len as u64), serials].concat();
+        payload.push(42);
+        payload.extend(&big);
+        payload.extend(text);
+        let filters = |i: usize, is_text: bool| (i == 1 && !is_text).then(|| Box::new(Count(0, None)) as Box<dyn ValueFilter>);
+        for split in [1usize, 3, 4096, payload.len()] {
+            let mut r = LargeRecord::new(5, TextEncoding::Utf8, &filters);
+            let mut lossy = 0;
+            for piece in payload.chunks(split) {
+                r.feed(piece, &mut lossy).unwrap();
+            }
+            let values = r.finish().unwrap();
+            assert_eq!(
+                values,
+                vec![Value::Integer(42), Value::Text(format!("{} Some(7)", big.len())), Value::Null, Value::Text("hello".into()), Value::Null],
+                "split {split}"
+            );
+        }
+        // no filter for the column
+        let none = |_: usize, _: bool| None;
+        let mut r = LargeRecord::new(5, TextEncoding::Utf8, &none);
+        assert!(r.feed(&payload, &mut 0).is_err());
+        // cut short
+        let mut r = LargeRecord::new(5, TextEncoding::Utf8, &filters);
+        r.feed(payload.get(..payload.len() - 2).unwrap(), &mut 0).unwrap();
+        assert!(r.finish().is_err());
+        // hostile headers: never a panic
+        for bad in [vec![0x80u8; 12], vec![0x81, 0x80, 0x80, 0x80, 0x80], vec![2, 10], vec![3, 0xff, 0xff]] {
+            let mut r = LargeRecord::new(5, TextEncoding::Utf8, &filters);
+            let fed = r.feed(&bad, &mut 0);
+            assert!(fed.is_err() || r.finish().is_err(), "{bad:?}");
+        }
     }
 }

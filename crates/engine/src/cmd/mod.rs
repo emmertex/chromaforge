@@ -31,6 +31,7 @@ pub mod duplicates;
 mod edit;
 pub mod edit_in;
 mod enhance;
+mod expand;
 mod export;
 pub mod export_preset_files;
 pub(crate) mod face_detect;
@@ -294,6 +295,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(retouch::retouch_specs());
         v.extend(lens_blur::specs());
         v.extend(genfill::specs());
+        v.extend(expand::specs());
         v.extend(concepts::specs());
         v.extend(people_roles::specs());
         v.extend(people_recognize::specs());

@@ -1,10 +1,13 @@
 # Instructions for agents
 
-Chromaforge: clean-room, pure-Rust photo library + non-destructive raw developer, targeting Lightroom parity.
+Chromaforge: clean-room, Rust-first photo library + non-destructive raw developer, targeting Lightroom parity.
 Native macOS/Windows/Linux, web via WASM. Fork of an upstream project (`NOTICE`); "Lightroom" parity target only.
 Upstream is **not merged**: each upstream
 PR/commit is reviewed on its own and ported by hand; one intake round = one fork PR
 ([`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md), mechanics: [`docs/upstream-merge.md`](docs/upstream-merge.md)).
+Chromaforge's rules diverge from upstream's (2026-11-27): Rust-first instead of pure Rust, and black-box measurement
+of other apps (Lightroom included) may ship as fitted data. Work that relies on either is Chromaforge-only, never
+offered upstream.
 
 This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Claiming issues / opening PRs:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -36,10 +39,13 @@ This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Cla
    `--write` refreshes the summary.
 4. `plan/observations/` (Adobe notes) is gitignored, local-only.
 
-**Branches:** PRs start from latest `main`; re-merge `origin/main` before pushing and whenever `main` moves
-(auto-merge doesn't update the branch; `gh pr update-branch N` does). Merge agent branches one at a time with
+**Branches:** PRs target `staging` (the default branch), not `main`; start from latest `staging`, re-merge
+`origin/staging` before pushing and whenever `staging` moves (auto-merge doesn't update the branch;
+`gh pr update-branch N` does). PRs to `staging` run the fast gate only — no tests; the full suite gates the
+periodic batch PR `staging` → `main`, which lands once green and is what keeps `main` tested (nightly and
+fuzzing guard it afterwards; [docs/ci.md](docs/ci.md)). Merge agent branches one at a time with
 `cargo xtask ci --fast` + targeted tests between (two green branches can still conflict). Resuming after a crash:
-check `git status` on main, `git worktree list`, `main..HEAD` per worktree; commit small and often.
+check `git status` on staging, `git worktree list`, `staging..HEAD` per worktree; commit small and often.
 
 ## Never crash (outranks features)
 Malformed raw/JPEG/XMP, bad command/control/MCP argument, corrupt catalog/settings, full disk → actionable error,
@@ -56,7 +62,7 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
   (JNI VM/activity adoption), `crates/winspool` (Win32 print spooler), `crates/winmsi` (`MsiEnumClientsW` +
   `MsiGetComponentPathW` for the updater), `crates/winjob` (a kill-on-close job object, so the Windows CLI
   launcher's app ends with it), `crates/firstclick` (macOS: replaces `acceptsFirstMouse:` on winit's window view,
-  for the background-click setting), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
+  for the background-click setting), `crates/libraw` (FFI into its C shim over LibRaw, opt-in, see Non-negotiables), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
   production crate root has `#![forbid(unsafe_code)]`. New unsafe need → isolated, well-tested helper crate:
   `// SAFETY:` everywhere, safe API, safe fallback, and a line here naming it.
 - Input-derived numbers are hostile: `get()` not `[i]`/`[a..b]`; checked/saturating math; no division by zero,
@@ -74,9 +80,16 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
 
 ## Non-negotiables
 - **Third-party material** — see the licence/derivation policy below.
-- **Pure Rust** in the product, no C/C++ dependencies; covers our crates and anything we bundle. **Plug-ins are
-  exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)), any language
-  that compiles to WASM, own licence, untrusted input to the host.
+- **Rust first (2026-11-27; was pure Rust).** Our crates are Rust. A C/C++ library may be used when no good Rust
+  option exists, on these terms: behind a cargo feature in one crate, reached through a maintained safe wrapper crate
+  or an FFI helper crate that follows the `unsafe` rules under "Never crash"; every target it doesn't build on (always
+  the web build) still builds and works without it, with the feature greyed out and a note saying why; its licence
+  passes `deny.toml`; `NOTICE` credits it; and it is listed here. Hostile input reaching it gets the same no-panic,
+  no-crash tests as our own decoders. Approved: LibRaw (raw decode, opt-in), libwebp (lossy WebP export, #1482),
+  ONNX Runtime + its WebGPU plug-in (AI models on the GPU, #491: `crates/onnxrt`, feature `ort`, loaded at run time,
+  [`docs/onnxruntime.md`](docs/onnxruntime.md)).
+  **Plug-ins are exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)),
+  any language that compiles to WASM, own licence, untrusted input to the host.
 - **Layering** (`plan/architecture.md` §3, `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.
 - **Everything is a command** (`crates/engine`): id, label, menu path, shortcut, params, `enabled()`, `run()`. UI,
   CLI, control channel, MCP all dispatch by id. Every slider is a `develop` control spec.
@@ -105,9 +118,10 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
 - **Quality gates (2026-11-24):** *before pushing*, run `cargo xtask ci --quick` (fmt, brand, docs, layers, assets;
   clippy -D warnings on the changed crates and their dependents; the changed crates' tests; parity / wasm / heif when
   the changes touch them) and `cargo xtask sil` when pipeline/develop changed. Don't also run `ci --fast` or the
-  full `ci` locally: the PR's CI runs the fast gate and the affected tests, and it is the merge gate. Open a PR once,
+  full `ci` locally: PRs to `staging` (the default branch) run the fast gate only, with no tests — the full suite
+  gates the periodic batch PR `staging` → `main`, runs nightly, and on a manual dispatch (releases). Open a PR once,
   when the work is ready (every push to an open PR starts a CI run on CPU-bound self-hosted runners; branch pushes
-  run nothing). Releases get a manual full-CI dispatch. [`docs/ci.md`](docs/ci.md).
+  and pushes to `staging` run nothing). [`docs/ci.md`](docs/ci.md).
 - **Commits:** one task id per commit (`M2.3: local Laplacian highlights/shadows`); green states only; end messages
   with the environment's attribution line.
 
@@ -122,15 +136,19 @@ One rule (2026-11-10): **use only material you may legally derive from.**
 - **Provenance:** every port names its source — commit **Sources:** line, module docs saying "translated from"/"read
   as a reference" (never "no code copied" when structure follows a source), `NOTICE` credit + licence text next to the
   material.
-- **Adobe boundaries (absolute):** never open/disassemble Adobe app bundles (file/symbol names and listings are the
-  limit); observing installed Lightroom is read-only (it syncs the user's library — never write); imitating layout and
-  behaviour is allowed, Adobe assets never ship; no camera matrices from Adobe-converted DNGs (check `Software` tag;
-  camera-native DNGs fine); Adobe-rendered pixels never ship; black-box fits may ship only as aggregate calibration
-  numbers (`<cli> calibrate-lightroom add`, allow-listed fields only); users' own `.dcp`/XMP import at run time
-  (`camera.importDcp`, `profile.import`) but are never committed, bundled or used as fixtures (tests build bytes).
-- **Other apps' black-box measurements (2026-11-17):** response curves measured from a non-Adobe app's output on our
-  own synthetic charts (e.g. Capture One midtone tables in `crates/develop/src/levels_table.rs`) may ship as data,
-  with the source app and method named in module docs and `NOTICE`. No copied files, assets or rendered photos.
+- **Adobe boundaries (absolute; these are copyright, licence and user-safety limits, not upstream policy):** never
+  open/disassemble Adobe app bundles (file/symbol names and listings are the limit); observing installed Lightroom is
+  read-only (it syncs the user's library — never write); imitating layout and behaviour is allowed, Adobe assets
+  never ship; no camera matrices from Adobe-converted DNGs (check `Software` tag; camera-native DNGs fine);
+  Adobe-rendered images are never committed or shipped (measure them, keep only the numbers); users' own `.dcp`/XMP
+  import at run time (`camera.importDcp`, `profile.import`) but are never committed, bundled or used as fixtures
+  (tests build bytes).
+- **Black-box measurement of any app, Lightroom included (2026-11-27; was non-Adobe only, 2026-11-17):** we may
+  measure another app's output (slider responses, tone and colour curves, process-version behaviour) on our own
+  synthetic charts or on photos whose owner agrees, fit our own models to it, and ship the fitted parameters or
+  tables as data (e.g. Capture One midtone tables in `crates/develop/src/levels_table.rs`; Lightroom tone-slider fits
+  for #1120/#1124). Name the source app, method and sample set in module docs and `NOTICE`. Only the numbers ship: no
+  copied files, assets or rendered photos. Camera calibrations still go through `<cli> calibrate-lightroom add`.
 - Now usable (with provenance): darktable/Ansel sources, all of dcraw incl. the GPL RESTRICTED (Foveon) block, LibRaw
   and other dcraw descendants, rawspeed/rawloader/rawler/dnglab/RawTherapee/ART, GPL data tables (noiseprofiles,
   wb_presets, colormatrices, basecurves). Quality habits stay: camera data ranks measured > spectral > dcraw tables

@@ -37,6 +37,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("performance", "Performance"),
     ("display", "Display"),
     ("interface", "Interface"),
+    ("notifications", "Notifications"),
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("profiles", "Profiles"),
@@ -353,12 +354,17 @@ fn tab_strip(ui: &mut egui::Ui, t: &Tokens, tab: &mut String) {
 }
 
 pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
+    crate::settings_search::around(app, ui, tab, |app, ui| tab_body_page(app, ui, t, tab));
+}
+
+fn tab_body_page(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &str) {
     match tab {
         "import" => import_tab(app, ui, t),
         "folders" => super::settings_folders::settings_tab(app, ui, t),
         "performance" => performance_tab(app, ui, t),
         "display" => display_tab(app, ui, t),
         "interface" => interface_tab(app, ui, t),
+        "notifications" => super::notifications::settings_tab(app, ui, t),
         "slideshow" => slideshow_tab(app, ui, t),
         "faces" => super::faces::settings_tab(app, ui, t),
         "denoise" => super::denoise::settings_tab(app, ui, t),
@@ -847,6 +853,66 @@ fn cameras(app: &LccApp) -> Vec<String> {
     v
 }
 
+/// The raw decoder per camera: Auto, the built-in decoder (lcc-raw) or LibRaw. LibRaw is greyed out, with a note,
+/// where this build has none (the web, Android, desktop builds made without it).
+fn raw_decoder_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::raw_decoder::{self, Decoder};
+    let cams = cameras(app);
+    if cams.is_empty() {
+        return;
+    }
+    heading_help(ui, t, crate::i18n::tr("Raw decoder"), "rawDecoder");
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Which decoder reads each camera's raw files. Auto uses {app}'s own decoder, and LibRaw for files it can't read. Either way {app} develops the picture.",
+        ),
+    );
+    let built_in = raw_decoder::libraw_built_in();
+    if !built_in {
+        hint(
+            ui,
+            t,
+            crate::i18n::tr(
+                "LibRaw is not part of this version of {app}: it comes with the desktop app for macOS, Windows and Linux, not the web or Android versions. Cameras set to LibRaw are read by the built-in decoder here.",
+            ),
+        );
+    }
+    let label = |d: Decoder| -> String {
+        match d {
+            Decoder::Auto => crate::i18n::tr("Auto").to_string(),
+            Decoder::Lcc => crate::i18n::tr("Built-in (lcc-raw)").to_string(),
+            Decoder::Libraw => "LibRaw".to_string(),
+        }
+    };
+    let chosen = app.session.raw_decoders.clone();
+    egui::ScrollArea::vertical().max_height(150.0).id_salt("settingsRawDecoders").show(ui, |ui| {
+        for (i, cam) in cams.iter().enumerate() {
+            let key = raw_decoder::camera_key(cam);
+            let current = chosen.iter().find(|(k, _)| raw_decoder::camera_key(k) == key).map(|(_, d)| *d).unwrap_or_default();
+            row(ui, t, cam, |ui| {
+                let id = format!("settingsRawDecoder-{i}");
+                let mut pick = None;
+                let r = crate::widgets::combo_box(&id).width(240.0).selected_text(label(current)).show_ui(ui, |ui| {
+                    for d in Decoder::ALL {
+                        let enabled = d != Decoder::Libraw || built_in;
+                        let r = ui.add_enabled(enabled, egui::Button::selectable(current == d, label(d)));
+                        let r = if enabled { r } else { r.on_disabled_hover_text(crate::i18n::tr("Not available in this version of {app}")) };
+                        if r.clicked() {
+                            pick = Some(d);
+                        }
+                    }
+                });
+                register(ui.ctx(), format!("combo:{id}"), r.response.rect);
+                if let Some(d) = pick {
+                    let _ = app.run("library.preferences", json!({"rawDecoder": {"camera": cam, "decoder": d.id()}}));
+                }
+            });
+        }
+    });
+}
+
 fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let d = app.session.import_defaults.clone();
     // (browsing folders needs a file system: the web keeps the import review)
@@ -1033,6 +1099,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
+    raw_decoder_section(app, ui, t);
     heading(ui, t, crate::i18n::tr("Other images (JPEG, PNG, TIFF, HEIC…)"));
     row(ui, t, crate::i18n::tr("Non-raw photos"), |ui| {
         if let Some(v) = preset_combo(app, ui, "settingsOtherPreset", d.other_preset.as_deref(), "None") {
@@ -1721,8 +1788,11 @@ fn performance_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // activity stack, and a write in progress holds the size; this dialog draws it every frame)
     let rendered = &app.session.media.rendered;
     let activity = &app.session.activity;
+    // (read off screen for the Settings search, it starts no count)
+    let off_screen = crate::settings_search::off_screen(ui.ctx());
     let used = rendered
         .disk()
+        .filter(|_| !off_screen)
         .map(|_| rendered.disk_size_now_with(|| activity.start("cache", "Counting the preview cache", lcc_engine::activity::Cancel::No)));
     if matches!(used, Some(None)) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -2139,8 +2209,6 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too.",
         ),
     );
-    // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t, false);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and
@@ -2392,10 +2460,11 @@ fn appearance(
     let available = ui.available_width();
     let mut cards = |ui: &mut egui::Ui, width: f32| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
-        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
+        // (in the order of the mode buttons above: dark, then light)
         let dark: Vec<_> = DarkTheme::ALL.iter().map(|d| (*d, d.kind())).collect();
         theme_card(ui, t, "Dark Theme", !light_active, &dark, &mut s.dark_theme, &mut s.favorite_themes, width);
+        let light: Vec<_> = LightTheme::ALL.iter().map(|l| (*l, l.kind())).collect();
+        theme_card(ui, t, "Light Theme", light_active, &light, &mut s.light_theme, &mut s.favorite_themes, width);
     };
     if available < 440.0 {
         ui.vertical(|ui| cards(ui, available));

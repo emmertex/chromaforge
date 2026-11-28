@@ -385,6 +385,36 @@ pub struct DevelopSettings {
     /// empty, so settings saved before plug-in filters keep their JSON and `hash64`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugin_filters: Vec<PluginFilter>,
+    /// Crop ▸ Fill Edges (issue #861): what fills the part of a crop extended past the photo
+    /// ([`Crop::extend`]). Its pixels are a patch file in the library's `genfill` folder, as a generative fill's
+    /// are; this only refers to it. The photo's own data (the file is this photo's): in no settings group, so copy,
+    /// paste, sync and presets never carry it. Not written while there is none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub edge_fill: Option<EdgeFill>,
+}
+
+/// How the area of a crop extended past the photo is filled ([`DevelopSettings::edge_fill`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EdgeFillKind {
+    /// Rebuilt from the photo's own pixels (PatchMatch completion), on this computer.
+    #[default]
+    ContentAware,
+    /// Made by an online image model with the user's own key (generative fill's services).
+    Generative,
+}
+
+/// A fill of a crop's area past the photo ([`DevelopSettings::edge_fill`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EdgeFill {
+    pub kind: EdgeFillKind,
+    /// The patch files (`fill.file_name(n)`) and, for a generative fill, its service, prompt and variations.
+    pub fill: GenFill,
+    /// The area the patch covers, normalized to the EXIF-oriented source (`[x0, y0, x1, y1]`, past 0..1 where the
+    /// crop reaches beyond the photo): a crop reaching further than this shows the blank canvas there until filled
+    /// again.
+    pub rect: [f64; 4],
 }
 
 /// Section id of the pixel-filter plug-in stack (its eye toggle in `disabled_sections`).
@@ -423,6 +453,21 @@ pub struct PluginFilter {
     /// Whole-image measurement the filter computed once (e.g. film base / black / white points).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis: Option<serde_json::Value>,
+    /// Where the filter applies (#1397): one of the photo's masks, its output blended with its input by the mask's
+    /// coverage. `None`: the whole frame. Display stage only (a Source filter runs before masks exist). Not written
+    /// while `None`, so settings from before it keep their JSON and hash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask: Option<FilterMask>,
+}
+
+/// A pixel filter's mask ([`PluginFilter::mask`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FilterMask {
+    /// The [`Mask::id`] of the photo's mask.
+    pub id: u32,
+    /// Apply everywhere the mask is not.
+    pub invert: bool,
 }
 
 impl Default for PluginFilter {
@@ -436,6 +481,7 @@ impl Default for PluginFilter {
             enabled: true,
             stage: FilterStage::Display,
             analysis: None,
+            mask: None,
         }
     }
 }
@@ -483,6 +529,7 @@ impl Default for DevelopSettings {
             film_dust: FilmDust::default(),
             disabled_sections: Vec::new(),
             plugin_filters: Vec::new(),
+            edge_fill: None,
         }
     }
 }
@@ -1750,6 +1797,11 @@ pub struct Crop {
     pub aspect: Option<(u32, u32)>,
     pub flip_h: bool,
     pub flip_v: bool,
+    /// Crop ▸ Extend Past the Edge (issue #861): the crop may reach past the photo, up to
+    /// [`CropGeometry::extended_bounds`]; the area past it is blank canvas until filled
+    /// ([`DevelopSettings::edge_fill`]). Not written while off, so settings without it keep their JSON and hash.
+    #[serde(skip_serializing_if = "is_false")]
+    pub extend: bool,
 }
 
 impl Crop {
@@ -2961,6 +3013,12 @@ impl Hdr {
 }
 
 impl DevelopSettings {
+    /// The fill of the crop's area past the photo that renders show: one is there, the crop may extend
+    /// ([`Crop::extend`]) and its id is usable.
+    pub fn shown_edge_fill(&self) -> Option<&EdgeFill> {
+        self.edge_fill.as_ref().filter(|e| self.crop.extend && GenFill::valid_id(&e.fill.id))
+    }
+
     /// The settings an SDR render uses: unchanged when HDR is off; otherwise HDR off and the
     /// SDR rendition offsets applied to exposure, contrast, highlights, shadows, whites, clarity,
     /// and [`Hdr::rolloff_peak`] set so the tone map compresses the HDR highlights into SDR.

@@ -219,8 +219,8 @@ fn add_checked(s: &mut Session, path: &str, from: PhotoId, stack: bool, album: O
     let reloaded = known && {
         use crate::cmd::reload as r;
         let items = r::plan(s, &json!({"ids": [photo.0]})).map_err(|e| e.to_string())?;
-        let results = r::probe(r::file_probe(s).as_ref(), &items, &std::sync::atomic::AtomicBool::new(false), &|_| {});
-        r::apply(s, items, results).map_err(|e| e.to_string())?.contains(&photo)
+        let results = r::probe(r::file_probe(s).as_ref(), &items, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), &|_| {});
+        r::apply(s, items, results).map_err(|e| e.to_string())?.reloaded.contains(&photo)
     };
     if stack && s.catalog.stack_of(photo).is_none_or(|st| s.catalog.stack_of(from).is_none_or(|f| f.id != st.id)) {
         super::edit_in::stack_edit(s, photo, from).map_err(|e| e.to_string())?;

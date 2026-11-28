@@ -26,9 +26,10 @@ fn the_selected_photos_lose_their_label_in_one_undo_step() {
     {
         let mut s = session().unwrap();
         s.execute("library.select", &json!({"ids": [1, 2], "active": 2})).unwrap();
+        let steps = s.undo.len();
         s.execute("photo.clearLabel", &json!({})).unwrap();
         assert_eq!(labels(&s), [None, None, Some(ColorLabel::Blue), None]);
-        assert_eq!(s.undo.len(), 1);
+        assert_eq!(s.undo.len(), steps + 1);
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(labels(&s), [Some(ColorLabel::Red), Some(ColorLabel::Purple), Some(ColorLabel::Blue), None]);
     }

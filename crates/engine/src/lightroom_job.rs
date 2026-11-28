@@ -36,16 +36,18 @@ fn cancelled() -> crate::EngineError {
 /// first, before anything changes. The warning goes first: the result window lists only the first
 /// few, and catalog warnings (one per unreadable record) can be many.
 fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate::Result<Option<PathBuf>> {
-    use crate::lightroom_archive::{Kept, MAX_ARCHIVE_BYTES};
+    use crate::lightroom_archive::Kept;
     let Some(dir) = archive_dir else { return Ok(None) };
     // The import index, unlike the archive, is required, and it is written only after the photos
     // are imported: refuse a folder it can't be written to here, rather than import and then fail
     // (a retry could duplicate virtual copies).
     require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this catalog: {e}")))?;
-    let limit = MAX_ARCHIVE_BYTES >> 20;
+    // a quarter of the drive's free space (issue #1312), named when it is passed
+    let limit_bytes = crate::lightroom_archive::archive_limit_for(dir);
+    let limit = size_text(limit_bytes);
     // the warning names the program the catalog comes from
     let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
-    let kept = match crate::lightroom_archive::store_best_effort(dir, data) {
+    let kept = match crate::lightroom_archive::store_best_effort(dir, data, limit_bytes) {
         Ok(kept) => kept,
         Err(e) => {
             data.warnings.insert(0, format!("{program} source archive not saved in {}: {e}; archive skipped", dir.display()));
@@ -55,14 +57,25 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
     Ok(match kept {
         Kept::All(stored) => Some(note_cleanup(stored, dir, data, program)),
         Kept::WithoutSettings(stored) => {
-            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
+            data.warnings.push(format!(
+                "{program} source archive exceeded {limit} (its limit on this drive); archived without history-step and snapshot settings"
+            ));
             Some(note_cleanup(stored, dir, data, program))
         }
         Kept::Nothing => {
-            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archive skipped"));
+            data.warnings.push(format!("{program} source archive exceeded {limit} (its limit on this drive); archive skipped"));
             None
         }
     })
+}
+
+/// `bytes` for a warning: in GiB from 1 GiB, else MiB from 1 MiB, else KiB.
+fn size_text(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GiB", b as f64 / f64::from(1u32 << 30)),
+        b if b >= 1 << 20 => format!("{} MiB", b >> 20),
+        b => format!("{} KiB", b >> 10),
+    }
 }
 
 /// The saved archive's path. Cleanup that failed after it was published is a warning of its own, first
@@ -318,7 +331,7 @@ impl LightroomJob {
     }
 
     /// Read/probe/stage all source data off the owner thread.
-    pub fn prepare(&mut self, cancel: &AtomicBool) -> crate::Result<PreparedLightroom> {
+    pub fn prepare(&mut self, cancel: &std::sync::Arc<AtomicBool>) -> crate::Result<PreparedLightroom> {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
@@ -362,7 +375,21 @@ impl LightroomJob {
 }
 
 /// Apply prepared data on the owner thread.  No source, archive or index filesystem work occurs.
-pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+pub fn commit_prepared(s: &mut crate::Session, prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+    // diagnostics (issue #1363): once per catalog import, so `critical` (on disk before it starts); ends with its real
+    // outcome (`cancelled` for a cancel) on every path
+    let photos = prepared.data.photos.len() as u64;
+    lcc_diag::traced(
+        lcc_diag::Level::Critical,
+        lcc_diag::Subsystem::Commit,
+        "lightroom_commit",
+        &[("photos", lcc_diag::Val::U64(photos))],
+        crate::diag_outcome,
+        |_| commit_prepared_inner(s, prepared),
+    )
+}
+
+fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
     if prepared.cancelled {
         prepared.normal.rollback();
         return Err(cancelled());
@@ -379,7 +406,9 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
 
     let undo0 = s.undo.len();
     prepared.normal.revalidate_add(s);
-    let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+    // (each photo's sidecar is kept, to compare with the catalog's values once they are applied)
+    let options =
+        ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, keep_sidecars: true, ..ImportOptions::default() };
     let now = prepared.now.clone();
     let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
@@ -401,9 +430,15 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
         // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
         // album id it can't give) must not leave them so, without the catalog's ratings, flags, edits or collections,
         // while it reports only the error: take that step back. It is records only: Add moves and copies no file.
+        //
+        // A large import commits (and saves) in parts folded into the file step (issue #1361): then the file step is no
+        // longer the last commit, and the parts and it go back as an undo would, logged.
         Err(e) => {
-            let Some(step) = file_step else { return Err(e) };
-            return Err(match s.take_back(step) {
+            let back = match file_step {
+                Some(step) if s.take_back(step).is_ok() => Ok(()),
+                _ => undo_since(s, undo0),
+            };
+            return Err(match back {
                 Ok(()) => e,
                 Err(back) => crate::EngineError::Other(format!("{e}; the photos it added could not be taken back: {back}")),
             });
@@ -414,8 +449,23 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
         report["originalsToRead"] = serde_json::json!(prepared.originals_to_read);
     }
     let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
-    let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
+    let bytes = if path.is_some() {
+        Some(lcc_diag::traced(lcc_diag::Level::Normal, lcc_diag::Subsystem::Commit, "index_json", &[], crate::diag_outcome, |_| {
+            serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))
+        })?)
+    } else {
+        None
+    };
     Ok(LightroomCompletion { report, finalization: LightroomArchiveFinalization { path, bytes } })
+}
+
+/// Undo every step committed since the undo stack was `undo0` long, leaving nothing to redo.
+pub(crate) fn undo_since(s: &mut crate::Session, undo0: usize) -> crate::Result<()> {
+    while s.undo.len() > undo0 {
+        s.undo_step()?;
+        s.redo.pop();
+    }
+    Ok(())
 }
 
 fn original_paths(data: &CatalogImport, cancel: &AtomicBool) -> crate::Result<(Vec<String>, HashSet<String>)> {
@@ -583,11 +633,11 @@ mod tests {
     fn a_cancelled_read_is_cancelled_by_kind() {
         let mut session = crate::Session::new();
         let mut job = LightroomJob::new(&mut session, PathBuf::from("/nonexistent/cancelled.lrcat"), false).unwrap();
-        let Err(e) = job.prepare(&AtomicBool::new(true)) else { panic!("cancelled before it started") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(true))) else { panic!("cancelled before it started") };
         assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
         // the `error` text clients see is unchanged
         assert_eq!(e.to_string(), "invalid parameters for `library.importLightroom`: Lightroom import cancelled");
-        let Err(e) = job.prepare(&AtomicBool::new(false)) else { panic!("no such catalog") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))) else { panic!("no such catalog") };
         assert_ne!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
     }
 
@@ -626,9 +676,11 @@ mod tests {
     #[test]
     fn oversized_archive_keeps_prepared_import_successful_with_warning() {
         for (in_history, warning, archived) in [
-            (true, "Lightroom source archive exceeded 32 MiB; archived without history-step and snapshot settings", true),
-            (false, "Lightroom source archive exceeded 32 MiB; archive skipped", false),
+            (true, "Lightroom source archive exceeded 512 KiB (its limit on this drive); archived without history-step and snapshot settings", true),
+            (false, "Lightroom source archive exceeded 512 KiB (its limit on this drive); archive skipped", false),
         ] {
+            // a limit whose JSON bound (32 MiB, 64 times it) the 40 MiB of settings pass; a drive's is far bigger
+            let _limit = crate::lightroom_archive::test_limit(512 << 10);
             let archive_dir = std::env::temp_dir().join(format!("app-lr-prepared-scale-{in_history}-{}", std::process::id()));
             let mut data = empty_data();
             data.photos = (0..5_000)

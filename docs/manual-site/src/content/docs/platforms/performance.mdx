@@ -14,8 +14,9 @@ import Shot from '../../../components/Shot.astro';
 - Develop renders on the GPU (Metal, Vulkan, DirectX 12) with a CPU fallback that gives the same result. Windows on ARM (Snapdragon) uses DirectX 12 first, with Vulkan as the fallback.
 - **Settings ▸ Performance**: *Use the GPU for rendering*, preview size, *High quality adjustment previews*, memory for caches (Automatic uses a quarter of RAM, up to 16 GB).
 - **Exports**: photos at once, *Use the GPU for exports*, and **Test my machine**, which tries several settings and keeps the fastest.
+- With photos at once on Automatic (and no test run), an export watches how busy the GPU is: while it is saturated, fewer photos run at once, so they don't sit holding memory while they wait for it; while it waits for the processor, more run again, up to the automatic number.
 - **Thumbnail cache**: size limit and **Clear Cache**.
-- **Prepare photos in the background**: next photos are rendered ahead; it shows in the activity stack.
+- **Prepare photos in the background**: next photos are rendered ahead; it shows in the activity stack. Whenever the photo on screen loads, background work waits for it (a few seconds at most), so a photo opened in Develop is not slowed by a batch.
 - **Large libraries** open much faster from network shares and hard disks.
 - **Culling stays responsive** while photos are prepared in the background; the first picture of a raw is its camera JPEG, replaced by the full render.
 - **Heavily masked exports** stay on the GPU instead of falling back to the CPU.
@@ -26,6 +27,11 @@ import Shot from '../../../components/Shot.astro';
 - **Search and face models**: **Settings ▸ Performance** and **AI Models** choose the device for semantic search (Automatic, a named GPU or CPU); **Settings ▸ Faces** chooses **Face models device** (Automatic prefers dedicated NVIDIA GPUs) and **GPU precision** (Automatic uses FP16 when supported).
 - Budgets (measured on one desktop): slider update under 16 ms, loupe under 60 ms, a 24 MP JPEG export about half a second.
 - A GPU backend can be forced or turned off with an environment variable named in the developer docs, if a driver crashes.
+
+## Diagnostics
+- **Diagnostics recorder**: off by default. Started with an environment variable named in the developer docs, it keeps a record of the steps of an import (reading files, committing, saving the library) in a `diag` folder in the settings folder; the log says where.
+- **After a hang or a forced quit**: a file in that folder says which step was running, how far it had got, and that the app did not end cleanly; attach the folder to a bug report.
+- **Private**: step names, counts and timings only, never file names or paths; nothing is sent anywhere.
 
 ## Activity stack
 - Anything slow (import, export, previews, sync, downloads) runs off the main thread and shows as a row with a progress bar and a stop button when it can stop.

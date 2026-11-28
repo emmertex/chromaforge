@@ -284,7 +284,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path, name}: rename a folder on disk (its files and sidecars go along) and relink the photos in it; one undo step (undo renames it back, refused if the old name is taken) → {path, relinked}",
             always,
             |s, p| {
-                let from = str_param(p, "path").ok_or_else(|| bad("folder.rename", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
+                let from = str_param(p, "path").ok_or_else(|| bad("folder.rename", "missing path"))?.trim_end_matches(['/', '\\']);
+                let from = library_spelling(s, from);
                 let name = str_param(p, "name")
                     .map(str::trim)
                     .filter(|n| !n.is_empty() && !n.contains(['/', '\\']) && *n != "." && *n != "..")
@@ -302,10 +303,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path, into: destination folder}: move a folder on disk into another and relink the photos in it; one undo step (undo moves it back, refused if the old place is taken) → {path, relinked}",
             always,
             |s, p| {
-                let from = str_param(p, "path").ok_or_else(|| bad("folder.move", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
-                let into = str_param(p, "into").ok_or_else(|| bad("folder.move", "missing into"))?;
+                let from = str_param(p, "path").ok_or_else(|| bad("folder.move", "missing path"))?.trim_end_matches(['/', '\\']);
+                let from = library_spelling(s, from);
+                let into = library_spelling(s, str_param(p, "into").ok_or_else(|| bad("folder.move", "missing into"))?);
                 let name = Path::new(&from).file_name().ok_or_else(|| bad("folder.move", "bad path"))?;
-                let to = Path::new(into).join(name).to_string_lossy().to_string();
+                let to = Path::new(&into).join(name).to_string_lossy().to_string();
                 let n = move_folder(s, &from, &to).map_err(|e| bad("folder.move", e))?;
                 Ok(json!({"path": to, "relinked": n}))
             }
@@ -561,6 +563,43 @@ fn follow_library_folder(chosen: &mut Option<String>, from: &str, to: &str) {
     }
 }
 
+/// `path` spelled the way the open library spells its own folder, when the two differ only in
+/// letter case and name the same folder on disk (a volume that ignores letter case: Windows,
+/// macOS); `path` as given otherwise. The library's photos are stored under its own spelling, so a
+/// folder rename or move named through another spelling would match none of them and leave them
+/// pointing at the old folder (upstream #4816; written for the fork, which compares the library's
+/// protected folders on disk already).
+fn library_spelling(s: &Session, path: &str) -> String {
+    let Some(lib) = s.library.as_ref().map(|l| l.dir.as_path()) else { return path.to_string() };
+    let given = Path::new(path);
+    let Some(rest) = case_only_rest(given, lib) else { return path.to_string() };
+    // the spelling given must be the library's own folder on disk: a volume that tells letter case
+    // apart can hold `LIB` next to `lib`, and then it is another folder
+    let prefix: std::path::PathBuf = given.components().take(lib.components().count()).collect();
+    let same = matches!((prefix.canonicalize(), lib.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if !same {
+        return path.to_string();
+    }
+    let spelled = if rest.as_os_str().is_empty() { lib.to_path_buf() } else { lib.join(rest) };
+    spelled.to_string_lossy().to_string()
+}
+
+/// What follows `lib` in `path` when `path` begins with `lib`'s names in other letter case;
+/// `None` when it begins with `lib` exactly (nothing to respell) or with other names.
+fn case_only_rest(path: &Path, lib: &Path) -> Option<std::path::PathBuf> {
+    if path.starts_with(lib) {
+        return None;
+    }
+    let mut names = path.components();
+    for l in lib.components() {
+        let p = names.next()?;
+        if p.as_os_str().to_string_lossy().to_lowercase() != l.as_os_str().to_string_lossy().to_lowercase() {
+            return None;
+        }
+    }
+    Some(names.as_path().to_path_buf())
+}
+
 /// Rename or move a folder on disk (everything in it goes along, sidecars included) and relink
 /// the photos inside, as one undo step: undo renames the folder back and restores the photos'
 /// paths, redo repeats the move — each refused (and reported) when the destination is taken.
@@ -617,4 +656,22 @@ pub(crate) fn move_folder(s: &mut Session, from: &str, to: &str) -> std::result:
     }
     follow_folder(s, from, to);
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::case_only_rest;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_path_that_differs_only_in_letter_case_is_respelled_under_the_library() {
+        let lib = Path::new("/photos/lib");
+        assert_eq!(case_only_rest(Path::new("/photos/LIB/Originals/day"), lib), Some(PathBuf::from("Originals/day")));
+        assert_eq!(case_only_rest(Path::new("/Photos/Lib"), lib), Some(PathBuf::new()), "the library itself");
+        assert_eq!(case_only_rest(Path::new("/photos/lib/Originals/day"), lib), None, "spelled exactly: nothing to respell");
+        assert_eq!(case_only_rest(Path::new("/photos/library/Originals"), lib), None, "another name is another folder");
+        assert_eq!(case_only_rest(Path::new("/photos"), lib), None, "a shorter path is not inside");
+        assert_eq!(case_only_rest(Path::new(""), lib), None);
+        assert_eq!(case_only_rest(Path::new("photos/LIB"), lib), None, "a relative path is not the library");
+    }
 }

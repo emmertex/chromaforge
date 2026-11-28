@@ -45,6 +45,7 @@ pub const TOPICS: &[(&str, &str)] = &[
     // Settings ▸ Import
     ("importWindow", "library/import#browse-without-importing"),
     ("rawDefaults", "reference/settings#raw-defaults"),
+    ("rawDecoder", "reference/settings#raw-decoder"),
     ("cameraProfile", "reference/settings#camera-profile"),
     ("importMetadata", "reference/settings#metadata"),
     ("xmpSidecars", "reference/settings#xmp-sidecars"),
@@ -65,7 +66,8 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("appearance", "reference/settings#appearance"),
     ("gridAndFilmstrip", "reference/settings#filmstrip-grid-keywords-and-presets"),
     ("detailView", "reference/settings#detail-view-and-eye-focus-strip"),
-    ("changeOverlay", "reference/settings#on-screen-overlay"),
+    ("changeOverlay", "reference/settings#image-and-library-edits"),
+    ("notifications", "reference/settings#messages"),
     // Settings ▸ Slideshow
     ("slideshow", "reference/settings#slideshow"),
     // Settings ▸ Faces

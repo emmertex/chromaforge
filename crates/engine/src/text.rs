@@ -70,6 +70,15 @@ fn compose(text: &str) -> String {
     out
 }
 
+/// A key for matching typed text against names: lower case, with the Latin accents (the Combining
+/// Diacritical Marks, U+0300–U+036F) dropped however the text stores them, so "avila", "ÁVILA",
+/// "Ávila" and its decomposed spelling (an `A` then U+0301, as macOS file names and some imported
+/// catalogs have it) all give "avila". Other marks stay, so Japanese が and か still differ.
+pub fn search_key(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    text.to_lowercase().nfd().filter(|c| !('\u{300}'..='\u{36F}').contains(c)).collect()
+}
+
 /// A string laid out at one size: its glyphs relative to the box's top-left corner and the box's
 /// size in pixels (lines are `px` apart; vertical text: columns `px` wide, right to left).
 pub struct TextLayout {
@@ -290,6 +299,15 @@ mod tests {
         assert_eq!(ids(&b), ids(&a));
         assert_eq!(b.width, a.width);
         assert!(a.glyphs.iter().all(|(_, g, _)| g.id.0 != 0));
+    }
+
+    #[test]
+    fn search_key_ignores_case_and_accents_however_stored() {
+        for spelling in ["avila", "AVILA", "Ávila", "A\u{301}vila", "ÁVILA"] {
+            assert_eq!(search_key(spelling), "avila", "{spelling:?}");
+        }
+        assert_eq!(search_key("São Paulo – Niño"), "sao paulo – nino");
+        assert_ne!(search_key("が"), search_key("か"));
     }
 
     #[test]

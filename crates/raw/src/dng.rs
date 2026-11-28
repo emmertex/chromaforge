@@ -136,6 +136,7 @@ pub(crate) fn color_data(ifd0: &Ifd, raw: &Ifd, order: ByteOrder) -> ColorData {
         baseline_exposure: get(t::BASELINE_EXPOSURE).and_then(|v| v.first().copied()).filter(|v| v.is_finite()).unwrap_or(0.0)
             + get(t::BASELINE_EXPOSURE_OFFSET).and_then(|v| v.first().copied()).filter(|v| v.is_finite()).unwrap_or(0.0),
         white_extension_ev: 0.0,
+        raw_baseline_exposure: 0.0,
         // DNG 1.7 BaselineSharpness (IFD 0 or the enhanced IFD); implausible values are ignored
         baseline_sharpness: get(t::BASELINE_SHARPNESS).and_then(|v| v.first().copied()).filter(|v| v.is_finite() && *v > 0.0 && *v <= 16.0),
         profile: profile_look(ifd0, raw, order),
@@ -424,8 +425,9 @@ fn decode_ifd(bytes: &[u8], tiff: &Tiff, pixels: &Ifd, main: &Ifd, mode: Mode, f
     let mut metadata = lcc_meta::from_tiff(tiff);
     let mut color = color_data(ifd0, raw, tiff.order);
     let (mut format, mut wb_multipliers) = (format, None);
-    // a pixel-shift merge made by this app is recognised by the provenance block in its XMP
-    if ifd0.bytes(t::XMP).is_some_and(crate::merge_provenance::is_marked) {
+    // a pixel-shift merge made by this app is recognised by a usable provenance block in its XMP (well formed and within
+    // the limits): any other block is no block, and the file reads as the DNG it is
+    if ifd0.bytes(t::XMP).and_then(crate::merge_provenance::Provenance::from_bytes).is_some() {
         metadata.software = Some(crate::merge_provenance::software());
         // Its colour is the camera's: the same raw data as the NEFX of the same series, so it is read like one (the white
         // balance multipliers, no colour matrices: the starting look is fitted to its preview, the camera profile and

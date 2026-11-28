@@ -129,15 +129,11 @@ pub(crate) fn one_photo(originals: &Path, settings: &str) -> Vec<Table> {
 /// The format header an import archive starts with (`lightroom_archive`'s), before its zlib-compressed JSON.
 pub(crate) const ARCHIVE_HEADER: &[u8] = b"LC-LRARCH\0\x01Z";
 
-/// The JSON the import archive at `path` holds, for tests that check what an import kept. The JSON itself is capped
-/// at `MAX_ARCHIVE_BYTES` too, so that is the most it can inflate to.
+/// The JSON the import archive at `path` holds, for tests that check what an import kept (inflated to at most 1 GiB).
 pub(crate) fn read_archive(path: &Path) -> serde_json::Value {
     let bytes = std::fs::read(path).unwrap();
     let json = bytes.strip_prefix(ARCHIVE_HEADER).unwrap_or_else(|| panic!("{} is not an import archive", path.display()));
-    serde_json::from_slice(
-        &miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(json, crate::lightroom_archive::MAX_ARCHIVE_BYTES as usize).unwrap(),
-    )
-    .unwrap()
+    serde_json::from_slice(&miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(json, 1 << 30).unwrap()).unwrap()
 }
 
 /// A new, empty folder for one test's catalog.

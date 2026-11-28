@@ -158,11 +158,321 @@ fn place(dir: &str) -> Option<Placed> {
 }
 
 /// The disk or share (`/Volumes/nas`, `D:`, `/` for the startup disk) a file-backed photo is on,
-/// from its stored path alone.
-pub fn volume_of(p: &crate::Photo) -> Option<String> {
+/// from its stored path alone: its [`volume_key`] with no mount list, so this and the I/O
+/// scheduler share one rule of volume identity (names compared without case where the platform's
+/// are, [`Mounts::platform_folds_case`]). `None` for a photo with no file, or a path that names no
+/// volume.
+pub fn volume_of(p: &crate::Photo) -> Option<VolumeKey> {
     let Source::File { path } = &p.source else { return None };
     let dir = path.rfind(['/', '\\']).and_then(|i| path.get(..i.max(1)))?;
-    place(dir).map(|pl| folder_key(&pl.mount))
+    place(dir)?;
+    Some(volume_key(dir, &Mounts::none()))
+}
+
+/// The volume a file is read from, for the engine's I/O scheduler: files on one key share that
+/// volume's queue and concurrency limit, and a volume that stops answering is contained by key.
+///
+/// Two spellings of one volume give one key: the `id` is compared (lower-cased where the
+/// platform's names are case-insensitive), the `name` is how the first path spelled it.
+#[derive(Clone, Debug)]
+pub struct VolumeKey {
+    id: String,
+    name: String,
+}
+
+impl VolumeKey {
+    /// The identity the key is compared by.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The volume as a path spelled it (`/Volumes/archive2`, `D:`, `//nas/photos`), for messages.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The key of every path that names no volume (relative, empty): one queue for all of them.
+    fn unplaced() -> VolumeKey {
+        VolumeKey { id: String::new(), name: "(no volume)".into() }
+    }
+}
+
+impl PartialEq for VolumeKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for VolumeKey {}
+
+impl std::hash::Hash for VolumeKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl std::fmt::Display for VolumeKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+/// Most mount points kept from one listing; a longer one is cut there and says so
+/// ([`Mounts::truncated`]): the paths past the cut fall back to [`place`]'s rules.
+pub const MAX_MOUNTS: usize = 65_536;
+
+/// A list of mount points for [`volume_key`], read without touching the volumes themselves
+/// (Linux `/proc/self/mountinfo`, the names in macOS `/Volumes`). The engine reads it; this only
+/// parses and matches.
+#[derive(Clone, Debug, Default)]
+pub struct Mounts {
+    /// Each mount point's names (`/srv/nas` → `["srv", "nas"]`; `/` → none), lower-cased when
+    /// `fold_case`.
+    points: Vec<Vec<String>>,
+    fold_case: bool,
+    /// A list was read (a [`Mounts::none`] decides by [`place`] alone).
+    read: bool,
+    /// Entries left out past [`MAX_MOUNTS`].
+    truncated: bool,
+    /// Lines of a mountinfo listing that had no mount point field (malformed), left out.
+    skipped: usize,
+    /// Other names of the startup disk (macOS `/Volumes/Macintosh HD`, a link to `/`), as
+    /// `points`: a path through one keys as the same path without it.
+    root_aliases: Vec<Vec<String>>,
+}
+
+impl Mounts {
+    /// No list (none read yet, or a platform without one): every key comes from [`place`].
+    pub fn none() -> Mounts {
+        Mounts { fold_case: Self::platform_folds_case(), ..Default::default() }
+    }
+
+    /// Whether this platform's volume names compare without case (macOS, Windows).
+    pub fn platform_folds_case() -> bool {
+        cfg!(any(target_os = "macos", target_os = "ios", windows))
+    }
+
+    /// A list of absolute mount points (`/srv/nas`); anything not absolute is left out.
+    pub fn from_points<S: AsRef<str>>(points: impl IntoIterator<Item = S>, fold_case: bool) -> Mounts {
+        let mut m = Mounts { fold_case, read: true, ..Default::default() };
+        for p in points {
+            if !m.push(p.as_ref()) {
+                break;
+            }
+        }
+        m
+    }
+
+    /// The mount points of a Linux `/proc/self/mountinfo` listing (case-sensitive names).
+    ///
+    /// Fields of a line (proc(5)): mount id, parent id, `major:minor`, root, **mount point**,
+    /// mount options, optional fields, `-`, filesystem type, source, super options. Only the mount
+    /// point is extracted (octal escapes such as `\040` decoded by
+    /// [`lcc_sysmem::limits::unescape_mount_path`], fields split as there); the rest are dropped:
+    /// the device numbers by design (§5.1 of the I/O spec: no `st_dev` refinement), the others
+    /// because a key needs only where the volume is mounted. A line with no fifth field is
+    /// counted in [`Mounts::skipped`]. A listing read only in part says so with
+    /// [`Mounts::mark_truncated`].
+    pub fn from_mountinfo(text: &str) -> Mounts {
+        let mut m = Mounts { fold_case: false, read: true, ..Default::default() };
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Some(point) = line.split_whitespace().nth(4) else {
+                m.skipped = m.skipped.saturating_add(1);
+                continue;
+            };
+            if !m.push(&lcc_sysmem::limits::unescape_mount_path(point)) {
+                break;
+            }
+        }
+        m
+    }
+
+    /// The listing these mount points came from was cut before its end (the mount points past the
+    /// cut fall back to [`place`]'s rules, as past [`MAX_MOUNTS`]).
+    pub fn mark_truncated(&mut self) {
+        self.truncated = true;
+    }
+
+    /// The volumes listed by name in macOS `/Volumes` (each mounted at `/Volumes/<name>`; names
+    /// compared without case).
+    pub fn from_volume_names<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Mounts {
+        let points = names
+            .into_iter()
+            .filter(|n| {
+                let n = n.as_ref();
+                !n.is_empty() && !n.contains(['/', '\\']) && n != "." && n != ".."
+            })
+            .map(|n| format!("/Volumes/{}", n.as_ref()));
+        Mounts::from_points(points, true)
+    }
+
+    /// The volumes listed in macOS `/Volumes` as [`Mounts::from_volume_names`], where the names
+    /// in `startup_disk` are links to `/` (the startup disk's own entry, `Macintosh HD`): those
+    /// are not volumes of their own, and a path through one keys as the startup disk.
+    pub fn from_volume_entries<S: AsRef<str>, T: AsRef<str>>(
+        names: impl IntoIterator<Item = S>,
+        startup_disk: impl IntoIterator<Item = T>,
+    ) -> Mounts {
+        let aliases: Vec<String> = startup_disk.into_iter().map(|n| n.as_ref().to_string()).collect();
+        let mut m = Mounts::from_volume_names(names.into_iter().filter(|n| !aliases.iter().any(|a| a == n.as_ref())));
+        for a in aliases {
+            if a.is_empty() || a.contains(['/', '\\']) || a == "." || a == ".." {
+                continue;
+            }
+            let sp = split_path(&format!("/Volumes/{a}"), false);
+            let fold = m.fold_case;
+            m.root_aliases.push(sp.parts.into_iter().map(|p| if fold { p.to_lowercase() } else { p }).collect());
+        }
+        m
+    }
+
+    /// Add one mount point; `false` once [`MAX_MOUNTS`] are held (the rest are cut).
+    fn push(&mut self, point: &str) -> bool {
+        if self.points.len() >= MAX_MOUNTS {
+            self.truncated = true;
+            return false;
+        }
+        let sp = split_path(point, false);
+        if !sp.absolute || !sp.prefix.is_empty() {
+            self.skipped = self.skipped.saturating_add(1);
+            return true;
+        }
+        let fold = self.fold_case;
+        self.points.push(sp.parts.into_iter().map(|p| if fold { p.to_lowercase() } else { p }).collect());
+        true
+    }
+
+    /// Whether a list was read ([`Mounts::none`] was not).
+    pub fn is_read(&self) -> bool {
+        self.read
+    }
+
+    /// Whether entries were left out: past [`MAX_MOUNTS`], or past the end of a listing read only
+    /// in part ([`Mounts::mark_truncated`]).
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Entries left out as malformed or not absolute.
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+
+    /// Mount points held.
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    /// Whether no mount point is held.
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+}
+
+/// The volume `path` is on, from the path and a mount list alone (no I/O, so it can't block, time
+/// out or split a volume in two): the longest listed mount point that holds `path` by whole names
+/// (`/Volumes/Photo` never holds `/Volumes/Photos 2`), else [`place`]'s rules (`/Volumes/x`,
+/// `/media`, `/run/media`, `/mnt`, gvfs, `/net`, `/Network/Servers`, `//server/share`, drive
+/// letters, else `/`). Drive letters and Windows shares compare without case, as do other paths
+/// where [`Mounts`] says so (macOS); `\\?\X:\` and `\\?\UNC\server\share` reduce to `X:` and
+/// `//server/share`. A path through another name of the startup disk that the list knows
+/// ([`Mounts::from_volume_entries`]: `/Volumes/Macintosh HD/Users/me`) keys as the same path
+/// without it (`/Users/me`). A path that names no volume (relative, empty) gets one shared key.
+pub fn volume_key(path: &str, mounts: &Mounts) -> VolumeKey {
+    key_in(path, mounts, true)
+}
+
+/// [`volume_key`] for many files under one mount list, remembered per folder: a file is keyed
+/// as the folder holding it (a file is never a mount point: a bind-mounted file, or a file where
+/// `place()` alone would see a volume, `/Volumes/x.jpg`, is keyed as its folder), so an import
+/// keys each of its folders once instead of each file, a copy's
+/// destination folder once for every copy into it. A path whose last name is not a file's
+/// (`.`, `..`, empty) or that names no folder is keyed on its own. Holds at most
+/// [`VolumeKeys::MAX_FOLDERS`] folders (then starts over).
+#[derive(Debug)]
+pub struct VolumeKeys {
+    mounts: std::sync::Arc<Mounts>,
+    by_folder: HashMap<String, VolumeKey>,
+}
+
+impl VolumeKeys {
+    /// Folders remembered at most.
+    pub const MAX_FOLDERS: usize = 4096;
+
+    pub fn new(mounts: std::sync::Arc<Mounts>) -> VolumeKeys {
+        VolumeKeys { mounts, by_folder: HashMap::new() }
+    }
+
+    /// The mount list the keys come from.
+    pub fn mounts(&self) -> &std::sync::Arc<Mounts> {
+        &self.mounts
+    }
+
+    /// The key of file `path`: [`volume_key`] of the folder holding it.
+    pub fn file(&mut self, path: &str) -> VolumeKey {
+        let folder = path.rfind(['/', '\\']).and_then(|i| {
+            let cut = i.checked_add(1)?;
+            let name = path.get(cut..)?;
+            if matches!(name, "" | "." | "..") { None } else { path.get(..cut) }
+        });
+        match folder {
+            Some(f) => self.folder(f),
+            None => volume_key(path, &self.mounts),
+        }
+    }
+
+    /// The key of folder `path` ([`volume_key`] of the folder itself, which may be a mount point).
+    pub fn folder(&mut self, path: &str) -> VolumeKey {
+        if let Some(k) = self.by_folder.get(path) {
+            return k.clone();
+        }
+        let k = volume_key(path, &self.mounts);
+        if self.by_folder.len() >= Self::MAX_FOLDERS {
+            self.by_folder.clear();
+        }
+        self.by_folder.insert(path.to_string(), k.clone());
+        k
+    }
+
+    /// Folders remembered (tests).
+    #[cfg(test)]
+    pub(crate) fn remembered(&self) -> usize {
+        self.by_folder.len()
+    }
+}
+
+/// [`volume_key`], following [`Mounts`]' other names of the startup disk when `aliases`.
+fn key_in(path: &str, mounts: &Mounts, aliases: bool) -> VolumeKey {
+    let sp = split_path(path, false);
+    if !sp.prefix.is_empty() {
+        // a drive letter or `//server/share` (a server alone keys as itself)
+        let name = sp.prefix.trim_end_matches('/').to_string();
+        return VolumeKey { id: name.to_lowercase(), name };
+    }
+    if !sp.absolute {
+        return VolumeKey::unplaced();
+    }
+    let fold = |s: &str| if mounts.fold_case { s.to_lowercase() } else { s.to_string() };
+    let folded: Vec<String> = sp.parts.iter().map(|p| fold(p)).collect();
+    // another name of the startup disk: the same path without it
+    let within = |m: &Vec<String>| m.len() <= folded.len() && m.iter().zip(&folded).all(|(a, b)| a == b);
+    if aliases && let Some(alias) = mounts.root_aliases.iter().find(|a| within(a)) {
+        let rest: Vec<&str> = sp.parts.iter().skip(alias.len()).map(String::as_str).collect();
+        return key_in(&format!("/{}", rest.join("/")), mounts, false);
+    }
+    let best = mounts.points.iter().filter(|m| within(m)).max_by_key(|m| m.len());
+    if let Some(m) = best {
+        let id = format!("/{}", m.join("/"));
+        let name = format!("/{}", sp.parts.iter().take(m.len()).cloned().collect::<Vec<_>>().join("/"));
+        return VolumeKey { id, name };
+    }
+    match place(path) {
+        Some(pl) => VolumeKey { id: fold(&pl.mount), name: pl.mount },
+        None => VolumeKey::unplaced(),
+    }
 }
 
 /// Whether `path` is a whole disk or share (`/`, `C:\`, `\\srv\share`, `/Volumes/nas`), not a

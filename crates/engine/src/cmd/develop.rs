@@ -236,6 +236,8 @@ pub(crate) fn set_crop_of(s: &mut Session, id: PhotoId, c: &str, rect: Option<[f
     d.crop.geometry = match (rect, angle) {
         // a new angle alone turns the crop as Straighten does (issue #742)
         (None, Some(a)) => d.crop.geometry.with_angle(a, w, h),
+        // a crop that may extend past the photo (issue #861) keeps its reach, within its bounds
+        (_, a) if d.crop.extend => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.bounded_extended(w, h),
         (_, a) => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.constrained(w, h),
     };
     // a rect far larger than the photo is shrunk to fit it, and can come out a sliver
@@ -254,7 +256,11 @@ pub(crate) fn set_crop_of(s: &mut Session, id: PhotoId, c: &str, rect: Option<[f
 /// canvas outside the photo (issue #742).
 fn refit_crop_angle(touched: bool, before: CropGeometry, d: &mut DevelopSettings, (w, h): (f64, f64)) {
     if touched {
-        d.crop.geometry = before.with_angle(d.crop.geometry.angle, w, h);
+        d.crop.geometry = if d.crop.extend {
+            CropGeometry { angle: d.crop.geometry.angle, ..before }.bounded_extended(w, h)
+        } else {
+            before.with_angle(d.crop.geometry.angle, w, h)
+        };
     }
 }
 
@@ -1072,7 +1078,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     // orientation is reinterpreted per image, so the frame itself is the truth.
                     // `keepRatio` (Shift held) asks for the same thing for one drag without touching the lock.
                     let ratio = (d.crop.aspect.is_some() || keep_ratio).then(|| start.rect_px(w, h).aspect()).filter(|a| a.is_finite() && *a > 0.0);
-                    d.crop.geometry = drag_crop(start, handle, from, to, w, h, ratio);
+                    // (Extend Past the Edge lets it reach past the photo, issue #861)
+                    d.crop.geometry = if d.crop.extend {
+                        lcc_geom::drag_crop_extended(start, handle, from, to, w, h, ratio)
+                    } else {
+                        drag_crop(start, handle, from, to, w, h, ratio)
+                    };
                     Ok(())
                 })
             }
@@ -1090,7 +1101,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 let angle = f64_req(p, "angle", "crop.straighten")?.clamp(-45.0, 45.0);
                 edit(s, "crop.straighten", "Straighten", |d| {
                     // keep the current crop if it still fits, else shrink it about its centre until it does
-                    d.crop.geometry = d.crop.geometry.with_angle(angle, w, h);
+                    // (one that may extend past the photo keeps its reach, issue #861)
+                    d.crop.geometry = if d.crop.extend {
+                        CropGeometry { angle, ..d.crop.geometry }.bounded_extended(w, h)
+                    } else {
+                        d.crop.geometry.with_angle(angle, w, h)
+                    };
                     Ok(())
                 })
             }
@@ -1184,6 +1200,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("crop.reset", "Reset Crop", [], Some("Cmd+Alt+R"), "{}", has_active, |s, _| {
             edit(s, "crop.reset", "Reset Crop", |d| {
                 d.crop = Default::default();
+                // (back on the photo: the fill past it goes too)
+                d.edge_fill = None;
                 Ok(())
             })
         }),

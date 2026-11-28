@@ -176,6 +176,8 @@ struct RowState<'a> {
     header: Option<egui::TextureHandle>,
     /// This photo, then the others selected with it (what a batch acts on); empty when alone.
     selected: Vec<u64>,
+    /// The photo's masks a filter can be limited to, as (id, name).
+    masks: Vec<(u32, String)>,
 }
 
 fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
@@ -217,6 +219,7 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
                 .filter(|p| app.session.selection.ids.iter().any(|x| x != p))
                 .map(|p| std::iter::once(p.0).chain(app.session.selection.ids.iter().map(|x| x.0).filter(|x| *x != p.0)).collect())
                 .unwrap_or_default(),
+            masks: d.masks.iter().map(|m| (m.id, m.name.clone())).collect(),
         };
         ui.push_id(("pluginFilter", f.uid), |ui| row(ui, f, i, n, &st, &mut actions));
         inset(ui, |ui| ui.separator());
@@ -364,13 +367,17 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
         });
         // the measurement's state, and what went wrong
         if st.can_measure && plugin.is_some_and(|p| p.analyze) {
-            let status = match f.analysis.as_ref() {
+            let mut status = match f.analysis.as_ref() {
                 None => tr("Not measured yet").to_string(),
                 Some(a) => match a.get(lcc_engine::ROLL_KEY).and_then(Value::as_u64) {
                     Some(k) => crate::i18n::tr_format!("Measured as part of a roll of {n}", n = k).to_string(),
                     None => tr("Measured").to_string(),
                 },
             };
+            // what the filter found, in its own words (`_status`, ABI v1.1, #1398)
+            if let Some(line) = f.analysis.as_ref().and_then(lcc_engine::plugin_analysis_status) {
+                status = format!("{status} · {line}");
+            }
             let r = ui.label(RichText::new(status).size(11.0).color(t.text_dim));
             register(ui.ctx(), format!("pluginFilterStatus:{uid}"), r.rect);
         }
@@ -398,6 +405,42 @@ fn row(ui: &mut egui::Ui, f: &PluginFilter, i: usize, n: usize, st: &RowState, o
             "Source: on the decoded raw, before white balance and tone (e.g. negative conversion). Display: after the develop adjustments.",
         ));
     });
+    // where it applies (#1397): the whole photo, or one of its masks (Display stage: the masks come after the source)
+    if f.stage == FilterStage::Display && (f.mask.is_some() || !st.masks.is_empty()) {
+        control_row(ui, tr("Mask"), |ui| {
+            let mask_name = |id: u32| {
+                st.masks
+                    .iter()
+                    .find(|(m, _)| *m == id)
+                    .map(|(_, n)| if n.is_empty() { format!("{} {id}", tr("Mask")) } else { n.clone() })
+                    .unwrap_or_else(|| tr("Missing mask").to_string())
+            };
+            let width = (ui.available_width() - 70.0).max(60.0);
+            let now = f.mask.map_or_else(|| tr("Whole Photo").to_string(), |m| mask_name(m.id));
+            let r = egui::ComboBox::from_id_salt("mask").width(width).selected_text(now).show_ui(ui, |ui| {
+                if ui.selectable_label(f.mask.is_none(), tr("Whole Photo")).clicked() && f.mask.is_some() {
+                    out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "mask": null})));
+                }
+                for (id, _) in &st.masks {
+                    let on = f.mask.is_some_and(|m| m.id == *id);
+                    if ui.selectable_label(on, mask_name(*id)).clicked() && !on {
+                        let invert = f.mask.is_some_and(|m| m.invert);
+                        out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "mask": {"id": id, "invert": invert}})));
+                    }
+                }
+            });
+            register(ui.ctx(), format!("pluginFilterMask:{uid}"), r.response.rect);
+            r.response.on_hover_text(tr("Apply the filter only where one of the photo's masks is, blended by its coverage"));
+            if let Some(m) = f.mask {
+                let mut inv = m.invert;
+                let r = ui.checkbox(&mut inv, tr("Invert"));
+                register(ui.ctx(), format!("pluginFilterMaskInvert:{uid}"), r.rect);
+                if r.changed() {
+                    out.push(Action::Run("develop.pluginFilter.set", json!({"uid": uid, "mask": {"id": m.id, "invert": inv}})));
+                }
+            }
+        });
+    }
     let Some(p) = plugin.filter(|p| p.params.is_some()) else {
         // no plug-in or no schema: values shown read-only
         inset(ui, |ui| {

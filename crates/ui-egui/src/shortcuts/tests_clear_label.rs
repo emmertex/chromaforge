@@ -26,6 +26,8 @@ fn app() -> lcc_engine::Result<LccApp> {
     }
     s.execute("library.sort", &json!({"key": "fileName", "ascending": true}))?;
     s.execute("library.select", &json!({"ids": [2]}))?;
+    // a fresh history: these tests look at the steps of the keys, not at the selecting above
+    s.undo.clear();
     let mut app = LccApp::new(s, crate::Services { png: None, ..Default::default() });
     super::assign(&mut app.ui.settings.keymap, "photo.clearLabel", Some(KEY)).unwrap();
     Ok(app)

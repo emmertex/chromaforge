@@ -262,12 +262,18 @@ pub enum DevelopPatch {
 /// as-shot white for everything developed relative to it).
 pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Result<SidecarData, String> {
     let d = lcc_meta::parse_xmp(xmp).map_err(|e| e.to_string())?;
+    Ok(sidecar_from_xmp(&d, target))
+}
+
+/// [`parse_sidecar`] of a packet already parsed, for a caller that adjusts the packet first (a Lightroom catalog's
+/// cached XMP, whose "not set" values are removed before they are read).
+pub(crate) fn sidecar_from_xmp(d: &lcc_meta::XmpData, target: crate::crs::Target) -> SidecarData {
     let m = &d.metadata;
     let lc = |k: &str| d.properties.get(&format!("lc:{k}")).and_then(|v| v.first()).cloned();
     let mut out = SidecarData {
-        plugin_fields: lcc_meta::plugin_fields(&d),
+        plugin_fields: lcc_meta::plugin_fields(d),
         // read a few more than fit, so skipped malformed entries don't hide good ones after them
-        plugin_filters: lcc_meta::plugin_filters(&d, lcc_develop::MAX_PLUGIN_FILTERS.saturating_mul(4))
+        plugin_filters: lcc_meta::plugin_filters(d, lcc_develop::MAX_PLUGIN_FILTERS.saturating_mul(4))
             .map(|e| crate::cmd::plugin_filters::stack_from_xmp(&e)),
         title: m.title.clone(),
         caption: m.caption.clone(),
@@ -415,7 +421,7 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
     if matches!(out.develop, Some(DevelopPatch::Partial(_))) {
         out.turned_to = m.orientation;
     }
-    Ok(out)
+    out
 }
 
 /// Apply sidecar data to a photo record (the sidecar wins, except that a capture time embedded in
@@ -540,6 +546,19 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
     p.develop = Arc::new(develop);
     p.edited = Some(now.to_string());
     true
+}
+
+/// Whether two states of a photo carry the same values to XMP (what [`Photo::xmp_fingerprint`] covers), with keywords
+/// compared as a set: the order a sidecar lists them in is no change.
+fn same_xmp_values(a: &Photo, b: &Photo) -> bool {
+    fn keywords(p: &Photo) -> Vec<&str> {
+        let mut k: Vec<&str> = p.meta.keywords.iter().map(String::as_str).collect();
+        k.sort_unstable();
+        k.dedup();
+        k
+    }
+    let rest = |p: &Photo| lcc_catalog::Meta { keywords: Vec::new(), ..p.meta.clone() };
+    a.rating == b.rating && a.flag == b.flag && a.label == b.label && a.develop == b.develop && keywords(a) == keywords(b) && rest(a) == rest(b)
 }
 
 impl SidecarData {
@@ -905,9 +924,19 @@ pub const OWNED: &[&str] = &[
     "xmpRights:WebStatement",
     "photoshop:AuthorsPosition",
     "Iptc4xmpCore:CreatorContactInfo",
+    // the IPTC fields the app edits beyond the core ones (photo.setMeta, metadata presets): without them here an edit
+    // reached only a new sidecar, and the next read put the old value back
+    "photoshop:Headline",
+    "photoshop:CaptionWriter",
+    "photoshop:Category",
+    "photoshop:SupplementalCategories",
+    "Iptc4xmpCore:SubjectCode",
+    "Iptc4xmpCore:CountryCode",
     "lc:*",
     "lcvid:*",
     "lcpx:*",
+    // plug-in custom metadata fields (`lcc_meta::plugin_fields_ns`): the app writes them all, so a save replaces them
+    "lcpf:*",
 ];
 
 /// Properties replaced only when the app has a value (capture time, GPS): otherwise the
@@ -1711,6 +1740,38 @@ impl Session {
         }
     }
 
+    /// After an import that put another catalog's values over what each photo's sidecar said (a Lightroom catalog
+    /// import, issue #1312): each photo's metadata status, from comparing the two. `read` is what each sidecar said,
+    /// as the import merged it ([`crate::import::ImportOptions::keep_sidecars`]). A photo whose sidecar would change
+    /// nothing on Read Metadata from File (keywords compared as a set) starts in step with it; one whose sidecar
+    /// says something else starts as a conflict ([`lcc_catalog::XmpStamp::disagrees`]): the badge and the Metadata
+    /// Status filter show it, nothing reads it automatically, and Read Metadata from File or Save Metadata to File
+    /// settles it. Embedded XMP (no sidecar file) is left unstamped, as an import leaves it. Returns how many
+    /// disagree. App bookkeeping, journaled but not an undo step.
+    pub(crate) fn stamp_against_sidecars(&mut self, read: Vec<(PhotoId, SidecarData)>) -> usize {
+        let ids: Vec<PhotoId> = read.iter().map(|(id, _)| *id).collect();
+        let namings = self.sidecar_namings(&ids);
+        let now = (self.clock)();
+        let mut disagree = 0usize;
+        for ((id, sc), naming) in read.into_iter().zip(namings) {
+            let Some(p) = self.catalog.photo(id).filter(|p| p.copy_of.is_none() && !p.local) else { continue };
+            let Some(stat) = self.sidecar_stat_named(id, naming) else { continue };
+            let mut read_back = (**p).clone();
+            merge_into(&mut read_back, &sc, &now);
+            let disagrees = !same_xmp_values(p, &read_back);
+            disagree = disagree.saturating_add(usize::from(disagrees));
+            let stamp = Some(lcc_catalog::XmpStamp { disagrees, ..p.xmp_stamp_now(Some(stat)) });
+            if p.xmp == stamp {
+                continue;
+            }
+            let op = Op::SetXmpStamp { id, stamp };
+            if self.catalog.apply(op.clone()).is_ok() {
+                self.pending_log.push(op);
+            }
+        }
+        disagree
+    }
+
     /// Auto-write: sidecars for photos changed by `ops` (errors are logged, not returned).
     pub(crate) fn auto_write_sidecars(&mut self, ops: &[Op]) {
         let mut ids = Vec::new();
@@ -2249,6 +2310,7 @@ mod tests {
             enabled: false,
             stage,
             analysis: Some(serde_json::json!({"base": [0.1, 0.2, 0.3]})),
+            mask: Some(lcc_develop::FilterMask { id: 7, invert: true }),
         }
     }
 

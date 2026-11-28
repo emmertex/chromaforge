@@ -14,6 +14,15 @@
 Attach the log to a bug report. Set `<PREFIX>_LOG=debug` for more detail, or `RUST_LOG` for per-module levels
 (`warn,lcc_pipeline=trace`).
 
+## The app hangs or quits during a long job
+
+Start it with `<PREFIX>_DIAG=normal` (or `critical,commit=trace` for more on one part) and repeat what went wrong.
+The app then keeps a record of its steps in `diag/` in the settings folder (or in `<PREFIX>_DIAG_DIR`); the log
+says where. After a hang or a kill, the `inflight-…` file says which step was running and how far it had got, and
+that the app did not end cleanly. The files hold step names, counts and timings, never file names or paths; nothing
+is sent anywhere. Attach the folder to a bug report. `<PREFIX>_DIAG=0` (or `off`, `false`, `no`) turns it off.
+Details: [diagnostics](../diagnostics.md).
+
 ## The app shows an error instead of doing something
 
 That's by design: a damaged file, a bad argument or a full disk produces an error you can act on, never a crash,
@@ -24,6 +33,7 @@ JSON line for each command says why it failed. If the app does crash, please rep
 
 - GPU problems: start with `<PREFIX>_GPU=0` (CPU only) to confirm, or pick a backend with
   `<PREFIX>_GPU_BACKEND=vulkan|metal|dx12|gl` (`off` also disables the GPU). Settings has a GPU rendering switch too.
+  `<PREFIX>_GPU_DEMOSAIC=0` keeps only the full-size raw demosaic on the CPU (it runs on the GPU otherwise).
 - The window stopped drawing and the app ended with "its window stopped drawing: the graphics driver lost the …
   renderer's GPU device": the library and settings were saved first. From the next start the window uses the next
   renderer (Windows: Vulkan → DX12 → GL → OpenGL; Windows on ARM: DX12 → Vulkan → GL → OpenGL) and keeps trying the lost one last; `<PREFIX>_GPU_BACKEND=dx12`
@@ -34,6 +44,7 @@ JSON line for each command says why it failed. If the app does crash, please rep
   long that frame held the app, and the next frame adds a `… ms host frame` line with the same change's painting and
   presenting included. Include those lines when reporting it.
 - Library → Previews → Clear Preview Cache rebuilds thumbnails and previews.
+- A Lightroom catalog import that stops with "needs more memory than the import may use": close other apps and retry, or set `<PREFIX>_LIGHTROOM_IMPORT_MEMORY` to the GiB it may use (by default three quarters of the memory free when it starts).
 - A very large library on a network share or hard disk opens much faster since 26.46.2; culling stays responsive while previews are prepared in the background, and a raw's first picture is its camera JPEG.
 
 ## A raw file looks wrong or doesn't open
@@ -48,6 +59,10 @@ most. `<cli> calibrate` can fit a profile for your camera from your own raws and
 Library → Find Missing Photos… lists photos whose originals can't be found (a disconnected drive, a renamed folder)
 and relinks them. Their edits and metadata are safe in the catalog meanwhile. A folder that can't be read (permissions, a
 disconnected share) shows the reason in the grid instead of an empty "No photos in this folder".
+
+Photo → File → Reload from Disk re-reads files changed outside the app; a file it can't read (gone, unreadable, on a
+drive that isn't responding) is left as it was and counted in its message ("2 could not be read"), and the
+`photo.reload` command lists each one under `failed` with the reason.
 
 Library → Validate DNG Files checks the selected DNGs' raw data against their checksum and lists damaged files.
 
@@ -85,7 +100,9 @@ the keyboard focus, so Return presses it. Things that can go wrong:
 - An update installed through the Windows installer (`.msi`): the app quits, the installer runs and
   the app starts again when it is done. When the installer wants a Windows restart as part of it
   (rare), the app starts after that restart instead. Start-menu shortcuts — and taskbar entries
-  pinned from them — keep working across updates.
+  pinned from them — keep working across updates. If the installer fails, or Windows' permission prompt
+  is declined, nothing is started; the next start writes the reason to the app's log, and the installer's
+  own log is `update-install.log` beside the download.
 - A Windows copy unpacked from the portable zip (with or without `portable.txt`) updates itself: the new zip is
   unpacked beside the program, its files replace the copy's own, and the new version starts once the app has quit.
   Only the zip's files are replaced; `portable.txt`, the portable data folder and anything else you put there stay.

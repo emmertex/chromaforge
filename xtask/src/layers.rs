@@ -39,12 +39,17 @@ pub const TABLE: &[(&str, Class)] = &[
     ("raster", Class::Layer(0)),
     ("tiff", Class::Layer(0)),
     ("sysmem", Class::Layer(0)),
+    ("diag", Class::Layer(0)),
     ("hdrmeta", Class::Layer(0)),
     ("gpumem", Class::Layer(0)),
+    // ONNX Runtime, loaded at run time behind the `ort` feature (#491): the GPU for the AI features
+    ("onnxrt", Class::Layer(0)),
     ("winspool", Class::Layer(0)),
     ("winmsi", Class::Layer(0)),
     ("winjob", Class::Layer(0)),
     ("firstclick", Class::Layer(0)),
+    // LibRaw (C++, opt-in) behind a C shim: the raw mosaic for `lcc_engine::raw_decoder`
+    ("libraw", Class::Layer(0)),
     ("android-host", Class::Layer(0)),
     ("peer", Class::Layer(0)),
     ("sync", Class::Layer(0)),
@@ -129,8 +134,10 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["brand", "raster"],
     &["brand", "tiff"],
     &["brand", "sysmem"],
+    &["brand", "diag"],
     &["brand", "fetch"],
     &["brand", "net"],
+    &["brand", "onnxrt"],
     // the updater reads the release feed over the network crate, for the brand's repository
     &["brand", "net", "updater"],
     // the updater asks Windows Installer whether the MSI installed the running program

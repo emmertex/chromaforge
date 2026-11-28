@@ -41,11 +41,15 @@ pub mod bm3d;
 #[cfg(not(target_arch = "wasm32"))]
 mod budget;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod busy;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cards;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clip;
 #[cfg(not(target_arch = "wasm32"))]
 mod ctx;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod demosaic;
 #[cfg(not(target_arch = "wasm32"))]
 mod exit;
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,6 +88,47 @@ pub use wgpu;
 pub use instance::new_instance;
 #[cfg(not(target_arch = "wasm32"))]
 pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
+
+/// The AHD demosaic of a Bayer mosaic on the GPU ([`demosaic::ahd`]): `None` when there is no GPU (always in the
+/// browser), it is turned off, or the device failed; the caller demosaics on the CPU.
+pub fn demosaic_ahd(w: usize, h: usize, data: &[f32], pattern: [u8; 4]) -> Option<Rgb32f> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        demosaic::ahd(w, h, data, pattern)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (w, h, data, pattern);
+        None
+    }
+}
+
+/// Metering of the time the GPU has work ([`busy`]) held on while this lives; nothing in the browser.
+pub struct BusyHold {
+    #[cfg(not(target_arch = "wasm32"))]
+    _hold: busy::Hold,
+}
+
+/// Meter the GPU's busy time from now while the result lives (an export batch sizing its lanes, #1377).
+pub fn hold_busy_meter() -> BusyHold {
+    BusyHold {
+        #[cfg(not(target_arch = "wasm32"))]
+        _hold: busy::hold(),
+    }
+}
+
+/// Time the GPU has had work in flight while metered ([`busy::busy_time`]; compare two readings). Zero in the
+/// browser.
+pub fn busy_time() -> std::time::Duration {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        busy::busy_time()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::time::Duration::ZERO
+    }
+}
 
 /// Run `f` with this thread's GPU renders counted as batch work (an export's photos): they take
 /// turns at the GPU, behind the window's own renders (see `gate.rs`).

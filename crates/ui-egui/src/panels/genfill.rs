@@ -725,8 +725,46 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
+/// Crop ▸ Fill Edges ▸ Generative (issue #861): fill the crop's area past the photo with the service last chosen that
+/// has a key; with none set up, or its terms not accepted yet, Settings → Generative Fill says how.
+pub fn fill_edges(app: &mut LccApp, ctx: &egui::Context) {
+    let list = providers(app);
+    let configured: Vec<Value> = list.into_iter().filter(|p| p.field("configured") == true).collect();
+    let Some(provider) = current(app, &configured) else {
+        app.toast(ctx, crate::i18n::tr("Add a generative fill service and your API key in Settings → Generative Fill first."));
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
+        return;
+    };
+    let pid = provider.field("id").as_str().unwrap_or("openai").to_string();
+    if provider.field("consented") != true {
+        app.toast(
+            ctx,
+            crate::i18n::tr_format!(
+                "Accept {}'s terms first: generate a fill once with the Remove tool's Generative mode, which shows what is sent.",
+                short_name(&provider)
+            ),
+        );
+        return;
+    }
+    if let Err(e) = app.run("crop.fillEdges", json!({"mode": "generative", "provider": pid})) {
+        app.toast_error(ctx, crate::i18n::tr_format!("Fill Edges failed: {e}", e = e));
+    }
+}
+
 /// Apply a finished background generation and say how it went (every frame; cheap when idle).
 pub fn frame(app: &mut LccApp, ctx: &egui::Context) {
+    if app.session.edge_fill.running() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    match app.session.edge_fill_poll() {
+        Some(Ok(_)) => {
+            app.toast(ctx, crate::i18n::tr("Edges filled"));
+            ctx.request_repaint();
+        }
+        Some(Err(e)) if e == "cancelled" => app.toast(ctx, crate::i18n::tr("Fill Edges cancelled")),
+        Some(Err(e)) => app.toast_error(ctx, crate::i18n::tr_format!("Fill Edges failed: {e}", e = e)),
+        None => {}
+    }
     if app.session.genfill.running() {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }

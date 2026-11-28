@@ -144,16 +144,25 @@ fn the_filmstrip_header_filters_by_flag_rating_and_label_in_lightroom_order() {
     let r = h.request("ui.clickWidget", json!({"id": "filmfilter:pick"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    assert_eq!(h.app.session.filter.flag, Some(lcc_catalog::Flag::Pick));
+    assert_eq!(h.app.session.filter.flags_shown(), Some(vec![lcc_catalog::Flag::Pick]));
     let vis = h.app.session.visible_cloned();
     assert!(vis.contains(&picked) && !vis.contains(&other), "{vis:?}");
     assert!(vis.iter().all(|id| h.app.session.catalog.photo(*id).unwrap().flag == lcc_catalog::Flag::Pick), "only picks: {vis:?}");
     assert_eq!(h.app.session.catalog.photo(other).unwrap().flag, lcc_catalog::Flag::None, "a filter click flags nothing");
-    // a second click lifts it
-    let r = h.request("ui.clickWidget", json!({"id": "filmfilter:pick"}), T);
+    // a second flag joins the first (#1317): picked or unflagged, the rejected ones hidden
+    let r = h.request("ui.clickWidget", json!({"id": "filmfilter:none"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    assert_eq!(h.app.session.filter.flag, None);
+    let vis = h.app.session.visible_cloned();
+    assert!(vis.contains(&picked) && vis.contains(&other), "{vis:?}");
+    assert!(vis.iter().all(|id| h.app.session.catalog.photo(*id).unwrap().flag != lcc_catalog::Flag::Reject), "{vis:?}");
+    // a second click on each lifts it
+    for id in ["filmfilter:pick", "filmfilter:none"] {
+        let r = h.request("ui.clickWidget", json!({"id": id}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    }
+    assert_eq!(h.app.session.filter.flags_shown(), None);
 
     // three stars or more
     let r = h.request("ui.clickWidget", json!({"id": "filmfilter:star3"}), T);
@@ -170,4 +179,22 @@ fn the_filmstrip_header_filters_by_flag_rating_and_label_in_lightroom_order() {
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     assert_eq!(h.app.session.filter.labels_shown().unwrap_or_default(), vec![lcc_catalog::ColorLabel::Red]);
+}
+
+// #1319: like Lightroom Classic, the last (or first) whole thumbnail in view already scrolls the strip
+#[test]
+fn filmstrip_follows_from_the_last_whole_thumbnail() {
+    use crate::panels::detail::film_should_follow;
+    // ten 100 pt cells, 0..450 in view: cells 0-3 whole, cell 4 half shown
+    let f = |i| film_should_follow(i, 10, 100.0, 0.0, 450.0);
+    assert!(!f(0), "the first photo has nothing before it");
+    assert!(!f(2));
+    assert!(f(3), "the last whole thumbnail scrolls: the next one is half hidden");
+    assert!(f(4), "a half-shown thumbnail scrolls");
+    assert!(f(8), "off screen scrolls");
+    // scrolled to the end: the last photo has nothing after it
+    assert!(!film_should_follow(9, 10, 100.0, 550.0, 1000.0));
+    assert!(film_should_follow(6, 10, 100.0, 550.0, 1000.0), "the first whole thumbnail after a half-hidden one");
+    // a strip narrower than three cells asks only for the photo itself
+    assert!(!film_should_follow(1, 10, 100.0, 100.0, 250.0));
 }
