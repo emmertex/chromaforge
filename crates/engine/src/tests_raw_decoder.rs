@@ -214,3 +214,45 @@ fn choices_persist_with_the_library_and_reinstall_on_reopen() {
 
 /// A change that makes a description hostile.
 type Spoil = Box<dyn Fn(&mut Frame)>;
+
+/// A TIFF container with nothing in it but its Exif make and model: no raw data and no colour tags of its own.
+fn tiff_of(make: &str, model: &str) -> Vec<u8> {
+    let (make, model) = (format!("{make}\0"), format!("{model}\0"));
+    let ifd = 8usize;
+    let strings = ifd + 2 + 2 * 12 + 4;
+    let mut b = b"II*\0".to_vec();
+    b.extend((ifd as u32).to_le_bytes());
+    b.extend(2u16.to_le_bytes());
+    for (tag, at, s) in [(0x010Fu16, strings, &make), (0x0110, strings + make.len(), &model)] {
+        b.extend(tag.to_le_bytes());
+        b.extend(2u16.to_le_bytes());
+        b.extend((s.len() as u32).to_le_bytes());
+        b.extend((at as u32).to_le_bytes());
+    }
+    b.extend(0u32.to_le_bytes());
+    b.extend(make.as_bytes());
+    b.extend(model.as_bytes());
+    b
+}
+
+/// LibRaw's matrix is the last resort: a body the app's camera table has matrices for keeps the table's (applied when the
+/// file has none), exactly as when lcc-raw reads it; a body without any gets LibRaw's.
+#[test]
+fn libraws_matrix_is_used_only_when_neither_the_file_nor_the_camera_table_has_one() {
+    // the table knows this body (the app's matrices, never the file's)
+    assert!(app_table_has_matrix(Some("NIKON CORPORATION"), Some("NIKON Z 8")));
+    let known = tiff_of("NIKON CORPORATION", "NIKON Z 8");
+    let raw = frame().into_raw_image(&known).unwrap();
+    assert_eq!(raw.metadata.model.as_deref(), Some("NIKON Z 8"), "the synthetic file reads as that body");
+    assert!(!lcc_raw::color::has_matrix(&raw.color), "the table's matrices are applied later, LibRaw's must not stand in for them");
+
+    // a body the table has nothing for takes LibRaw's
+    assert!(!app_table_has_matrix(Some("NOMAKE"), Some("NO SUCH CAMERA 1")));
+    let unknown = tiff_of("NOMAKE", "NO SUCH CAMERA 1");
+    let raw = frame().into_raw_image(&unknown).unwrap();
+    assert_eq!(raw.color.color_matrix[0], frame().xyz_to_camera);
+    assert_eq!(raw.color.illuminant[0], 21);
+
+    // a file that is no more than a name has no model at all
+    assert!(!app_table_has_matrix(Some("NIKON CORPORATION"), None));
+}
