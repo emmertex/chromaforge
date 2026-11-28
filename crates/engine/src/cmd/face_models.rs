@@ -51,6 +51,13 @@ pub(super) struct FaceSettings {
     /// theirs ([`lcc_faces::matching::typical`]). Off unless the user turns it on.
     #[serde(deserialize_with = "lenient_bool", skip_serializing_if = "std::ops::Not::not")]
     pub(super) skip_odd: bool,
+    /// Detector confidence floor; absent or malformed settings use the conservative default.
+    #[serde(deserialize_with = "lenient_score", skip_serializing_if = "Option::is_none")]
+    pub(super) detection_score: Option<f32>,
+}
+
+fn lenient_score<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<f32>, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64().filter(|n| (0.65f32..=0.95f32).contains(&(*n as f32))).map(|n| n as f32))
 }
 
 /// A saved switch that is not true or false is off, for the same reason as [`lenient_count`].
@@ -65,6 +72,10 @@ fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
 }
 
 impl FaceSettings {
+    pub(super) fn detection_score(&self) -> f32 {
+        self.detection_score.unwrap_or(0.75)
+    }
+
     /// Whether a scan averages each face with its mirror image (the default).
     pub(super) fn mirror_average(&self) -> bool {
         !self.no_mirror
@@ -165,7 +176,22 @@ fn matching(s: &mut Session, p: &Value) -> Result<Value> {
     let top = p.get("topFaces").map(|v| top_faces_value(C, v, "the default")).transpose()?;
     let mirror = p.get("mirrorAverage").map(|v| v.as_bool().ok_or_else(|| bad(C, "`mirrorAverage` is true or false"))).transpose()?;
     let skip_odd = p.get("skipOdd").map(|v| v.as_bool().ok_or_else(|| bad(C, "`skipOdd` is true or false"))).transpose()?;
-    if top.is_some() || skip_odd.is_some() {
+    let detection_score = p
+        .get("detectionScore")
+        .map(|v| {
+            if v.is_null() {
+                return Ok(None);
+            }
+            v.as_f64()
+                .filter(|n| (0.65f32..=0.95f32).contains(&(*n as f32)))
+                .map(|n| Some(n as f32))
+                .ok_or_else(|| bad(C, "`detectionScore` is 0.65 to 0.95, or null for the default"))
+        })
+        .transpose()?;
+    if top.is_some() || skip_odd.is_some() || detection_score.is_some() {
+        if let Some(score) = detection_score {
+            st.detection_score = score;
+        }
         if let Some(top) = top {
             st.top_faces = top;
         }
@@ -194,6 +220,7 @@ fn matching(s: &mut Session, p: &Value) -> Result<Value> {
         "topFacesMax": lcc_faces::matching::MAX_TOP_FACES,
         "mirrorAverage": st.mirror_average(),
         "skipOdd": st.skip_odd,
+        "detectionScore": st.detection_score(),
     }))
 }
 
@@ -364,6 +391,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         "mirrorAverage": settings.mirror_average(),
         // a person's odd faces are left out when looking for faces like theirs (`faces.matching`)
         "skipOdd": settings.skip_odd,
+        "detectionScore": settings.detection_score(),
         // where the models run: {cpuOnly, detection, recognition} as `faces.gpu` gives it
         "gpu": super::face_detect::gpu_json(s),
         // Native builds always have the pure-Rust runner; model files/background scanning remain native-only.
@@ -739,6 +767,24 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "faces.models.remove", "Remove Face Model", [], None, "{id}: delete an installed model", always, remove),
         cmd!(query "faces.models.select", "Choose Face Recognition Model", [], None, "{id: installed recogniser | null}", always, select),
         cmd!(query "faces.enable", "Face Recognition On/Off", [], None, "{enabled?: bool} (toggles when omitted)", always, enable),
-        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null, mirrorAverage?: bool, skipOdd?: bool} → {topFaces, topFacesDefault, topFacesMax, mirrorAverage, skipOdd}: `mirrorAverage` (default true) makes a scan average each face with its mirror image, which matches slightly more often and takes twice as long to scan (faces embedded the other way are embedded again when it changes). `topFaces`: how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have. `skipOdd` leaves a person's odd faces (far from their average face: from behind, misnamed) out when their page looks for faces like theirs (off by default)", always, matching),
+        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null, mirrorAverage?: bool, skipOdd?: bool, detectionScore?: 0.65..0.95 | null} → {topFaces, topFacesDefault, topFacesMax, mirrorAverage, skipOdd, detectionScore}: `detectionScore` sets the confidence required for future detections (0.75 by default; higher finds fewer false faces, null restores the default). `mirrorAverage` (default true) makes a scan average each face with its mirror image, which matches slightly more often and takes twice as long to scan (faces embedded the other way are embedded again when it changes). `topFaces`: how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have. `skipOdd` leaves a person's odd faces (far from their average face: from behind, misnamed) out when their page looks for faces like theirs (off by default)", always, matching),
     ]
+}
+
+#[cfg(test)]
+mod sensitivity_tests {
+    use super::*;
+
+    #[test]
+    fn sensitivity_defaults_and_bad_values_preserve_other_settings() {
+        for value in [json!(null), json!("high"), json!(-1), json!(1.2)] {
+            let st: FaceSettings = serde_json::from_value(json!({"enabled": true, "detectionScore": value})).unwrap();
+            assert!(st.enabled);
+            assert_eq!(st.detection_score(), 0.75);
+        }
+        let st: FaceSettings = serde_json::from_value(json!({"detectionScore": 0.85})).unwrap();
+        assert_eq!(st.detection_score(), 0.85);
+        let copy: FaceSettings = serde_json::from_value(serde_json::to_value(st).unwrap()).unwrap();
+        assert_eq!(copy.detection_score(), 0.85);
+    }
 }

@@ -93,6 +93,28 @@ impl Detection {
     }
 }
 
+/// Whether a mesh still describes this detection, rather than a neighbour caught by a
+/// retry crop. Use the oval centre and size, not eye ordering (profiles and roll are valid).
+pub fn landmarks_match_detection(d: &Detection, lm: &[[f32; 2]]) -> bool {
+    if lm.len() != MESH_POINTS || !lm.iter().flatten().all(|v| v.is_finite()) {
+        return false;
+    }
+    let mut b = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    for i in FACE_OVAL {
+        let p = lm[i];
+        b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+    }
+    let [cx, cy] = d.center();
+    let size = d.width().max(d.height());
+    let mesh_size = (b[2] - b[0]).max(b[3] - b[1]);
+    size.is_finite()
+        && size > 0.0
+        && ((b[0] + b[2]) * 0.5 - cx).abs() <= d.width() * 0.5
+        && ((b[1] + b[3]) * 0.5 - cy).abs() <= d.height() * 0.5
+        && mesh_size >= size * 0.4
+        && mesh_size <= size * 2.0
+}
+
 /// BlazeFace short range's 896 anchor centres (normalized): 16 × 16 cells × 2 at stride 8, then
 /// 8 × 8 cells × 6 at stride 16 (MediaPipe's SSD anchor options for this model).
 pub fn blazeface_anchors() -> Vec<[f32; 2]> {
@@ -889,6 +911,23 @@ pub fn selfie_softmax(logits: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_confirmation_cannot_jump_to_a_neighbour() {
+        let d = Detection { x0: 100.0, y0: 100.0, x1: 200.0, y1: 200.0, score: 0.9, keypoints: [[0.0; 2]; 6] };
+        let mut lm = vec![[150.0, 150.0]; MESH_POINTS];
+        for (k, i) in FACE_OVAL.iter().enumerate() {
+            let a = k as f32 * std::f32::consts::TAU / FACE_OVAL.len() as f32;
+            lm[*i] = [150.0 + 45.0 * a.cos(), 150.0 + 60.0 * a.sin()];
+        }
+        assert!(landmarks_match_detection(&d, &lm));
+        let moved: Vec<_> = lm.iter().map(|p| [p[0] + 100.0, p[1]]).collect();
+        assert!(!landmarks_match_detection(&d, &moved));
+        assert!(!landmarks_match_detection(&d, &lm[..10]));
+        assert!(!landmarks_match_detection(&d, &vec![[150.0; 2]; MESH_POINTS]));
+        lm[0][0] = f32::NAN;
+        assert!(!landmarks_match_detection(&d, &lm));
+    }
 
     #[test]
     fn anchors_and_decoding() {

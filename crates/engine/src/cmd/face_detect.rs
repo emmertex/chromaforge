@@ -57,6 +57,8 @@ impl NoDetector {
 pub(crate) struct Finder {
     #[cfg(feature = "sam")]
     model: Arc<lcc_segment::people::FaceModel>,
+    #[cfg(feature = "sam")]
+    score: f32,
 }
 
 impl Finder {
@@ -93,10 +95,19 @@ impl Finder {
             }
             let mut out = Vec::new();
             for d in dets {
+                // Reject tiny/weak candidates before running the expensive landmark model.
+                if d.score < self.score || d.width().min(d.height()) < 24.0 {
+                    continue;
+                }
                 let landmarks = self.model.landmarks(rgb, w, h, &d).map_err(|e| e.to_string())?;
                 // FaceMesh not seeing a face there, and the detector only fairly sure: a pattern, a paw, a circuit
                 // board (the detector alone takes those for faces, mostly in the tiles of `fine`)
-                if landmarks.is_none() && d.score < lcc_segment::people::FACE_THRESHOLD_NO_MESH {
+                if landmarks.is_none() && d.score < 0.9 {
+                    continue;
+                }
+                // A retry crop can lock onto a neighbouring face. Never attach that person's
+                // embedding to this box (for example a false detection on their hand).
+                if landmarks.as_ref().is_some_and(|lm| !mediapipe::landmarks_match_detection(&d, lm)) {
                     continue;
                 }
                 let found = crate::segment::FoundFace::from_pixels(&lcc_segment::people::Face { detection: d, landmarks }, w as f32, h as f32);
@@ -129,7 +140,8 @@ pub(crate) fn detector(s: &Session) -> std::result::Result<Arc<Finder>, NoDetect
         let model = crate::segment::face_model(&dir).map_err(NoDetector::Unusable)?;
         #[cfg(not(target_arch = "wasm32"))]
         offer_detection_gpu(s, &model);
-        Ok(Arc::new(Finder { model }))
+        let score = s.face_models_dir.as_deref().map(super::face_models::read_settings).unwrap_or_default().detection_score();
+        Ok(Arc::new(Finder { model, score }))
     }
     #[cfg(not(feature = "sam"))]
     {

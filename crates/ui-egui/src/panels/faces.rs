@@ -175,6 +175,17 @@ pub fn setup_banner(app: &mut LccApp, ui: &mut egui::Ui) {
 
 /// The switch for averaging each face with its mirror image: a little steadier matching for twice the scanning time.
 fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
+    heading(ui, t, "Detection sensitivity");
+    let mut score = list["detectionScore"].as_f64().unwrap_or(0.75) as f32;
+    let r = ui.add(egui::Slider::new(&mut score, 0.65..=0.95).text(crate::i18n::tr("Confidence required")));
+    register(ui.ctx(), "slider:settings.facesDetectionScore", r.rect);
+    if r.changed() {
+        match app.run("faces.matching", json!({"detectionScore": score})) {
+            Ok(_) => app.caches.faces_epoch += 1,
+            Err(e) => app.toast_error(ui.ctx(), e),
+        }
+    }
+    hint(ui, t, "Higher confidence finds fewer false faces, but may miss real faces. Applies to future detections; rescan to update existing detections.");
     heading(ui, t, "Matching");
     let mut on = list["mirrorAverage"].as_bool().unwrap_or(true);
     let r = crate::dialog_frame::in_control_column(ui, |ui| ui.checkbox(&mut on, crate::i18n::tr("Average each face with its mirror image")));

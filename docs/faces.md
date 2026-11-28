@@ -578,3 +578,23 @@ thread with a row in the activity stack in the app, at once in the CLI and MCP (
 Without the models the AI Models dialog offers them; nothing is downloaded on its own. The sliders and the person are
 develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`) in the **Retouch** settings
 group; copy, paste, sync and presets never carry another photo's teeth. Teeth has its own eye for a before/after.
+
+
+### Reducing false face detections
+
+Settings ▸ Faces includes **Detection sensitivity / Confidence required**. The default
+confidence is 0.75; raise it (up to 0.95) to favour precision, or lower it (down to
+0.65) to recover harder faces. CLI/MCP clients can use
+`faces.matching {"detectionScore": 0.85}` (`null` restores the default).
+The setting applies to both Detect Faces and future background scans. It does not
+silently remove existing regions: use the existing clear/rescan controls to review
+old automatic detections; named and manually added regions are preserved.
+
+Candidates smaller than 24 pixels on either side in the detector input are dropped
+before landmark fitting or recognition. A detection without FaceMesh confirmation
+requires at least 0.90 confidence, and a mesh that has drifted onto a neighbouring
+face is rejected rather than associated with the original box. These are conservative
+quality gates, not proof that an object is a live person: faces in posters and photos
+can still be detected. Ignore those regions explicitly. Similar-looking people can
+still need manual correction; these detection controls do not change identity matching
+thresholds or overwrite confirmed names.
