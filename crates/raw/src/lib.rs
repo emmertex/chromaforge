@@ -695,6 +695,11 @@ pub struct ColorData {
     /// the file calls clipped. 0 otherwise. Not a DNG tag.
     #[serde(default)]
     pub white_extension_ev: f64,
+    /// On a camera profile only (a calibration's [`dcp::Dcp`]): EV a raw without colour tags of its own (CR2, NEF,
+    /// ARW…) gets as its `BaselineExposure`, which a converted DNG of the same camera carries in the file
+    /// ([`dcp::Dcp::apply`], issue #1485). 0 on a decoded file. Not a DNG or DCP tag.
+    #[serde(default)]
+    pub raw_baseline_exposure: f64,
     /// `BaselineSharpness`: sharpening relative to a reference camera (`None`: the DNG default,
     /// 1). Read and written back by DNG export; rendering doesn't use it yet.
     #[serde(default)]

@@ -604,6 +604,7 @@ pub(crate) fn dng_colour(tags: &ColorData, declared: &crate::files::DngWhite, t:
         as_shot_white_xy: None,
         baseline_exposure: t.baseline_exposure + k.log2(),
         white_extension_ev: 0.0,
+        raw_baseline_exposure: 0.0,
         baseline_sharpness: tags.baseline_sharpness,
         kelvin_presets: None,
         balanced_as_shot: None,

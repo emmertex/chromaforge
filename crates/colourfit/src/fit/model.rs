@@ -16,6 +16,8 @@ pub struct Model {
     /// `None`: the colour matrices alone (what a file without forward matrices decodes with).
     pub fm: Option<[Mat3; 2]>,
     pub hsm: Option<[HsvTable; 2]>,
+    /// EV added to a raw without colour tags of its own (`ColorData::raw_baseline_exposure`, issue #1485).
+    pub raw_baseline: f64,
 }
 
 /// A look on top of the camera model.
