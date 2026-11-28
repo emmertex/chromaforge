@@ -4,8 +4,11 @@
 //! cards, rename sequences, name collisions, a failed copy, a file that can't be read), whatever
 //! order the reads and copies end in; the per-volume read-ahead bound and the batch horizon (at,
 //! just below, just above); a cancel and a refused batch.
+//!
+//! Unix only (Linux, macOS): Windows reads no mount list and keys a volume by its drive, so fake
+//! card volumes under one drive cannot exist there (see tests_transfers.rs).
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
