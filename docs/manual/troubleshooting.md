@@ -43,6 +43,7 @@ JSON line for each command says why it failed. If the app does crash, please rep
   long that frame held the app, and the next frame adds a `… ms host frame` line with the same change's painting and
   presenting included. Include those lines when reporting it.
 - Library → Previews → Clear Preview Cache rebuilds thumbnails and previews.
+- A Lightroom catalog import that stops with "needs more memory than the import may use": close other apps and retry, or set `<PREFIX>_LIGHTROOM_IMPORT_MEMORY` to the GiB it may use (by default three quarters of the memory free when it starts).
 - A very large library on a network share or hard disk opens much faster since 26.46.2; culling stays responsive while previews are prepared in the background, and a raw's first picture is its camera JPEG.
 
 ## A raw file looks wrong or doesn't open
