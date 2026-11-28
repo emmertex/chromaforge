@@ -255,7 +255,14 @@ University of Illinois/NCSA Open Source Licence). Their licences and third-party
 beside them as LICENSE-onnxruntime.txt and ThirdPartyNotices-onnxruntime.txt. The app loads the
 library at run time through the ort crate (https://github.com/pykeio/ort, MIT OR Apache-2.0)
 in crates/onnxrt; the AI features run on our own Rust runners when it is absent. Microsoft's
-closed-source DirectML.dll is not shipped.
+closed-source DirectML.dll is not shipped. CLIP's vision tower is written as an ONNX model by our
+own protobuf writer (crates/onnxrt/src/graph.rs), whose message and field numbers follow ONNX's
+onnx.proto (https://github.com/onnx/onnx, Apache-2.0; read as a reference, nothing copied).
+
+AI orientation detection (issue #490) runs the CLIP ViT-B/32 model that AI search downloads on
+request (LAION OpenCLIP, MIT; not shipped), plus a 4-way linear classifier fitted by our own code
+(crates/ml/src/orient.rs).
+No classifier is shipped yet: users fit one on their own photos, and only its numbers are kept.
 
 Linux Wayland window decorations
 -------------------------------

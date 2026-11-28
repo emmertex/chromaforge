@@ -25,7 +25,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Limits
 
 - Searching a library that is not indexed finds nothing. Photos are matched by their previews.
-- Planned, not built: aesthetic scores, culling suggestions and orientation suggestions on the same embeddings. There is no automatic keyword tagging or captioning.
+- Planned, not built: aesthetic scores and culling suggestions on the same model. [Auto orient](../orientation/) uses it to turn sideways photos upright. There is no automatic keyword tagging or captioning.
 - Text search (names, EXIF, keywords) is separate and needs no model.
 - The web build cannot run the indexing worker thread.
 
