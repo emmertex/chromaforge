@@ -67,7 +67,13 @@ fn hidden_calibration() -> Calibration {
         tool_version: "0".into(),
         contributor: None,
         licence: calibration::LICENCE.into(),
-        camera: CameraModel { illuminants: [17, 21], color_matrix: hidden_cm(), forward_matrix: [fm, fm2], hue_sat_map: None },
+        camera: CameraModel {
+            illuminants: [17, 21],
+            color_matrix: hidden_cm(),
+            forward_matrix: [fm, fm2],
+            hue_sat_map: None,
+            raw_baseline_exposure: None,
+        },
         looks: vec![Look { name: LOOK.into(), baseline_exposure_offset: 0.2, look_table: Some(table), tone_curve: curve }],
         evidence: Evidence::default(),
     }

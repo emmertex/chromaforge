@@ -107,6 +107,8 @@ pub const LOOK_PREFIX: &str = "cal:";
 const MAX_TABLE: usize = 1 << 16;
 /// Largest number of looks per camera.
 const MAX_LOOKS: usize = 16;
+/// Largest raw baseline exposure a calibration may carry, in EV either way (converters' baselines stay within ±1).
+const MAX_RAW_BASELINE: f64 = 2.0;
 /// Largest number of tone-curve points.
 const MAX_TONE_POINTS: usize = 1024;
 
@@ -163,6 +165,11 @@ pub struct CameraModel {
     pub forward_matrix: [Mat3; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue_sat_map: Option<[HsvTable; 2]>,
+    /// EV the editor adds to a raw of this camera that has no `BaselineExposure` of its own (CR2, NEF, ARW…): what its
+    /// converter writes into a DNG of the same photo. Fitted only from a set with both converted DNGs and raws
+    /// (issue #1485); `None`: unknown, raws get nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_baseline_exposure: Option<f64>,
 }
 
 /// A named look on top of the camera model.
@@ -396,6 +403,9 @@ impl Calibration {
                 return Err(Error(format!("{name}: the two hue/saturation maps differ in shape")));
             }
         }
+        if self.camera.raw_baseline_exposure.is_some_and(|b| !b.is_finite() || b.abs() > MAX_RAW_BASELINE) {
+            return Err(Error(format!("{name}: the raw baseline exposure is out of range")));
+        }
         if self.looks.is_empty() || self.looks.len() > MAX_LOOKS {
             return Err(Error(format!("{name}: needs 1 to {MAX_LOOKS} looks")));
         }
@@ -486,6 +496,7 @@ impl Calibration {
             color_matrix: m.color_matrix.map(Some),
             forward_matrix: m.forward_matrix.map(Some),
             baseline_exposure: look.baseline_exposure_offset,
+            raw_baseline_exposure: m.raw_baseline_exposure.unwrap_or(0.0),
             profile: ProfileLook {
                 hue_sat_map: m.hue_sat_map.clone().map(|[a, b]| [Some(a), Some(b)]).unwrap_or_default(),
                 look_table: look.look_table.clone(),
@@ -603,6 +614,7 @@ mod tests {
                 color_matrix: [cm1, cm2],
                 forward_matrix: [fm, fm],
                 hue_sat_map: Some([table.clone(), table.clone()]),
+                raw_baseline_exposure: None,
             },
             looks: vec![
                 Look {
@@ -711,6 +723,10 @@ mod tests {
         let c = sample();
         let back = Calibration::parse(&c.to_json().unwrap()).unwrap();
         assert_eq!(back, c);
+        assert!(!c.to_json().unwrap().contains("raw_baseline_exposure"), "an unknown raw baseline isn't written");
+        let mut c = c;
+        c.camera.raw_baseline_exposure = Some(0.25);
+        assert_eq!(Calibration::parse(&c.to_json().unwrap()).unwrap(), c);
     }
 
     #[test]
@@ -788,6 +804,17 @@ mod tests {
         let mut c = ok.clone();
         c.looks[0].baseline_exposure_offset = 1e9;
         cases.push(c);
+        for b in [2.5, -3.0] {
+            let mut c = ok.clone();
+            c.camera.raw_baseline_exposure = Some(b);
+            cases.push(c);
+        }
+        // non-finite ones are refused too; as text they can only be `null`, which reads as none
+        for b in [f64::NAN, f64::INFINITY] {
+            let mut c = ok.clone();
+            c.camera.raw_baseline_exposure = Some(b);
+            assert!(c.validate().is_err());
+        }
         // a lens is an identifier like the model: no paths, control characters, empties or huge strings
         for lens in ["", "   ", "/etc/passwd", "a/../b", "lens\\x", "lens\u{0}", "lens\n2", &"L".repeat(65)] {
             let mut c = ok.clone();
@@ -878,6 +905,10 @@ mod tests {
         assert!(d.color.profile.tone_curve.is_some());
         assert!(d.color.profile.hue_sat_map.iter().all(Option::is_some));
         assert_eq!(d.color.baseline_exposure, 0.25);
+        assert_eq!(d.color.raw_baseline_exposure, 0.0, "none fitted: raws get nothing");
+        let mut fitted = c.clone();
+        fitted.camera.raw_baseline_exposure = Some(0.3);
+        assert_eq!(fitted.look_dcp(&fitted.looks[0]).color.raw_baseline_exposure, 0.3);
         let plain = c.look_dcp(&c.looks[1]);
         assert!(plain.color.profile.tone_curve.is_none() && plain.color.profile.look_table.is_none());
         assert_eq!(c.file_name(), "SONY_ILCE-7M4.json");
