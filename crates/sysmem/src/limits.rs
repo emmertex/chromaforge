@@ -36,7 +36,7 @@ const UNLIMITED: u64 = 1 << 60;
 
 /// Bytes read at most from a cgroup or `/proc` file (they are a few kB; `mountinfo` on a host
 /// with tens of thousands of mounts reaches a few MB).
-const READ_CAP: u64 = 16 << 20;
+pub const READ_CAP: u64 = 16 << 20;
 
 /// The memory controller's view of this process's cgroups.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -372,14 +372,33 @@ fn memory_of(dirs: &[CgroupDir], usage: bool) -> CgroupMemory {
 /// A text file, at most [`READ_CAP`] bytes of it (a cut-off last line is dropped), invalid UTF-8
 /// replaced.
 fn read(path: &Path) -> Option<String> {
+    read_capped(path, READ_CAP).map(|t| t.text)
+}
+
+/// A text file read up to a byte cap ([`read_capped`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CappedText {
+    /// The text: whole lines only when the file was cut; invalid UTF-8 replaced.
+    pub text: String,
+    /// The file is longer than the cap: the text stops at the last whole line within it.
+    pub truncated: bool,
+}
+
+/// At most `cap` bytes of the text file at `path` (a `/proc` file such as `/proc/self/mountinfo`,
+/// which reports no size): one byte more is asked for, so a file of exactly `cap` bytes is whole;
+/// a longer one is cut at the cap, its cut-off last line dropped, and says so. `None` when it
+/// can't be opened or read.
+pub fn read_capped(path: &Path, cap: u64) -> Option<CappedText> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(READ_CAP).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 == READ_CAP {
+    std::fs::File::open(path).ok()?.take(cap.saturating_add(1)).read_to_end(&mut bytes).ok()?;
+    let truncated = bytes.len() as u64 > cap;
+    if truncated {
+        bytes.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
         let end = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
         bytes.truncate(end);
     }
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some(CappedText { text: String::from_utf8_lossy(&bytes).into_owned(), truncated })
 }
 
 #[cfg(test)]
@@ -615,6 +634,21 @@ mod tests {
         let deep = "/x".repeat(10_000);
         assert_eq!(ancestors(Path::new("/r"), &rel(&deep)).len(), MAX_DEPTH + 1);
         assert_eq!(cgroup_dirs(Path::new("/"), None, &format!("0::{deep}")).len(), MAX_DEPTH + 1);
+    }
+
+    /// The cap at, just below and just above a file's length: only a longer file is cut, at its
+    /// last whole line within the cap, and says so.
+    #[test]
+    fn read_capped_cuts_at_a_whole_line_and_says_so() {
+        let dir = Scratch::new("capped");
+        let path = dir.0.join("lines");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let len = 14u64;
+        assert_eq!(read_capped(&path, len), Some(CappedText { text: "one\ntwo\nthree\n".into(), truncated: false }));
+        assert_eq!(read_capped(&path, len + 1).map(|t| t.truncated), Some(false));
+        assert_eq!(read_capped(&path, len - 1), Some(CappedText { text: "one\ntwo\n".into(), truncated: true }));
+        assert_eq!(read_capped(&path, 2), Some(CappedText { text: String::new(), truncated: true }));
+        assert_eq!(read_capped(&dir.0.join("missing"), 10), None);
     }
 
     /// A mountinfo line for a cgroup mount: `root` shown at `point`.

@@ -58,6 +58,10 @@ Library → Find Missing Photos… lists photos whose originals can't be found (
 and relinks them. Their edits and metadata are safe in the catalog meanwhile. A folder that can't be read (permissions, a
 disconnected share) shows the reason in the grid instead of an empty "No photos in this folder".
 
+Photo → File → Reload from Disk re-reads files changed outside the app; a file it can't read (gone, unreadable, on a
+drive that isn't responding) is left as it was and counted in its message ("2 could not be read"), and the
+`photo.reload` command lists each one under `failed` with the reason.
+
 Library → Validate DNG Files checks the selected DNGs' raw data against their checksum and lists damaged files.
 
 ## The catalog won't open

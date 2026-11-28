@@ -822,15 +822,18 @@ pub(crate) fn probe_with(probe: &crate::media::FileProbe, paths: &[String]) -> V
     probe_all(Some(probe), paths, &progress.done, &progress.cancel)
 }
 
-/// Probe `paths` (several at once), counting each in `done`. Stops before the next file once
-/// `cancel` is set: the files not reached come back as errors.
+/// Probe `paths` (several at once, per volume: [`crate::io_sched`]), counting each in `done`. Stops
+/// before the next file once `cancel` is set: the files not reached come back as errors.
+///
+/// Since the per-volume scheduler (I/O spec PR 1): a probe that panics fails only its own file; a
+/// volume that stops responding fails its files "volume not responding" while the other volumes
+/// go on; cancel returns even when a volume hangs; `done` also counts files that failed that way.
 pub(crate) fn probe_all(
     probe: Option<&crate::media::FileProbe>,
     paths: &[String],
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Vec<Result<ProbeInfo, String>> {
-    use std::sync::atomic::Ordering::Relaxed;
     let Some(probe) = probe.cloned() else {
         return paths
             .iter()
@@ -842,60 +845,142 @@ pub(crate) fn probe_all(
             })
             .collect();
     };
+    use std::sync::atomic::Ordering::Relaxed;
     // diagnostics (issue #1363): one step per call (a batch, usually), listed in the in-flight file while it runs with
     // how many of *this call's* files are probed (`done` is the caller's counter and may count other batches too);
-    // `cancelled` when files were left unprobed
-    let mut span = lcc_diag::span_at(
+    // `cancelled` when cancel left files unprobed, `failed` when a volume that stopped responding or a probe that
+    // panicked did. The jobs hold the span weakly: a job a hung volume left behind can outlive this call, which finishes
+    // the span itself.
+    let span = std::sync::Arc::new(lcc_diag::span_at(
         lcc_diag::Level::Normal,
         lcc_diag::Subsystem::Probe,
         "probe_all",
         lcc_diag::Class::Top,
         &[("files", lcc_diag::Val::U64(paths.len() as u64))],
-    );
-    let probed = std::sync::atomic::AtomicUsize::new(0);
-    let probe_one = |p: &String| {
-        let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
-        let r = probe(p);
-        leaf.done(&r);
-        done.fetch_add(1, Relaxed);
-        let mine = probed.fetch_add(1, Relaxed) + 1;
-        span.note("done", lcc_diag::Val::U64(mine as u64));
-        r
-    };
-    let out: Vec<Result<ProbeInfo, String>> = 'probe: {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let n = workers(paths.len());
-            if n > 1 {
-                let mut results: Vec<Option<Result<ProbeInfo, String>>> = vec![None; paths.len()];
-                let next = std::sync::atomic::AtomicUsize::new(0);
-                let out = std::sync::Mutex::new(&mut results);
-                std::thread::scope(|sc| {
-                    for _ in 0..n {
-                        sc.spawn(|| {
-                            loop {
-                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if i >= paths.len() {
-                                    break;
-                                }
-                                if cancel.load(Relaxed) {
-                                    break;
-                                }
-                                let r = probe_one(&paths[i]);
-                                out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
-                            }
-                        });
-                    }
-                });
-                break 'probe results.into_iter().map(|r| r.unwrap_or_else(|| Err("not probed".into()))).collect();
+    ));
+    let probed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe: crate::media::FileProbe = {
+        let (top, probed) = (std::sync::Arc::downgrade(&span), probed.clone());
+        std::sync::Arc::new(move |p: &str| {
+            let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
+            let r = probe(p);
+            leaf.done(&r);
+            let mine = probed.fetch_add(1, Relaxed) + 1;
+            if let Some(top) = top.upgrade() {
+                top.note("done", lcc_diag::Val::U64(mine as u64));
             }
-        }
-        paths.iter().map(|p| if cancel.load(Relaxed) { Err("cancelled".into()) } else { probe_one(p) }).collect()
+            r
+        })
     };
-    let probed = probed.into_inner();
-    span.set("done", lcc_diag::Val::U64(probed as u64));
-    span.finish(if probed < paths.len() { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Ok });
+    #[cfg(not(target_arch = "wasm32"))]
+    let out = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
+    // (no threads: one file after another, R10)
+    #[cfg(target_arch = "wasm32")]
+    let out = paths
+        .iter()
+        .map(|p| {
+            if cancel.load(Relaxed) {
+                return Err("cancelled".into());
+            }
+            let r = probe(p);
+            done.fetch_add(1, Relaxed);
+            r
+        })
+        .collect();
+    drop(probe);
+    let probed = probed.load(Relaxed);
+    // (a job ending just now may hold the span for a moment; it then ends when that job lets go, `abandoned`)
+    if let Ok(mut span) = std::sync::Arc::try_unwrap(span) {
+        span.set("done", lcc_diag::Val::U64(probed as u64));
+        span.finish(if probed >= paths.len() {
+            lcc_diag::Outcome::Ok
+        } else if cancel.load(Relaxed) {
+            lcc_diag::Outcome::Cancelled
+        } else {
+            lcc_diag::Outcome::Failed
+        });
+    }
     out
+}
+
+/// Whether a probe cached from an earlier scan still holds for the file at a path (a file-system
+/// call on the file's volume).
+pub(crate) type KeepCached = fn(&str, &ProbeInfo) -> bool;
+
+/// [`probe_all`] for files of which some carry a probe from an earlier scan (`cached`, by path):
+/// such a file's check that the probe still holds (`keep`) runs as the file's own job, on its
+/// volume's queue, and only a file that fails it is read again. So the calling thread (an
+/// import's planning) makes no call to a source volume here, and a volume that hangs fails its
+/// files "volume not responding" and lets cancel return, as for reads. Results in `paths` order;
+/// `done` counts every file, the cached ones included.
+pub(crate) fn probe_all_cached(
+    probe: Option<&crate::media::FileProbe>,
+    paths: &[String],
+    cached: HashMap<String, ProbeInfo>,
+    keep: KeepCached,
+    done: &std::sync::atomic::AtomicUsize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Result<ProbeInfo, String>> {
+    if cached.is_empty() {
+        return probe_all(probe, paths, done, cancel);
+    }
+    // (no probe hook: no files are read, so a cached probe is reused as it is)
+    let Some(probe) = probe.cloned() else {
+        let mut cached = cached;
+        let fresh = probe_all(None, paths, done, cancel);
+        return paths.iter().zip(fresh).map(|(p, f)| cached.remove(p).map(Ok).unwrap_or(f)).collect();
+    };
+    probe_all(Some(&cached_probe(probe, cached, keep)), paths, done, cancel)
+}
+
+/// `probe`, but a path in `cached` whose probe still holds (`keep`, on the job's thread) gets it
+/// back instead of being read.
+pub(crate) fn cached_probe(probe: crate::media::FileProbe, cached: HashMap<String, ProbeInfo>, keep: KeepCached) -> crate::media::FileProbe {
+    let cached = std::sync::Arc::new(std::sync::Mutex::new(cached));
+    std::sync::Arc::new(move |p: &str| {
+        // (taken, not cloned: a path listed twice is read for its second copy, as before)
+        let info = cached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(p);
+        match info {
+            Some(info) if keep(p, &info) => Ok(info),
+            _ => probe(p),
+        }
+    })
+}
+
+/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
+/// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
+/// ran threads, `"cancelled"` where it ran serially on one CPU).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_scheduled(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    probe: &crate::media::FileProbe,
+    paths: &[String],
+    workers: usize,
+    done: &std::sync::atomic::AtomicUsize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Result<ProbeInfo, String>> {
+    use crate::io_sched::{IoJob, JobOutcome};
+    let jobs = paths
+        .iter()
+        .map(|p| {
+            let (probe, path) = (probe.clone(), p.clone());
+            IoJob { source: p.clone(), run: Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send> }
+        })
+        .collect();
+    let report = crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done);
+    let unreached = if workers > 1 { "not probed" } else { "cancelled" };
+    report
+        .outcomes
+        .into_iter()
+        .zip(paths)
+        .map(|(o, p)| match o {
+            JobOutcome::Done(r) => r,
+            JobOutcome::NotStarted => Err(unreached.into()),
+            JobOutcome::Cancelled => Err("cancelled".into()),
+            JobOutcome::VolumeNotResponding { volume } => Err(format!("{p}: volume not responding ({volume})")),
+            JobOutcome::Panicked(m) => Err(format!("{p}: {m}")),
+        })
+        .collect()
 }
 
 /// Copy `src` into `dir` as `name` (default: its own name), made unique with -1, -2…; returns the
@@ -1136,26 +1221,13 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
-    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time)
-    let cached: Vec<Option<ProbeInfo>> = todo
-        .iter()
-        .map(|f| {
-            let info = input.cache.remove(f)?;
-            // (✕ set while the files' cached probes are checked: no more round trips to the disk; what is
-            // not reached counts as not probed, like the files after it)
-            if progress.cancel.load(Relaxed) {
-                return None;
-            }
-            // (a file that can't be looked at counts as unchanged; one that can is reused only as it was,
-            // size and modification time)
-            (std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, &info)).then_some(info)
-        })
-        .collect();
-    let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
-    progress.done.store(todo.len() - missing.len(), Relaxed);
-    let mut fresh = probe_all(input.probe.as_ref(), &missing, &progress.done, &progress.cancel).into_iter();
-    let probed: Vec<Result<ProbeInfo, String>> =
-        cached.into_iter().map(|c| c.map(Ok).unwrap_or_else(|| fresh.next().unwrap_or_else(|| Err("not probed".into())))).collect();
+    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time);
+    // (a file that can't be looked at counts as unchanged; one that can is reused only as it was, size and
+    // modification time)
+    let cached: HashMap<String, ProbeInfo> = todo.iter().filter_map(|f| input.cache.remove(f).map(|i| (f.clone(), i))).collect();
+    let keep: KeepCached = |f, info| std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, info);
+    progress.done.store(0, Relaxed);
+    let probed = probe_all_cached(input.probe.as_ref(), &todo, cached, keep, &progress.done, &progress.cancel);
     crate::memory::release();
     let mut probes: HashMap<String, Result<ProbeInfo, String>> = todo.into_iter().zip(probed).collect();
     // (who in the library has a content that was probed: asked once the probes are in)
@@ -1587,20 +1659,14 @@ impl ImportJob {
 
         // files a preceding scan already probed are not read again (a network share is slow to read),
         // as long as they are still there, as they were: a file gone or changed since is probed again
-        let cached: Vec<Option<ProbeInfo>> = todo
-            .iter()
-            .map(|f| {
-                // (the web's files are not std::fs files: kept as probed)
-                self.cache.remove(f).filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
-            })
-            .collect();
-        let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
+        // (the web's files are not std::fs files: kept as probed)
+        let cached: HashMap<String, ProbeInfo> = todo.iter().filter_map(|f| self.cache.remove(f).map(|i| (f.clone(), i))).collect();
+        let keep: KeepCached = |f, info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info);
         // Reading the files is the slow part of adding them where they are: it is counted on its
-        // own, and `cancel` stops it too (a large library takes long enough to want both).
-        self.read_total.fetch_add(missing.len(), Relaxed);
-        let mut fresh = probe_all(self.probe.as_ref(), &missing, &self.read_done, cancel).into_iter();
-        let probed: Vec<Result<ProbeInfo, String>> =
-            cached.into_iter().map(|c| c.map(Ok).unwrap_or_else(|| fresh.next().unwrap_or_else(|| Err("not probed".into())))).collect();
+        // own, and `cancel` stops it too (a large library takes long enough to want both). A file
+        // with a cached probe counts too: checking it is a round trip to its disk.
+        self.read_total.fetch_add(todo.len(), Relaxed);
+        let probed = probe_all_cached(self.probe.as_ref(), &todo, cached, keep, &self.read_done, cancel);
         crate::memory::release();
         // Who owns the shared stem sidecar (`IMG_0001.xmp`) among the library's files and the ones
         // arriving with this import: a JPEG or a TIFF arriving beside its raw reads its own sidecar

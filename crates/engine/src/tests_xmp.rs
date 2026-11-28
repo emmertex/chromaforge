@@ -1643,6 +1643,13 @@ fn reload_picks_up_changed_files() {
     assert_eq!(r["reloaded"], json!([id.0]));
     assert_ne!(s.thumb_job(id, 128).unwrap().key, key0, "the UI sees a new render key");
     assert_ne!(s.render_now(id, 32, 32).unwrap().image.data, before, "renders the new pixels");
+    assert_eq!(r["failed"], json!([]));
+    // a file that can't be read is listed with its reason, not dropped silently
+    std::fs::remove_file(&f).unwrap();
+    let r = s.execute("photo.reload", &json!({})).unwrap();
+    assert_eq!(r["reloaded"], json!([]), "{r}");
+    assert_eq!(r["failed"][0]["id"], json!(id.0), "{r}");
+    assert!(r["failed"][0]["error"].as_str().is_some_and(|e| !e.is_empty()), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

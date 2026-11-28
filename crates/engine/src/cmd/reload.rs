@@ -101,17 +101,34 @@ pub fn probe(
     r
 }
 
+/// What [`apply`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The photos that changed.
+    pub reloaded: Vec<PhotoId>,
+    /// The photos whose file couldn't be read (left unchanged), each with why: a file gone or
+    /// unreadable, a volume not responding, or (after a cancel) a file not reached.
+    pub failed: Vec<(PhotoId, String)>,
+}
+
 /// Commit [`probe`]'s results as one undo step ("Reload Changed Files"): each photo and its virtual
-/// copies get what their file is now. A file that couldn't be read changes nothing; a photo removed
-/// or relinked since it was listed, or already given a newer reload's result, is skipped. The SHA-1s
-/// the reads computed are applied beside the step, not as part of it (module docs), and only by the
-/// newest reload started: an older read of a file that changed meanwhile would otherwise fix the old
-/// bytes' SHA-1, which a later read can't replace. Returns the photos that changed.
-pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result<ProbeInfo, String>>) -> Result<Vec<PhotoId>> {
+/// copies get what their file is now. A file that couldn't be read changes nothing and is listed
+/// with its reason; a photo removed or relinked since it was listed, or already given a newer
+/// reload's result, is skipped. The SHA-1s the reads computed are applied beside the step, not as
+/// part of it (module docs), and only by the newest reload started: an older read of a file that
+/// changed meanwhile would otherwise fix the old bytes' SHA-1, which a later read can't replace.
+pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result<ProbeInfo, String>>) -> Result<Applied> {
     let (mut ops, mut sha1_ops, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
     let mut reloaded = Vec::new();
+    let mut failed = Vec::new();
     for (item, info) in items.into_iter().zip(results) {
-        let Ok(info) = info else { continue };
+        let info = match info {
+            Ok(info) => info,
+            Err(e) => {
+                failed.push((item.id, e));
+                continue;
+            }
+        };
         let current = s.catalog.photo(item.id).is_some_and(|ph| matches!(&ph.source, Source::File { path } if *path == item.path));
         let family: Vec<PhotoId> = s
             .catalog
@@ -161,10 +178,13 @@ pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result
         s.apply_system(Op::Batch { ops: sha1_ops })?;
     }
     crate::cmd::convert::queue_link_check(s, &hashed);
-    Ok(reloaded)
+    Ok(Applied { reloaded, failed })
 }
 
-/// `{reloaded: [ids]}`.
-pub fn to_json(reloaded: &[PhotoId]) -> Value {
-    json!({"reloaded": reloaded.iter().map(|i| i.0).collect::<Vec<_>>()})
+/// `{reloaded: [ids], failed: [{id, error}]}`.
+pub fn to_json(applied: &Applied) -> Value {
+    json!({
+        "reloaded": applied.reloaded.iter().map(|i| i.0).collect::<Vec<_>>(),
+        "failed": applied.failed.iter().map(|(id, e)| json!({"id": id.0, "error": e})).collect::<Vec<_>>(),
+    })
 }

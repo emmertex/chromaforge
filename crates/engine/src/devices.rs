@@ -58,8 +58,6 @@ struct WatchState {
     /// there are no mounted volumes either.
     #[cfg(not(target_arch = "wasm32"))]
     scanned: Option<std::time::Instant>,
-    /// A background scan is running.
-    refreshing: bool,
 }
 
 /// A cached device list, refreshed off the calling thread.
@@ -69,11 +67,19 @@ pub struct DeviceWatch {
     max_age: Duration,
     state: Mutex<WatchState>,
     notify: Mutex<Option<Arc<Notify>>>,
+    /// The background scan (one at a time; its flag clears however it ends, a panic included).
+    refresh: crate::bg_refresh::Coalesced,
 }
 
 impl DeviceWatch {
     pub fn new(scanner: impl Fn() -> Vec<Device> + Send + Sync + 'static, max_age: Duration) -> Arc<Self> {
-        Arc::new(DeviceWatch { scanner: Box::new(scanner), max_age, state: Mutex::default(), notify: Mutex::new(None) })
+        Arc::new(DeviceWatch {
+            scanner: Box::new(scanner),
+            max_age,
+            state: Mutex::default(),
+            notify: Mutex::new(None),
+            refresh: crate::bg_refresh::Coalesced::default(),
+        })
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, WatchState> {
@@ -87,19 +93,15 @@ impl DeviceWatch {
 
     /// The last scan, immediately; starts a background rescan when it is stale and none is running.
     pub fn get(self: &Arc<Self>) -> Vec<Device> {
-        let mut s = self.state();
+        let s = self.state();
         #[cfg(not(target_arch = "wasm32"))]
-        if !s.refreshing && s.scanned.is_none_or(|t| t.elapsed() >= self.max_age) {
-            s.refreshing = true;
+        if s.scanned.is_none_or(|t| t.elapsed() >= self.max_age) {
             let me = self.clone();
             // the scan runs without the state lock; `get` only ever waits for a list clone
-            let spawned = std::thread::Builder::new().name("devices".into()).spawn(move || {
+            let _ = self.refresh.spawn("devices", move || {
                 let list = (me.scanner)();
                 me.store(list);
             });
-            if spawned.is_err() {
-                s.refreshing = false;
-            }
         }
         s.list.clone()
     }
@@ -126,7 +128,6 @@ impl DeviceWatch {
     fn store(&self, list: Vec<Device>) {
         let changed = {
             let mut s = self.state();
-            s.refreshing = false;
             #[cfg(not(target_arch = "wasm32"))]
             {
                 s.scanned = Some(std::time::Instant::now());
@@ -145,7 +146,7 @@ impl DeviceWatch {
 
     /// A background scan is running.
     pub fn refreshing(&self) -> bool {
-        self.state().refreshing
+        self.refresh.running()
     }
 }
 
@@ -314,6 +315,26 @@ mod tests {
         mounted.lock().unwrap().clear();
         assert!(watch.scan_now().is_empty());
         assert_eq!(changes.load(Ordering::SeqCst), 2);
+    }
+
+    /// A scan that panics doesn't freeze the list: the next stale request scans again.
+    #[test]
+    fn a_panicking_scan_lets_the_next_one_run() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let r = runs.clone();
+        let watch = DeviceWatch::new(
+            move || {
+                if r.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("a scan that panics");
+                }
+                vec![card("EOS_DIGITAL")]
+            },
+            Duration::ZERO,
+        );
+        let _ = watch.get();
+        assert!(until(|| runs.load(Ordering::SeqCst) == 1 && !watch.refreshing()), "the panicking scan ends");
+        assert!(until(|| watch.get_scanned().is_some()), "a later request scans again");
+        assert_eq!(watch.get(), [card("EOS_DIGITAL")]);
     }
 
     #[test]
