@@ -8,7 +8,7 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 - A **library** is a folder (catalog, previews, settings). Copy the folder to move it. It is locked while open, so one app uses it at a time.
-- **File ▸ Libraries ▸ Back Up Library**: checkpoints the catalog, copies it to a timestamped folder, tests the copy, and prunes the oldest.
+- **File ▸ Libraries ▸ Back Up Library**: checkpoints the catalog, copies it to a timestamped folder, tests the copy, and prunes the oldest. Each backup records which library it is of, and pruning only ever removes that library's own backups: a backup folder can be shared by several libraries, and anything else kept in it (another library, other folders, the copy kept before an upgrade) is left alone.
 - **Test Library Integrity** and **Optimise** are in the same menu and in Library Settings.
 - **Edit ▸ Library Settings…**: backup schedule (never, every exit, daily, weekly, monthly), backup folder, integrity test, optimise. The backup runs silently when the app exits; there is no exit dialog to skip it.
 - **Older catalogs** are upgraded with a kept copy first.

@@ -389,26 +389,13 @@ impl Library {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn library_id(dir: &Path) -> String {
     use std::hash::{Hash, Hasher};
-    let mut cs = lcc_catalog::library::CatalogSettings::load(dir);
-    if let Some(id) = cs.library_id.as_ref().filter(|s| !s.is_empty()) {
-        return id.clone();
-    }
-    let hash = |fresh: bool| {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        dir.hash(&mut h);
-        if fresh {
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default().hash(&mut h);
-            std::process::id().hash(&mut h);
-        }
-        format!("{:016x}", h.finish())
-    };
-    let id = hash(true);
-    cs.library_id = Some(id.clone());
-    match cs.save(dir) {
-        Ok(()) => id,
+    match lcc_catalog::library::ensure_library_id(dir) {
+        Ok(id) => id,
         Err(e) => {
             log::warn!("library id: {e}");
-            format!("path-{}", hash(false))
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            dir.hash(&mut h);
+            format!("path-{:016x}", h.finish())
         }
     }
 }

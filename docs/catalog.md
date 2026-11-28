@@ -180,6 +180,12 @@ My Catalog/
   the v3 library (migrated again on the next open) or the finished v4 one.
 - **Backup**: `Journal::backup(catalog, root, keep)` checkpoints, copies the store, log, stub, settings and entry point
   into `root/<time>/`, opens the copy and runs redb's integrity check on it, then prunes to the newest `keep`.
+  The settings copy carries the library's id (`ensure_library_id`, made if missing), and a new folder is always
+  used (`<time>-2`, … when taken). `backup_folder` is the one test of what a folder in a backup root is to a
+  library, used by both pruning and `latest_backup`: a scheduled backup (a real folder named by a backup's time,
+  holding a store or a v3 snapshot, whose settings copy names this library; one naming no library only in the
+  library's own `backups/`), a copy kept before an upgrade (`before-v<N> <time>`, never pruned), or nothing
+  (never pruned, never offered to restore).
   `Journal::backup_if_due` applies `catalog-settings.json` (never / every exit / daily / weekly / monthly; integrity
   test before, optimise after). `Journal::check_integrity` (store pages, photo count, dangling album/stack
   references) and `Journal::optimize` (the store rewritten from the catalog: unused settings dropped, indexes rebuilt;
