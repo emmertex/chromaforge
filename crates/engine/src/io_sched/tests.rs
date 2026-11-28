@@ -822,7 +822,7 @@ fn cancel_returns_with_a_hung_volume() {
 }
 
 fn call_done(r: &Report<R>) -> usize {
-    r.outcomes.iter().filter(|o| !matches!(o, JobOutcome::NotStarted | JobOutcome::Cancelled)).count()
+    r.outcomes.iter().filter(|o| o.counts_as_done()).count()
 }
 
 /// Cancel's 5 s rule counts silence as the stall rule does: a job computing (or flushing) isn't
@@ -1593,4 +1593,23 @@ fn image_jpeg(seed: u8) -> Vec<u8> {
     let data: Vec<u8> = (0..16 * 12 * 3).map(|i| (i as u8).wrapping_mul(seed.wrapping_add(3))).collect();
     let img = lcc_codecs::EncodeImage::new(16, 12, 3, lcc_codecs::Samples::U8(&data));
     lcc_codecs::encode_jpeg(&img, 90, lcc_codecs::ChromaSubsampling::S444, &Default::default()).unwrap()
+}
+
+/// The one progress rule every caller counts with: each outcome but a job cancel kept from
+/// starting or left behind is a file done (a failed, panicked or not-responding one too).
+#[test]
+fn every_outcome_but_a_cancels_counts_as_done() {
+    let vol = lcc_catalog::folders::volume_key("/a", &Mounts::none());
+    let cases: [(JobOutcome<u32>, bool); 7] = [
+        (JobOutcome::Done(1), true),
+        (JobOutcome::NotStarted, false),
+        (JobOutcome::Cancelled, false),
+        (JobOutcome::VolumeNotResponding { volume: vol.clone(), abandoned: true }, true),
+        (JobOutcome::VolumeNotResponding { volume: vol, abandoned: false }, true),
+        (JobOutcome::Panicked("boom".into()), true),
+        (JobOutcome::SchedulerStopped, true),
+    ];
+    for (o, want) in cases {
+        assert_eq!(o.counts_as_done(), want, "{o:?}");
+    }
 }

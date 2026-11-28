@@ -20,7 +20,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use lcc_catalog::folders::{Mounts, volume_key};
+use lcc_catalog::folders::{Mounts, VolumeKeys};
 
 use super::IoContext;
 use super::job::JobState;
@@ -269,7 +269,9 @@ pub(crate) struct Stream<T: Send + 'static> {
     cancel: Arc<AtomicBool>,
     /// The caller's own cancel flag, read by the pool itself ([`Stream::with_cancel`]).
     linked: Option<Arc<AtomicBool>>,
-    mounts: Arc<Mounts>,
+    /// The volume keys of its jobs, from the mount list it read (per folder: an import keys a
+    /// folder once, not each file).
+    keys: VolumeKeys,
     next: usize,
 }
 
@@ -281,7 +283,9 @@ impl<T: Send + 'static> Stream<T> {
         Stream::with_mounts(ctx, workers, succeeded, mounts)
     }
 
-    fn with_mounts(ctx: &Arc<IoContext>, workers: usize, succeeded: fn(&T) -> bool, mounts: Arc<Mounts>) -> Stream<T> {
+    /// [`Stream::open`] with a mount list the caller read (one list for all of a caller's streams:
+    /// they key paths alike, and it is read once).
+    pub(crate) fn with_mounts(ctx: &Arc<IoContext>, workers: usize, succeeded: fn(&T) -> bool, mounts: Arc<Mounts>) -> Stream<T> {
         let driver = match ctx.pool() {
             Some(h) => Driver::Pool(h),
             None => Driver::Own(Box::new(Sched::new(ctx).driven_by_caller())),
@@ -298,7 +302,7 @@ impl<T: Send + 'static> Stream<T> {
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
             linked: None,
-            mounts,
+            keys: VolumeKeys::new(mounts),
             next: 0,
         }
     }
@@ -311,6 +315,11 @@ impl<T: Send + 'static> Stream<T> {
     pub(crate) fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Stream<T> {
         self.linked = Some(cancel);
         self
+    }
+
+    /// The volume `path` is on, as this stream keys its jobs (from the mount list it read).
+    pub(crate) fn volume_of(&mut self, path: &str) -> lcc_catalog::folders::VolumeKey {
+        self.keys.file(path)
     }
 
     /// Whether this stream runs its own scheduler (the pool couldn't run).
@@ -358,8 +367,8 @@ impl<T: Send + 'static> Stream<T> {
         for job in jobs {
             let index = self.next;
             self.next += 1;
-            let source = volume_key(&job.source, &self.mounts);
-            let dest = job.dest.as_deref().map(|d| volume_key(d, &self.mounts));
+            let source = self.keys.file(&job.source);
+            let dest = job.dest.as_deref().map(|d| self.keys.folder(d));
             let task =
                 Task { index, run: Some(job.run), dest: dest.clone().filter(|d| d != &source), succeeded: self.succeeded, tx: self.tx.clone() };
             submitted.push(Submitted { index, source, dest, skippable: job.skippable, id: self.ctx.shared.next_id(), task: Box::new(task) });
@@ -391,6 +400,15 @@ impl<T: Send + 'static> Stream<T> {
             Driver::Pool(h) => h.stopped.load(Ordering::Acquire),
             Driver::Own(_) => false,
         }
+    }
+
+    /// Whether a caller still waiting for this stream's outcomes stops waiting: the stream was
+    /// cancelled ([`Stream::cancel`]) and the pool it uses has stopped (a supervisor panic), so no
+    /// rule watches its jobs still running any more, and a job hung on a dead volume would keep
+    /// the caller waiting for ever, Cancel or not. The caller takes the outcomes still missing as
+    /// [`JobOutcome::Cancelled`] (left behind). The one escape every waiting loop uses.
+    pub(crate) fn left_behind(&self) -> bool {
+        self.cancel.load(Ordering::Acquire) && self.pool_stopped()
     }
 
     /// The next outcome, waiting up to `wait`. A job no worker could take runs here meanwhile.
@@ -482,7 +500,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         let next = stream.recv_timeout(ctx.tick);
         if let Some((i, o, m)) = next {
             if let Some(slot) = outcomes.get_mut(i).filter(|s| s.is_none()) {
-                if !matches!(o, JobOutcome::NotStarted | JobOutcome::Cancelled) {
+                if o.counts_as_done() {
                     done.fetch_add(1, Ordering::Relaxed);
                 }
                 *slot = Some(o);
@@ -495,7 +513,7 @@ pub(crate) fn run_jobs<T: Send + 'static>(
         }
         // the pool stopped with jobs of this call running: nothing watches them now, so cancel
         // leaves them behind at once
-        if forwarded && stream.pool_stopped() {
+        if stream.left_behind() {
             for o in outcomes.iter_mut().filter(|o| o.is_none()) {
                 *o = Some(JobOutcome::Cancelled);
             }

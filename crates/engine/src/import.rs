@@ -930,15 +930,7 @@ pub(crate) fn probe_all_typed(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
     let Some(probe) = probe.cloned() else {
-        return paths
-            .iter()
-            .map(|p| {
-                Ok(ProbeInfo {
-                    format: Path::new(p).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(),
-                    ..Default::default()
-                })
-            })
-            .collect();
+        return paths.iter().map(|p| Ok(unread_info(p))).collect();
     };
     use std::sync::atomic::Ordering::Relaxed;
     // diagnostics (issue #1363): one step per call (a batch, usually), listed in the in-flight file while it runs with
@@ -998,9 +990,21 @@ pub(crate) fn probe_all_typed(
     out
 }
 
+/// What a session without file access knows of a file, which every import of it takes as its
+/// probe: its format, from its extension.
+pub(crate) fn unread_info(path: &str) -> ProbeInfo {
+    ProbeInfo { format: Path::new(path).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(), ..Default::default() }
+}
+
 /// Whether a probe cached from an earlier scan still holds for the file at a path (a file-system
 /// call on the file's volume).
 pub(crate) type KeepCached = fn(&str, &ProbeInfo) -> bool;
+
+/// An import's rule for a cached probe: kept only while its file is still there as it was (the
+/// web's files are not std::fs files: kept as probed).
+pub(crate) fn keep_import_probe(f: &str, info: &ProbeInfo) -> bool {
+    cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info)
+}
 
 /// [`probe_all`] for files of which some carry a probe from an earlier scan (`cached`, by path):
 /// such a file's check that the probe still holds (`keep`) runs as the file's own job, on its
@@ -1055,27 +1059,55 @@ pub(crate) fn probe_scheduled(
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Vec<Result<ProbeInfo, ProbeError>> {
-    use crate::io_sched::IoJob;
-    let jobs = paths
-        .iter()
-        .map(|p| {
-            let (probe, path) = (probe.clone(), p.clone());
-            IoJob::read(p.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>)
-        })
-        .collect();
+    let jobs = paths.iter().map(|p| probe_job(probe, p, None)).collect();
     let report = match crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done) {
         Ok(r) => r,
-        // (several files from inside a file job: refused, never a wait for itself)
-        Err(e) => return paths.iter().map(|p| Err(ProbeError::from(format!("{p}: {e}")))).collect(),
+        Err(e) => return paths.iter().map(|p| Err(refused_probe(p, e))).collect(),
     };
     let unreached = if workers > 1 { "not probed" } else { "cancelled" };
     report.outcomes.into_iter().zip(paths).map(|(o, p)| probe_outcome(o, p, unreached)).collect()
 }
 
+/// The I/O job that reads file `path` with `probe` (its volume's queue decides when). A probe a
+/// preceding scan left (`cached`) is checked against the file's disk by the job itself, on that
+/// queue ([`keep_import_probe`]), and comes back unread while it still holds.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_job(probe: &crate::media::FileProbe, path: &str, cached: Option<ProbeInfo>) -> crate::io_sched::IoJob<Result<ProbeInfo, String>> {
+    let (probe, read) = (probe.clone(), path.to_string());
+    let run = move || match cached {
+        Some(info) if keep_import_probe(&read, &info) => Ok(info),
+        _ => probe(&read),
+    };
+    crate::io_sched::IoJob::read(path.to_string(), Box::new(run))
+}
+
+/// File `path`'s failure when the pool refused its read (several files submitted from inside a
+/// file job: refused, never a wait for itself).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn refused_probe(path: &str, e: crate::io_sched::pool::SubmitError) -> ProbeError {
+    ProbeError::from(format!("{path}: {e}"))
+}
+
+/// A stream of file reads (probes) linked to the caller's `cancel`, at today's thread count,
+/// keying paths with `mounts` (one list for all of a caller's streams) or a fresh list.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_stream(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    mounts: Option<std::sync::Arc<lcc_catalog::folders::Mounts>>,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> crate::io_sched::pool::Stream<Result<ProbeInfo, String>> {
+    use crate::io_sched::pool::Stream;
+    let stream = match mounts {
+        Some(m) => Stream::with_mounts(ctx, workers(usize::MAX), Result::is_ok, m),
+        None => Stream::open(ctx, workers(usize::MAX), Result::is_ok),
+    };
+    stream.with_cancel(cancel.clone())
+}
+
 /// A probe's outcome as the string today's loops gave (`unreached`: a file cancel left unreached),
 /// a volume that stopped responding also typed.
 #[cfg(not(target_arch = "wasm32"))]
-fn probe_outcome(o: crate::io_sched::JobOutcome<Result<ProbeInfo, String>>, p: &str, unreached: &str) -> Result<ProbeInfo, ProbeError> {
+pub(crate) fn probe_outcome(o: crate::io_sched::JobOutcome<Result<ProbeInfo, String>>, p: &str, unreached: &str) -> Result<ProbeInfo, ProbeError> {
     use crate::io_sched::JobOutcome;
     match o {
         JobOutcome::Done(r) => r.map_err(ProbeError::from),
@@ -1435,7 +1467,7 @@ pub fn import_with(s: &mut Session, paths: &[String], opts: &ImportOptions) -> c
         let mut skipped = 0usize;
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let files = crate::cmd::plugins::before_import_files(s, files, &cancel, &mut skipped);
-        let mut prepared = job.prepare_files(files, &cancel);
+        let mut prepared = job.prepare_all(files, &cancel);
         prepared.skipped = walked;
         prepared.plugin_skipped += skipped;
         prepared
@@ -1485,6 +1517,9 @@ pub struct ImportJob {
     /// ones read so far: the step before they are handled.
     pub read_total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub read_done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Called with each batch as the `beforeImport` hook would be (tests: a slow hook).
+    #[cfg(test)]
+    pub(crate) test_filter: Option<std::sync::Arc<dyn Fn(&[String]) + Send + Sync>>,
 }
 
 /// The outcome of [`ImportJob::prepare`] for one batch, in file order.
@@ -1646,16 +1681,19 @@ impl ImportJob {
             before_import: None,
             read_total: Default::default(),
             read_done: Default::default(),
+            #[cfg(test)]
+            test_filter: None,
         })
     }
 
     /// The file-system half of importing `paths`: expand folders, skip known paths, probe, skip
     /// duplicates by content, read sidecars, copy or place (Move) the files — several at once,
     /// with the names and outcomes of one after another. Nothing in the catalog changes. Stops
-    /// before the next file once `cancel` is set.
+    /// before the next file once `cancel` is set. One batch of every file, as [`import_with`]
+    /// prepares it ([`ImportJob::prepare_all`]).
     pub fn prepare(&mut self, paths: &[String], cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         let found = self.expand_report(paths);
-        let mut prepared = self.prepare_files(found.files, cancel);
+        let mut prepared = self.prepare_all(found.files, cancel);
         prepared.skipped = Skipped { unreadable: found.unreadable, unsupported: found.unsupported };
         prepared
     }
@@ -1722,74 +1760,46 @@ impl ImportJob {
         Some(library)
     }
 
+    /// [`ImportJob::prepare_files`] over every file at once, as one batch (one call's items), with
+    /// the copies of several cards or drives run side by side as they are planned (I/O spec §5.6;
+    /// the browser build: [`ImportJob::prepare_files`] itself).
+    fn prepare_all(&mut self, files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.prepare_whole(crate::io_sched::IoContext::global(), files, cancel)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.prepare_files(files, cancel)
+        }
+    }
+
     /// [`ImportJob::prepare`] for files [`ImportJob::expand`] returned.
-    pub fn prepare_files(&mut self, mut files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
+    pub fn prepare_files(&mut self, files: Vec<String>, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Prepared {
         use std::sync::atomic::Ordering::Relaxed;
         // the library as it was, kept for the ownership of the shared stem sidecars below
         let library = self.look_up_library();
-        let opts = self.opts.clone();
-        let mode = self.mode;
-        // a plug-in's beforeImport hook: skipped files never reach the batch (they were counted
-        // as found, so they are counted as done), a replacement goes through every check below
-        let scanned = files.len();
-        let mut plugin_skipped = 0usize;
-        if let Some(hook) = &self.before_import {
-            files = hook.filter(files, cancel, &mut plugin_skipped);
-            self.done.fetch_add(plugin_skipped, Relaxed);
-        }
-        let mut out = Prepared { scanned, plugin_skipped, ..Default::default() };
+        let (files, mut out) = self.filter_batch(files, cancel);
         let mut todo = Vec::new();
         // browsed (Local) records whose files are copied or moved: the record follows its file
         let mut follow: HashMap<String, PhotoId> = HashMap::new();
         for f in files {
-            match self.by_path.get(f.as_str()).cloned() {
-                Some((id, true, hash)) if !opts.local && self.transfers(&f) => {
-                    self.by_path.insert(f.clone(), (id, false, hash));
-                    follow.insert(f.clone(), id);
-                    todo.push(f);
-                }
-                Some((id, true, hash)) if !opts.local => {
-                    // a library photo with the same content comes first, and a file promoted earlier
-                    // (here or in a previous batch) counts as the library's from then on
-                    if let Some(h) = &hash {
-                        if let Some(existing) = self.by_hash.get(h) {
-                            out.items.push(PreparedItem::Duplicate { path: f, existing: *existing, reason: "content", hash });
-                            self.done.fetch_add(1, Relaxed);
-                            continue;
-                        }
-                        self.by_hash.insert(h.clone(), Some(id));
-                    }
-                    // a file that was only browsed (Local) joins the library when it is imported for real
-                    self.by_path.insert(f, (id, false, hash));
-                    out.items.push(PreparedItem::Promote(id));
-                    self.done.fetch_add(1, Relaxed);
-                }
-                Some((id, _, _)) => {
-                    out.items.push(PreparedItem::Duplicate { path: f, existing: Some(id), reason: "path", hash: None });
-                    self.done.fetch_add(1, Relaxed);
-                }
-                None => todo.push(f),
+            match self.sort_file(f, &mut follow) {
+                Sorted::Item(it) => out.items.push(it),
+                Sorted::Todo(f) => todo.push(f),
             }
         }
 
         // files a preceding scan already probed are not read again (a network share is slow to read),
         // as long as they are still there, as they were: a file gone or changed since is probed again
-        // (the web's files are not std::fs files: kept as probed)
-        let cached: HashMap<String, ProbeInfo> = todo.iter().filter_map(|f| self.cache.remove(f).map(|i| (f.clone(), i))).collect();
-        let keep: KeepCached = |f, info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info);
+        let cached = self.take_cached(&todo);
         // Reading the files is the slow part of adding them where they are: it is counted on its
         // own, and `cancel` stops it too (a large library takes long enough to want both). A file
         // with a cached probe counts too: checking it is a round trip to its disk.
         self.read_total.fetch_add(todo.len(), Relaxed);
-        let probed = probe_all_cached(self.probe.as_ref(), &todo, cached, keep, &self.read_done, cancel);
+        let probed = probe_all_cached(self.probe.as_ref(), &todo, cached, keep_import_probe, &self.read_done, cancel);
         crate::memory::release();
-        // Who owns the shared stem sidecar (`IMG_0001.xmp`) among the library's files and the ones
-        // arriving with this import: a JPEG or a TIFF arriving beside its raw reads its own sidecar
-        // and never the raw's packet (issue #1905).
-        let stems = crate::sidecar::ImportStems::for_import(
-            library.as_ref(),
-            todo.iter().zip(&probed).filter_map(|(path, info)| info.as_ref().ok().map(|i| (path.as_str(), i.kind))),
-        );
+        let stems = import_stems(library.as_ref(), &todo, &probed);
         // Files are planned one by one, in order (duplicates, sidecars, names, folders); their
         // copies or moves — the slow part, reading and writing every byte and verifying it — are
         // collected and run on several threads (issue #367), then their outcomes take their places.
@@ -1801,25 +1811,16 @@ impl ImportJob {
                 out.cut_short = true;
                 break;
             }
-            let mut info = match info {
+            let info = match info {
                 Ok(i) => i,
-                // still being copied in: skipped, and picked up by a later scan (issue #123)
-                Err(e) if lcc_catalog::incoming::is_still_being_written(&e.message) => {
-                    log::info!("import: skipped {}", e.message);
-                    self.done.fetch_add(1, Relaxed);
-                    plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
-                    continue;
-                }
                 Err(e) => {
-                    log::warn!("import {path}: {}", e.message);
-                    self.done.fetch_add(1, Relaxed);
-                    plan.slots.push(Slot::Item(e.into_item(path)));
+                    plan.slots.push(Slot::Item(self.probe_failed(path, e)));
                     continue;
                 }
             };
             let promote = follow.get(&path).copied();
             // a copy of a file whose transfer is still pending: a duplicate only if that one succeeds
-            if !opts.local
+            if !self.opts.local
                 && let Some(h) = &info.content_hash
                 && plan.transfers.iter().any(|t| t.info.content_hash.as_ref() == Some(h))
             {
@@ -1829,123 +1830,287 @@ impl ImportJob {
                     break;
                 }
             }
-            if let Some(h) = &info.content_hash
-                && !opts.local
-                && let Some(existing) = self.by_hash.get(h)
-                // (the browsed record of this very file is not a duplicate of it)
-                && !(promote.is_some() && *existing == promote)
-            {
-                self.done.fetch_add(1, Relaxed);
-                plan.slots.push(Slot::Item(PreparedItem::Duplicate { path, existing: *existing, reason: "content", hash: Some(h.clone()) }));
-                continue;
-            }
-            // the XMP sidecar (or the XMP embedded in a raw or a JPEG, as the probe found it), read before
-            // copying: its capture time files and names the copy when the file itself has none. A sidecar
-            // found keeps precedence even when it can't be read, as on a manual reread
-            // (`sidecar::read_packet`): the embedded values don't apply (upstream #3607).
-            let raw = info.kind == MediaKind::Raw;
-            let packet = match crate::sidecar::find_sidecar_for_import(&stems, self.naming, &path, &mut listing) {
-                Some(f) => std::fs::read_to_string(&f).inspect_err(|e| log::warn!("import {path}: sidecar {}: {e}", f.display())).ok(),
-                None => info.xmp.clone(),
-            };
-            let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
-            let sidecar = packet.and_then(|x| match crate::sidecar::parse_sidecar(&x, target) {
-                Ok(sc) => Some(sc),
-                Err(e) => {
-                    log::warn!("import {path}: XMP: {e}");
-                    None
-                }
-            });
-            if info.captured.is_none() {
-                info.captured = sidecar.as_ref().and_then(|sc| sc.captured.clone());
-            }
-            // no date in the file or its sidecar: the file's own date, as Lightroom does (a guess:
-            // never written to a sidecar as the capture time)
-            if info.captured.is_none() {
-                info.captured = info.file_modified.clone();
-                info.captured_is_file_date = info.captured.is_some();
-            }
-            let stored = match (mode, &self.copy_root) {
-                (ImportMode::Copy | ImportMode::Move, Some(root))
-                    if !crate::import_move::inside(Path::new(&path), root)
-                        && !self.lib_dir.as_ref().is_some_and(|l| crate::import_move::inside(Path::new(&path), l)) =>
-                {
-                    // the templates see the photo as it will be catalogued (undated: the import time)
-                    let own = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let mut q = Photo::new(PhotoId(0), Source::File { path: path.clone() }, &own, &info.format, 0, 0, &self.now);
-                    q.captured = info.captured.clone();
-                    q.meta = info.meta.clone();
-                    q.rating = info.rating;
-                    q.flag = info.flag;
-                    q.label = info.label;
-                    if let Some(sc) = &sidecar {
-                        crate::sidecar::merge_into(&mut q, sc, &self.now);
-                    }
-                    let name = if let Some(template) = opts.rename.as_deref().filter(|t| !t.trim().is_empty()) {
-                        let Some(seq) = self.seq else {
-                            self.done.fetch_add(1, Relaxed);
-                            plan.slots.push(Slot::Item(PreparedItem::Failed(
-                                path,
-                                "rename sequence exhausted; choose a lower renameStart or leave rename blank".into(),
-                            )));
-                            continue;
-                        };
-                        self.seq = seq.checked_add(1);
-                        Some(crate::rename::expand(template, &q, seq))
-                    } else {
-                        None
-                    };
-                    let folders = opts.organize.folders(&q);
-                    let dir = folders.iter().fold(root.to_path_buf(), |d, f| d.join(f));
-                    // the name this file gets depends on what a pending transfer of a like-named file
-                    // into the same folder ends up with: that one goes first
-                    let as_named = name.as_deref().unwrap_or(if own.is_empty() { "photo" } else { own.as_str() });
-                    let family = (dir.to_string_lossy().to_lowercase(), name_family(as_named));
-                    if plan.transfers.iter().any(|t| t.family == family) {
+            let Planned { kept, next } = self.plan_file(path, info, promote, &stems, &mut listing);
+            match next {
+                Next::Transfer(t) => {
+                    // the name this file gets depends on what a pending transfer of a like-named
+                    // file into the same folder ends up with: that one goes first
+                    if plan.transfers.iter().any(|p| p.family == t.family) {
                         self.run_plan(&mut plan, &mut out, cancel);
                         if cancel.load(Relaxed) {
                             out.cut_short = true;
                             break;
                         }
                     }
-                    let how = if mode == ImportMode::Move && !crate::import_move::is_symlink(Path::new(&path)) {
-                        How::Place { name: name.unwrap_or(own) }
-                    } else {
-                        if mode == ImportMode::Move {
-                            let reason = "a symbolic link: the file it points to was copied, the link and its target stay";
-                            plan.slots.push(Slot::Item(PreparedItem::Kept(Kept { path: path.clone(), reason: reason.into() })));
-                        }
-                        How::Copy { name }
-                    };
-                    // Copy as DNG: the copied raw becomes a DNG (the copy is ours to replace)
-                    let dng = opts.convert_dng && mode == ImportMode::Copy && raw && !info.format.eq_ignore_ascii_case("DNG");
+                    plan.slots.extend(kept.map(Slot::Item));
                     plan.slots.push(Slot::Transfer);
-                    plan.transfers.push(Transfer { path, info, sidecar, dir, how, dng, promote, family });
-                    continue;
+                    plan.transfers.push(*t);
                 }
-                (ImportMode::Move, _) => {
-                    let reason = "already inside the destination or the library: added where it is";
-                    plan.slots.push(Slot::Item(PreparedItem::Kept(Kept { path: path.clone(), reason: reason.into() })));
-                    path.clone()
+                Next::Item(it) => {
+                    plan.slots.extend(kept.map(Slot::Item));
+                    plan.slots.push(Slot::Item(it));
                 }
-                _ => path.clone(),
-            };
-            if let Some(h) = &info.content_hash
-                && !self.opts.import_duplicates
-            {
-                self.by_hash.insert(h.clone(), None);
             }
-            self.done.fetch_add(1, Relaxed);
-            plan.slots.push(Slot::Item(match promote {
-                // (planned for a transfer that turned out not to need one: joins where it is)
-                Some(id) => PreparedItem::Promote(id),
-                None => PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None, promote: None, dng_not_made: None })),
-            }));
         }
         self.run_plan(&mut plan, &mut out, cancel);
         // (`cut_short` says whether a Cancel stopped a file from being prepared: the flag itself may
         // have been set after the last one was)
         out
+    }
+
+    /// [`ImportJob::prepare_files`] per [`batch_size`] files, in order, each batch handed to `emit`
+    /// (`false`: nobody takes them any more). The browser build has no threads: one batch after
+    /// another (elsewhere the reads and copies of several volumes run at once, `import/stream.rs`).
+    #[cfg(target_arch = "wasm32")]
+    pub fn prepare_stream(
+        &mut self,
+        files: Vec<String>,
+        cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        mut emit: impl FnMut(Prepared) -> bool,
+    ) {
+        for chunk in files.chunks(batch_size()) {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let prepared = self.prepare_files(chunk.to_vec(), cancel);
+            if !emit(prepared) {
+                return;
+            }
+        }
+    }
+
+    /// A batch through the plug-ins' `beforeImport` hook: skipped files never reach the batch (they
+    /// were counted as found, so they are counted as done), a replacement goes through every check
+    /// that follows. The batch's files and its (still empty) outcome.
+    fn filter_batch(&mut self, mut files: Vec<String>, cancel: &std::sync::atomic::AtomicBool) -> (Vec<String>, Prepared) {
+        let scanned = files.len();
+        let mut plugin_skipped = 0usize;
+        #[cfg(test)]
+        if let Some(f) = &self.test_filter {
+            f(&files);
+        }
+        if let Some(hook) = &self.before_import {
+            files = hook.filter(files, cancel, &mut plugin_skipped);
+            self.done.fetch_add(plugin_skipped, std::sync::atomic::Ordering::Relaxed);
+        }
+        (files, Prepared { scanned, plugin_skipped, ..Default::default() })
+    }
+
+    /// What the library knows of file `f` before it is read: the one classification that
+    /// [`ImportJob::sort_file`] acts on and the guesses ahead of planning
+    /// ([`ImportJob::promote_hash`], [`ImportJob::may_read`]) read.
+    fn known(&self, f: &str) -> Known<&str> {
+        match self.by_path.get(f) {
+            None => Known::New,
+            Some((id, true, hash)) if !self.opts.local && self.transfers(f) => Known::Follows { id: *id, hash: hash.as_deref() },
+            Some((id, true, hash)) if !self.opts.local => Known::Joins { id: *id, hash: hash.as_deref() },
+            Some((id, _, _)) => Known::Library(*id),
+        }
+    }
+
+    /// The content hash a file is checked against before it is read: a browsed (Local) record
+    /// that joins the library where it is (no transfer) is a duplicate if a library photo, or a
+    /// file earlier in this import, has its content ([`ImportJob::sort_file`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn promote_hash(&self, f: &str) -> Option<&str> {
+        match self.known(f) {
+            Known::Joins { hash, .. } => hash,
+            _ => None,
+        }
+    }
+
+    /// Whether `f` may have to be read ([`ImportJob::sort_file`] would make it a file to do) and
+    /// the scan left no probe of it: a guess made ahead of planning (only planning decides).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn may_read(&self, f: &str) -> bool {
+        matches!(self.known(f), Known::New | Known::Follows { .. }) && !self.cache.contains_key(f)
+    }
+
+    /// A file sorted before anything is read, as [`ImportJob::known`] classifies it: known to the
+    /// library already (a duplicate by path), a browsed (Local) record that joins the library
+    /// where it is, or a file to do (read, then planned). A browsed record whose file is copied
+    /// or moved follows it (`follow`).
+    fn sort_file(&mut self, f: String, follow: &mut HashMap<String, PhotoId>) -> Sorted {
+        use std::sync::atomic::Ordering::Relaxed;
+        // (owned: sorting the file changes what is known of it)
+        match self.known(&f).owned() {
+            Known::New => Sorted::Todo(f),
+            Known::Follows { id, hash } => {
+                self.by_path.insert(f.clone(), (id, false, hash));
+                follow.insert(f.clone(), id);
+                Sorted::Todo(f)
+            }
+            Known::Joins { id, hash } => {
+                // a library photo with the same content comes first, and a file promoted earlier
+                // (here or in a previous batch) counts as the library's from then on
+                if let Some(h) = &hash {
+                    if let Some(existing) = self.by_hash.get(h) {
+                        self.done.fetch_add(1, Relaxed);
+                        return Sorted::Item(PreparedItem::Duplicate { path: f, existing: *existing, reason: "content", hash });
+                    }
+                    self.by_hash.insert(h.clone(), Some(id));
+                }
+                // a file that was only browsed (Local) joins the library when it is imported for real
+                self.by_path.insert(f, (id, false, hash));
+                self.done.fetch_add(1, Relaxed);
+                Sorted::Item(PreparedItem::Promote(id))
+            }
+            Known::Library(id) => {
+                self.done.fetch_add(1, Relaxed);
+                Sorted::Item(PreparedItem::Duplicate { path: f, existing: Some(id), reason: "path", hash: None })
+            }
+        }
+    }
+
+    /// The probes a preceding scan left for `todo`, by path, each taken once. Not checked here:
+    /// whether one still holds ([`keep_import_probe`]) is asked of its file's disk by the file's
+    /// own job, on its volume ([`probe_all_cached`]), never by planning.
+    fn take_cached(&mut self, todo: &[String]) -> HashMap<String, ProbeInfo> {
+        todo.iter().filter_map(|f| self.cache.remove(f).map(|i| (f.clone(), i))).collect()
+    }
+
+    /// The item of a file whose probe failed, in its place: a cause outside the file (a volume
+    /// that stopped responding, the stopped scheduler) is said as such ([`ProbeError::into_item`]),
+    /// not as the file's own failure.
+    fn probe_failed(&self, path: String, e: ProbeError) -> PreparedItem {
+        self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // still being copied in: skipped, and picked up by a later scan (issue #123)
+        if lcc_catalog::incoming::is_still_being_written(&e.message) {
+            log::info!("import: skipped {}", e.message);
+            return PreparedItem::Copying(path);
+        }
+        log::warn!("import {path}: {}", e.message);
+        e.into_item(path)
+    }
+
+    /// Plan one probed file, in order: a duplicate by content, or its sidecar read and, when it is
+    /// copied or moved, its name (the rename sequence goes on) and folder chosen. A transfer
+    /// comes back to run (after any pending one of its name family, and any pending one with its
+    /// content hash before this was called: both forms of preparing see to that).
+    fn plan_file(
+        &mut self,
+        path: String,
+        mut info: ProbeInfo,
+        promote: Option<PhotoId>,
+        stems: &crate::sidecar::ImportStems,
+        listing: &mut crate::sidecar::FolderListing,
+    ) -> Planned {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(h) = &info.content_hash
+            && !self.opts.local
+            && let Some(existing) = self.by_hash.get(h)
+            // (the browsed record of this very file is not a duplicate of it)
+            && !(promote.is_some() && *existing == promote)
+        {
+            self.done.fetch_add(1, Relaxed);
+            return Planned::item(PreparedItem::Duplicate { path, existing: *existing, reason: "content", hash: Some(h.clone()) });
+        }
+        // the XMP sidecar (or the XMP embedded in a raw or a JPEG, as the probe found it), read before
+        // copying: its capture time files and names the copy when the file itself has none. A sidecar
+        // found keeps precedence even when it can't be read, as on a manual reread
+        // (`sidecar::read_packet`): the embedded values don't apply (upstream #3607).
+        let raw = info.kind == MediaKind::Raw;
+        let packet = match crate::sidecar::find_sidecar_for_import(stems, self.naming, &path, listing) {
+            Some(f) => std::fs::read_to_string(&f).inspect_err(|e| log::warn!("import {path}: sidecar {}: {e}", f.display())).ok(),
+            None => info.xmp.clone(),
+        };
+        let target = crate::crs::Target::for_file(info.kind, &info.format, info.preview_only.is_some(), &info.meta.camera);
+        let sidecar = packet.and_then(|x| match crate::sidecar::parse_sidecar(&x, target) {
+            Ok(sc) => Some(sc),
+            Err(e) => {
+                log::warn!("import {path}: XMP: {e}");
+                None
+            }
+        });
+        if info.captured.is_none() {
+            info.captured = sidecar.as_ref().and_then(|sc| sc.captured.clone());
+        }
+        // no date in the file or its sidecar: the file's own date, as Lightroom does (a guess:
+        // never written to a sidecar as the capture time)
+        if info.captured.is_none() {
+            info.captured = info.file_modified.clone();
+            info.captured_is_file_date = info.captured.is_some();
+        }
+        let (mode, copy_root) = (self.mode, self.copy_root.clone());
+        let mut kept = None;
+        let stored = match (mode, &copy_root) {
+            (ImportMode::Copy | ImportMode::Move, Some(root))
+                if !crate::import_move::inside(Path::new(&path), root)
+                    && !self.lib_dir.as_ref().is_some_and(|l| crate::import_move::inside(Path::new(&path), l)) =>
+            {
+                // the templates see the photo as it will be catalogued (undated: the import time)
+                let own = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let mut q = Photo::new(PhotoId(0), Source::File { path: path.clone() }, &own, &info.format, 0, 0, &self.now);
+                q.captured = info.captured.clone();
+                q.meta = info.meta.clone();
+                q.rating = info.rating;
+                q.flag = info.flag;
+                q.label = info.label;
+                if let Some(sc) = &sidecar {
+                    crate::sidecar::merge_into(&mut q, sc, &self.now);
+                }
+                let name = if let Some(template) = self.opts.rename.as_deref().filter(|t| !t.trim().is_empty()) {
+                    let Some(seq) = self.seq else {
+                        self.done.fetch_add(1, Relaxed);
+                        return Planned::item(PreparedItem::Failed(
+                            path,
+                            "rename sequence exhausted; choose a lower renameStart or leave rename blank".into(),
+                        ));
+                    };
+                    self.seq = seq.checked_add(1);
+                    Some(crate::rename::expand(template, &q, seq))
+                } else {
+                    None
+                };
+                let folders = self.opts.organize.folders(&q);
+                let dir = folders.iter().fold(root.to_path_buf(), |d, f| d.join(f));
+                let as_named = name.as_deref().unwrap_or(if own.is_empty() { "photo" } else { own.as_str() });
+                let family = (dir.to_string_lossy().to_lowercase(), name_family(as_named));
+                let how = if mode == ImportMode::Move && !crate::import_move::is_symlink(Path::new(&path)) {
+                    How::Place { name: name.unwrap_or(own) }
+                } else {
+                    if mode == ImportMode::Move {
+                        let reason = "a symbolic link: the file it points to was copied, the link and its target stay";
+                        kept = Some(PreparedItem::Kept(Kept { path: path.clone(), reason: reason.into() }));
+                    }
+                    How::Copy { name }
+                };
+                // Copy as DNG: the copied raw becomes a DNG (the copy is ours to replace)
+                let dng = self.opts.convert_dng && mode == ImportMode::Copy && raw && !info.format.eq_ignore_ascii_case("DNG");
+                return Planned { kept, next: Next::Transfer(Box::new(Transfer { path, info, sidecar, dir, how, dng, promote, family })) };
+            }
+            (ImportMode::Move, _) => {
+                let reason = "already inside the destination or the library: added where it is";
+                kept = Some(PreparedItem::Kept(Kept { path: path.clone(), reason: reason.into() }));
+                path.clone()
+            }
+            _ => path.clone(),
+        };
+        if let Some(h) = &info.content_hash
+            && !self.opts.import_duplicates
+        {
+            self.by_hash.insert(h.clone(), None);
+        }
+        self.done.fetch_add(1, Relaxed);
+        Planned {
+            kept,
+            next: Next::Item(match promote {
+                // (planned for a transfer that turned out not to need one: joins where it is)
+                Some(id) => PreparedItem::Promote(id),
+                None => PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None, promote: None, dng_not_made: None })),
+            }),
+        }
+    }
+
+    /// A transfer's outcome, as it arrives: a copy that is ready makes its content a duplicate for
+    /// the files after it.
+    fn note_transfer(&mut self, item: &PreparedItem) {
+        if let PreparedItem::Ready(r) = item
+            && let Some(h) = &r.info.content_hash
+            && !self.opts.import_duplicates
+        {
+            self.by_hash.insert(h.clone(), None);
+        }
     }
 
     /// Run the transfers `plan` collected (on several threads) and append its items to `out` in
@@ -1971,15 +2136,69 @@ impl ImportJob {
                     }
                 },
             };
-            if let PreparedItem::Ready(r) = &item
-                && let Some(h) = &r.info.content_hash
-                && !self.opts.import_duplicates
-            {
-                self.by_hash.insert(h.clone(), None);
-            }
+            self.note_transfer(&item);
             out.items.push(item);
         }
     }
+}
+
+/// What the library knows of a file before it is read ([`ImportJob::known`]), its content hash
+/// as `H`.
+enum Known<H> {
+    /// Not in the library: read, then planned.
+    New,
+    /// A browsed (Local) record whose file is copied or moved: read and planned, the record
+    /// following the file.
+    Follows { id: PhotoId, hash: Option<H> },
+    /// A browsed (Local) record that joins the library where it is, unread.
+    Joins { id: PhotoId, hash: Option<H> },
+    /// In the library already: a duplicate by path.
+    Library(PhotoId),
+}
+
+impl Known<&str> {
+    fn owned(self) -> Known<String> {
+        match self {
+            Known::New => Known::New,
+            Known::Follows { id, hash } => Known::Follows { id, hash: hash.map(str::to_string) },
+            Known::Joins { id, hash } => Known::Joins { id, hash: hash.map(str::to_string) },
+            Known::Library(id) => Known::Library(id),
+        }
+    }
+}
+
+/// A file sorted before anything is read ([`ImportJob::sort_file`]).
+enum Sorted {
+    Item(PreparedItem),
+    Todo(String),
+}
+
+/// A planned file ([`ImportJob::plan_file`]): an item kept beside it (a Move that leaves the file
+/// where it is, or copies a symbolic link's target), then its item or its transfer.
+struct Planned {
+    kept: Option<PreparedItem>,
+    next: Next,
+}
+
+enum Next {
+    Item(PreparedItem),
+    Transfer(Box<Transfer>),
+}
+
+impl Planned {
+    fn item(it: PreparedItem) -> Planned {
+        Planned { kept: None, next: Next::Item(it) }
+    }
+}
+
+/// Who owns the shared stem sidecar (`IMG_0001.xmp`) among the library's files and the ones
+/// arriving with this batch: a JPEG or a TIFF arriving beside its raw reads its own sidecar and
+/// never the raw's packet (issue #1905).
+fn import_stems<E>(library: Option<&lcc_catalog::Catalog>, todo: &[String], probed: &[Result<ProbeInfo, E>]) -> crate::sidecar::ImportStems {
+    crate::sidecar::ImportStems::for_import(
+        library,
+        todo.iter().zip(probed).filter_map(|(path, info)| info.as_ref().ok().map(|i| (path.as_str(), i.kind))),
+    )
 }
 
 /// A batch's items in file order while its transfers are pending ([`ImportJob::run_plan`]).
@@ -2109,34 +2328,52 @@ fn transfers_scheduled(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
-    use crate::io_sched::IoJob;
-    // (the tests' injected faults hold for the workers too)
-    #[cfg(test)]
-    let fault = crate::import_move::injected_fault();
-    let mut about = Vec::with_capacity(transfers.len());
-    let jobs = transfers
-        .into_iter()
-        .map(|t| {
-            let moving = matches!(t.how, How::Place { .. });
-            about.push((t.path.clone(), t.dir.clone(), moving));
-            let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
-            let file_bytes = file_bytes.clone();
-            let run = move || {
-                #[cfg(test)]
-                crate::import_move::inject(fault);
-                let path = t.path.clone();
-                // last-resort guard: a panic is this file's failure, not the import's
-                crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
-            };
-            IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> }
-        })
-        .collect();
+    let (mut jobs, mut about) = (Vec::with_capacity(transfers.len()), Vec::with_capacity(transfers.len()));
+    for t in transfers {
+        let (job, a) = transfer_job(t, file_bytes.clone());
+        jobs.push(job);
+        about.push(a);
+    }
     let report = match crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done) {
         Ok(r) => r,
-        // (several copies from inside a file job: refused, never a wait for itself)
-        Err(e) => return about.into_iter().map(|(path, _, _)| Some(PreparedItem::Failed(path, format!("{e}; the original is kept")))).collect(),
+        Err(e) => return about.into_iter().map(|a| Some(refused_transfer(a.path, e))).collect(),
     };
-    report.outcomes.into_iter().zip(about).map(|(o, (path, dir, moving))| transfer_outcome(o, path, &dir, moving)).collect()
+    report.outcomes.into_iter().zip(about).map(|(o, a)| transfer_outcome(o, a.path, &a.dir, a.moving)).collect()
+}
+
+/// What a transfer's outcome needs to be told ([`transfer_outcome`]): its source, its
+/// destination folder, whether it moves the file.
+#[cfg(not(target_arch = "wasm32"))]
+struct TransferAbout {
+    path: String,
+    dir: PathBuf,
+    moving: bool,
+}
+
+/// The I/O job running transfer `t` (a copy or move from its source volume into `t.dir`'s), under
+/// the last-resort guard (a panic is this file's failure, not the import's), skippable when its
+/// last step is Copy as DNG; the tests' injected fault of the calling thread holds for the worker
+/// too. The one job the batch and the streamed import both run.
+#[cfg(not(target_arch = "wasm32"))]
+fn transfer_job(t: Transfer, file_bytes: Option<crate::merge::ByteReader>) -> (crate::io_sched::IoJob<PreparedItem>, TransferAbout) {
+    #[cfg(test)]
+    let fault = crate::import_move::injected_fault();
+    let about = TransferAbout { path: t.path.clone(), dir: t.dir.clone(), moving: matches!(t.how, How::Place { .. }) };
+    let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
+    let run = move || {
+        #[cfg(test)]
+        crate::import_move::inject(fault);
+        let path = t.path.clone();
+        crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
+    };
+    (crate::io_sched::IoJob { source, dest, skippable, run: Box::new(run) }, about)
+}
+
+/// Transfer `path`'s item when the pool refused it (several copies from inside a file job:
+/// refused, never a wait for itself).
+#[cfg(not(target_arch = "wasm32"))]
+fn refused_transfer(path: String, e: crate::io_sched::pool::SubmitError) -> PreparedItem {
+    PreparedItem::Failed(path, format!("{e}; the original is kept"))
 }
 
 /// A transfer's outcome as an item (`None`: not started), in the words the import report uses; a
@@ -2744,9 +2981,15 @@ impl Session {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "import/stream.rs"]
+mod stream;
 #[cfg(test)]
 #[path = "import/tests_known.rs"]
 mod tests_known;
+#[cfg(test)]
+#[path = "import/tests_stream.rs"]
+mod tests_stream;
 #[cfg(test)]
 #[path = "import/tests_transfers.rs"]
 mod tests_transfers;
@@ -2960,5 +3203,33 @@ mod prepared_tests {
         // at most the files the (up to 8) readers had already started
         assert!(seen.load(Relaxed) <= 8, "read {} files after cancel", seen.load(Relaxed));
         assert!(prepared.items.is_empty());
+    }
+
+    /// The guesses made ahead of planning agree with how planning sorts each kind of file: a
+    /// file is read ahead exactly when sorting makes it a file to do (and the scan left no
+    /// probe of it), and only a browsed record joining where it is has its hash checked first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_guesses_ahead_of_planning_agree_with_sorting() {
+        let dest = std::env::temp_dir().join(format!("lcc-known-{}", std::process::id()));
+        let inside = dest.join("in.jpg").to_string_lossy().into_owned();
+        for local in [false, true] {
+            let mut s = Session::new().with_fs();
+            let opts = ImportOptions { mode: ImportMode::Copy, destination: Some(dest.to_string_lossy().into_owned()), local, ..Default::default() };
+            let mut job = ImportJob::new(&mut s, opts).unwrap();
+            job.by_path.insert("/x/browsed.jpg".into(), (PhotoId(1), true, Some("h1".into())));
+            job.by_path.insert(inside.clone(), (PhotoId(2), true, Some("h2".into())));
+            job.by_path.insert("/x/library.jpg".into(), (PhotoId(3), false, None));
+            job.cache.insert("/x/scanned.jpg".into(), ProbeInfo::default());
+            for f in ["/x/new.jpg", "/x/browsed.jpg", inside.as_str(), "/x/library.jpg", "/x/scanned.jpg"] {
+                let (may_read, hash) = (job.may_read(f), job.promote_hash(f).map(str::to_string));
+                let cached = job.cache.contains_key(f);
+                let sorted = job.sort_file(f.to_string(), &mut HashMap::new());
+                let todo = matches!(sorted, Sorted::Todo(_));
+                assert_eq!(may_read, todo && !cached, "local {local}: {f}");
+                let promoted = matches!(sorted, Sorted::Item(PreparedItem::Promote(_)));
+                assert_eq!(hash.is_some(), promoted, "local {local}: {f}");
+            }
+        }
     }
 }

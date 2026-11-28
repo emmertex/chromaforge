@@ -5,7 +5,9 @@
 //! One pool for the process ([`pool`], PR 3): every call's jobs go to one scheduler ([`sched`])
 //! run by a supervisor thread, with today's limits ([`crate::import::workers`]) shared by every
 //! call on a volume; the abandoned-job registry and the volumes' history ([`shared`]) are
-//! process-wide. The work gate's job-aware wait is
+//! process-wide. An import's reads ahead and copies go through it as streams
+//! (`import/stream.rs`, PR 4), as do the originals read ahead after a Lightroom import
+//! ([`crate::cmd::read_originals::OriginalsReader`]). The work gate's job-aware wait is
 //! [`crate::memory::WorkGate::acquire_for_job`]; byte counting is [`crate::bounded_read`]'s capped
 //! counting reader.
 
