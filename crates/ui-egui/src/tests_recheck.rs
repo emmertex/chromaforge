@@ -219,7 +219,7 @@ fn reload_of_a_selection_runs_in_the_background() {
         .unwrap();
     let items = lcc_engine::cmd::reload::plan(&mut app.session, &json!({"ids": [id.0]})).unwrap();
     let probe = lcc_engine::cmd::reload::file_probe(&app.session);
-    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let results = lcc_engine::cmd::reload::probe(probe.as_ref(), &items, &cancelled, &|_| {});
     let applied = lcc_engine::cmd::reload::apply(&mut app.session, items, results).unwrap();
     assert!(applied.reloaded.is_empty());

@@ -14,7 +14,8 @@ use std::time::Duration;
 use lcc_catalog::folders::Mounts;
 
 use super::clock::{Clock, FakeClock, SEC};
-use super::run::{IoJob, JobOutcome, Report, run_jobs};
+use super::pool::run_jobs;
+use super::run::{IoJob, JobOutcome, Report};
 use super::shared::{CANCEL_SILENCE, COMPUTING_FACTOR, IDLE_AFTER, RECOVERY_EVERY, RECOVERY_STUCK, STALL_GRACE, STALL_WITH_BYTES, WAKE_JUMP};
 use super::{IoContext, mounts::MountReader};
 
@@ -57,14 +58,14 @@ impl H {
     pub(super) fn start(&self, jobs: Vec<IoJob<R>>, workers: usize) -> Call {
         let (cancel, done) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
         let (ctx, c, d) = (self.ctx.clone(), cancel.clone(), done.clone());
-        let handle = std::thread::spawn(move || run_jobs(&ctx, jobs, workers, Result::is_ok, &c, &d));
+        let handle = std::thread::spawn(move || run_jobs(&ctx, jobs, workers, Result::is_ok, &c, &d).unwrap());
         Call { handle, cancel, done }
     }
 
     /// Run `jobs` here and return the report.
     pub(super) fn run(&self, jobs: Vec<IoJob<R>>, workers: usize) -> (Report<R>, usize) {
-        let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
-        let r = run_jobs(&self.ctx, jobs, workers, Result::is_ok, &cancel, &done);
+        let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
+        let r = run_jobs(&self.ctx, jobs, workers, Result::is_ok, &cancel, &done).unwrap();
         (r, done.load(Ordering::SeqCst))
     }
 }
@@ -759,8 +760,8 @@ fn a_slow_volume_moving_bytes_never_stalls() {
 #[test]
 fn cancel_before_the_start() {
     let h = H::new();
-    let (cancel, done) = (AtomicBool::new(true), AtomicUsize::new(0));
-    let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done);
+    let (cancel, done) = (Arc::new(AtomicBool::new(true)), AtomicUsize::new(0));
+    let r = run_jobs(&h.ctx, quick("/a", 5), 4, Result::is_ok, &cancel, &done).unwrap();
     assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::NotStarted)));
     assert_eq!(done.load(Ordering::SeqCst), 0);
     let ran = Arc::new(AtomicBool::new(false));
@@ -769,7 +770,7 @@ fn cancel_before_the_start() {
         ran2.store(true, Ordering::SeqCst);
         Ok(1)
     });
-    let r = run_jobs(&h.ctx, vec![one], 4, Result::is_ok, &cancel, &done);
+    let r = run_jobs(&h.ctx, vec![one], 4, Result::is_ok, &cancel, &done).unwrap();
     assert!(matches!(r.outcomes.as_slice(), [JobOutcome::NotStarted]));
     assert!(!ran.load(Ordering::SeqCst));
     assert_eq!(done.load(Ordering::SeqCst), 0);
@@ -824,18 +825,28 @@ fn call_done(r: &Report<R>) -> usize {
     r.outcomes.iter().filter(|o| !matches!(o, JobOutcome::NotStarted | JobOutcome::Cancelled)).count()
 }
 
-/// Cancel's 5 s rule exempts nothing: a computing job is abandoned after 5 s without progress
-/// (at, just below, just above).
+/// Cancel's 5 s rule counts silence as the stall rule does: a job computing (or flushing) isn't
+/// silent while its span lasts at most 10 × the stall time, so cancel waits for it (well past
+/// 5 s, up to the limit itself); past the limit it is abandoned after 5 s (just below, at).
 #[test]
-fn cancel_abandons_computing_jobs_after_5_s() {
-    for (by, abandoned) in [(CANCEL_SILENCE - 1, false), (CANCEL_SILENCE, true), (CANCEL_SILENCE + 1, true)] {
+fn cancel_waits_for_a_computing_span_up_to_ten_stall_times() {
+    let limit = STALL_WITH_BYTES * COMPUTING_FACTOR;
+    for (after, abandoned) in [(CANCEL_SILENCE - 1, false), (CANCEL_SILENCE, true)] {
         let h = H::new();
         let (call, latch) = computing_jobs(&h);
         call.cancel.store(true, Ordering::SeqCst);
         call.settle(&h, 3);
-        h.advance(by);
+        let mut t = 0;
+        while t < limit {
+            let step = (STALL_WITH_BYTES - SEC).min(limit - t);
+            h.advance(step);
+            t += step;
+            call.settle(&h, 3);
+            assert!(!call.finished(), "computing for {} s", t / SEC);
+        }
+        h.advance(after);
         call.settle(&h, 3);
-        assert_eq!(call.finished(), abandoned, "{by}");
+        assert_eq!(call.finished(), abandoned, "{after} past the span's limit");
         latch.release();
         let r = call.join();
         let cancelled = r.outcomes.iter().filter(|o| matches!(o, JobOutcome::Cancelled)).count();
@@ -1081,6 +1092,61 @@ fn a_stuck_recovery_job_lets_another_through_after_10_minutes() {
     let (r, _) = h.run(quick("/a", 2), 2);
     assert_eq!(ok_count(&r), 2);
     hung.release();
+}
+
+/// A job whose call is gone before it runs: its call's thread can't take it.
+struct Orphan;
+
+impl super::sched::PoolTask for Orphan {
+    fn run(self: Box<Self>, state: &Arc<super::JobState>) -> super::sched::Ran {
+        super::sched::Ran { ok: false, metrics: super::run::JobMetrics::none(state), deliver: None }
+    }
+    fn fail(self: Box<Self>, _: super::sched::SchedOutcome) {}
+    fn discard(self: Box<Self>) {}
+    fn run_here(self: Box<Self>, _: super::sched::InlineInfo) -> bool {
+        false
+    }
+}
+
+struct NoSink;
+
+impl super::sched::CallSink for NoSink {
+    fn outcome(&self, _: usize, _: super::sched::SchedOutcome, _: Option<super::run::JobMetrics>) {}
+}
+
+/// A recovery job counted as started that never ran (no worker thread could start, and its call
+/// was gone before its own thread could take it) frees the registry's recovery slot at once: a
+/// minute later the next call's job runs as the recovery job, instead of failing "not
+/// responding" until the 10-minute stuck rule (just below the minute it still waits).
+#[test]
+fn a_recovery_job_that_never_ran_frees_the_recovery_slot() {
+    use super::sched::{Msg, Sched, Submitted};
+    for (after, runs) in [(RECOVERY_EVERY - 1, false), (RECOVERY_EVERY, true)] {
+        let h = H::new();
+        let hung = stall_volume(&h, "/a");
+        h.ctx.spawn_budget.store(0, Ordering::SeqCst);
+        let mut sched = Sched::new(&h.ctx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        sched.handle(Msg::Open { call: 1, workers: 2, cancel, linked: None, sink: Box::new(NoSink) }, h.now());
+        let orphan = Submitted { index: 0, source: key("/a/x"), dest: None, skippable: false, id: h.ctx.shared.next_id(), task: Box::new(Orphan) };
+        sched.handle(Msg::Submit { call: 1, jobs: vec![orphan] }, h.now());
+        sched.step(Duration::ZERO);
+        assert!(h.ctx.shared.blocked(&key("/a/x"), h.now()), "nothing showed the volume works");
+        h.ctx.spawn_budget.store(usize::MAX, Ordering::SeqCst);
+        h.advance(after);
+        let (r, _) = h.run(
+            vec![
+                job("/a/y", || {
+                    bytes(1);
+                    Ok(1)
+                }),
+                job("/a/z", || Ok(2)),
+            ],
+            2,
+        );
+        assert_eq!(ok_count(&r), if runs { 2 } else { 0 }, "{after}: {:?}", r.outcomes);
+        hung.release();
+    }
 }
 
 fn key(path: &str) -> lcc_catalog::folders::VolumeKey {
@@ -1394,17 +1460,17 @@ fn the_probe_wrapper_keeps_todays_strings() {
         Ok(crate::media::ProbeInfo::default())
     });
     let paths: Vec<String> = ["/a/1", "/a/boom", "/b/2"].iter().map(|s| s.to_string()).collect();
-    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.first().is_some_and(|r| r.is_ok()));
     assert!(r.get(1).and_then(msg).is_some_and(|e| e.starts_with("/a/boom: ") && e.contains("bad file")));
-    assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.not_responding.is_none())), "a panic isn't a volume's");
+    assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.why.is_none())), "a panic isn't a volume's");
     assert_eq!(done.load(Ordering::SeqCst), 3);
-    let cancel = AtomicBool::new(true);
+    let cancel = Arc::new(AtomicBool::new(true));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.iter().all(|r| msg(r) == Some("not probed")));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 1, &done, &cancel);
-    assert!(r.iter().all(|r| msg(r) == Some("cancelled") && r.as_ref().err().is_some_and(|e| e.not_responding.is_none())));
+    assert!(r.iter().all(|r| msg(r) == Some("cancelled") && r.as_ref().err().is_some_and(|e| e.why.is_none())));
     // one file, cancelled before it starts: not probed, as today's single-file path
     let ran = Arc::new(AtomicBool::new(false));
     let ran2 = ran.clone();
@@ -1419,14 +1485,18 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let _hung = stall_volume(&h, "/c");
     h.advance(1);
     let bytes_less: crate::media::FileProbe = Arc::new(|_| Err("gone".into()));
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &["/c/0".to_string()], 4, &done, &cancel);
     assert_eq!(r.first().and_then(msg), Some("gone"), "the recovery job's own result");
-    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.not_responding.is_none()), Some(true), "its own failure, not the volume's");
+    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.why.is_none()), Some(true), "its own failure, not the volume's");
     let paths: Vec<String> = ["/c/1", "/c/2"].iter().map(|s| s.to_string()).collect();
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &paths, 4, &done, &cancel);
     assert_eq!(r.get(1).and_then(msg), Some("/c/2: volume not responding (/c)"));
-    assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).and_then(|e| e.not_responding.as_deref()), Some("/c"), "typed, not read from the message");
+    assert_eq!(
+        r.get(1).and_then(|r| r.as_ref().err()).map(|e| (e.why, e.volume.as_deref())),
+        Some((Some(crate::import::Interruption::VolumeNotResponding), Some("/c"))),
+        "typed, not read from the message"
+    );
 }
 
 /// Threads that checked a cached probe, and a latch the check waits on for `/a` (a hung share).
@@ -1462,7 +1532,7 @@ fn cached_probes_are_checked_off_the_calling_thread() {
         .map(|(p, i)| (p.to_string(), i))
         .collect();
     let checked = crate::import::cached_probe(probe.clone(), cached, keep_if_named_kept);
-    let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
     let r = crate::import::probe_scheduled(&h.ctx, &checked, &paths, 4, &done, &cancel);
     let formats: Vec<&str> = r.iter().map(|r| r.as_ref().map(|i| i.format.as_str()).unwrap_or("err")).collect();
     assert_eq!(formats, ["CACHED", "READ", "CACHED", "READ"]);

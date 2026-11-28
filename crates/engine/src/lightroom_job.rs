@@ -331,7 +331,7 @@ impl LightroomJob {
     }
 
     /// Read/probe/stage all source data off the owner thread.
-    pub fn prepare(&mut self, cancel: &AtomicBool) -> crate::Result<PreparedLightroom> {
+    pub fn prepare(&mut self, cancel: &std::sync::Arc<AtomicBool>) -> crate::Result<PreparedLightroom> {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
@@ -618,11 +618,11 @@ mod tests {
     fn a_cancelled_read_is_cancelled_by_kind() {
         let mut session = crate::Session::new();
         let mut job = LightroomJob::new(&mut session, PathBuf::from("/nonexistent/cancelled.lrcat"), false).unwrap();
-        let Err(e) = job.prepare(&AtomicBool::new(true)) else { panic!("cancelled before it started") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(true))) else { panic!("cancelled before it started") };
         assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
         // the `error` text clients see is unchanged
         assert_eq!(e.to_string(), "invalid parameters for `library.importLightroom`: Lightroom import cancelled");
-        let Err(e) = job.prepare(&AtomicBool::new(false)) else { panic!("no such catalog") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))) else { panic!("no such catalog") };
         assert_ne!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
     }
 

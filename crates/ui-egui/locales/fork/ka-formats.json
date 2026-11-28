@@ -7,6 +7,7 @@
   " · kept, not applied: {}": " · შენახულია, არ გამოიყენება: {}",
   " · {n} not added to the library: {e}": " · არ დაემატა ბიბლიოთეკას: {n} ({e})",
   " · {n} not imported: a drive stopped responding": " · არ იმპორტირდა: {n} (დისკმა პასუხი შეწყვიტა)",
+  " · {n} not imported: the app's file reader stopped; import them again": " · არ იმპორტირდა: {n} (აპის ფაილების წამკითხველი შეჩერდა; კვლავ დააიმპორტეთ)",
   " · {n} skipped (could not be rendered)": " · გამოტოვებულია: {n} (ვერ დარენდერდა)",
   "+ Create “{new}”": "+ „{new}“-ის შექმნა",
   ", ": ", ",

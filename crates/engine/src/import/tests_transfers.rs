@@ -135,7 +135,7 @@ fn transfers_keep_todays_results_order_and_names() {
         let dest = base.join(format!("w{workers}-{cross}"));
         let mounts: Vec<&Path> = if cross { vec![&card, &dest] } else { vec![] };
         let (_clock, ctx) = context(&mounts);
-        let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+        let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
         let got = transfers_scheduled(&ctx, plan(&dest), None, workers, &cancel, &done);
         let got: Vec<String> = got.iter().map(|i| describe(i.as_ref(), &dest)).collect();
         assert_eq!(got, reference, "workers {workers}, two volumes {cross}");
@@ -229,7 +229,7 @@ fn a_panicking_copy_fails_only_its_file() {
     let (_clock, ctx) = context(&[&card, &ssd]);
     let transfers =
         vec![copy_to(&card.join("x.nef"), &ssd.join("ok")), copy_to(&card.join("y.nef"), &boom), copy_to(&card.join("z.nef"), &ssd.join("ok2"))];
-    let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
+    let (cancel, done) = (Arc::new(AtomicBool::new(false)), AtomicUsize::new(0));
     let got = transfers_scheduled(&ctx, transfers, None, 4, &cancel, &done);
     release_copies_into(&boom);
     assert!(matches!(got.first(), Some(Some(PreparedItem::Ready(_)))));
@@ -319,4 +319,61 @@ fn a_stall_at_the_dng_step_is_outcome_unknown() {
     assert!(ssd.join("raw.nef").is_file(), "the raw copy is left, untracked");
     assert!(card.join("raw.nef").is_file(), "the source is kept");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The wrappers' words for the pool's new outcomes (I/O spec PR 3): a job the stopped pool never
+/// started (typed as such, not the file's own failure: the import doesn't call it unreadable),
+/// and several files submitted from inside a file job (refused, never a deadlock).
+#[test]
+fn the_wrappers_name_the_pools_outcomes() {
+    use crate::io_sched::JobOutcome;
+    let dir = Path::new("/ssd/in");
+    for (moving, word) in [(false, "copied"), (true, "moved")] {
+        match transfer_outcome(JobOutcome::SchedulerStopped, "/card/a.nef".into(), dir, moving) {
+            Some(PreparedItem::Interrupted(why, e)) => {
+                assert_eq!(*why, Interrupted { path: "/card/a.nef".into(), why: Interruption::SchedulerStopped, volume: None, folder: None });
+                assert_eq!(e, format!("not {word}: the I/O scheduler stopped; the original is kept"));
+            }
+            other => panic!("{}", describe(other.as_ref(), dir)),
+        }
+    }
+    assert!(transfer_outcome(JobOutcome::NotStarted, "/card/a.nef".into(), dir, false).is_none(), "not started, as today");
+    let stopped = probe_outcome(JobOutcome::SchedulerStopped, "/card/a.nef", "not probed").unwrap_err();
+    assert_eq!(stopped.message, "/card/a.nef: not read: the I/O scheduler stopped");
+    match stopped.into_item("/card/a.nef".into()) {
+        PreparedItem::Interrupted(why, _) => assert_eq!((why.why, why.volume), (Interruption::SchedulerStopped, None)),
+        other => panic!("{}", describe(Some(&other), dir)),
+    }
+    assert_eq!(probe_outcome(JobOutcome::NotStarted, "/card/a.nef", "not probed").unwrap_err().message, "not probed");
+
+    // several files probed from inside a pool job: every file fails with the reason, at once
+    let (_clock, ctx) = context(&[Path::new("/a")]);
+    let probe: crate::media::FileProbe = Arc::new(|_: &str| Ok(ProbeInfo::default()));
+    let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let jobs = (0..2)
+        .map(|i| {
+            let (ctx, probe, got) = (ctx.clone(), probe.clone(), got.clone());
+            crate::io_sched::IoJob::read(
+                format!("/a/{i}"),
+                Box::new(move || {
+                    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
+                    let paths = vec!["/a/x".to_string(), "/a/y".to_string()];
+                    got.lock().unwrap().push(probe_scheduled(&ctx, &probe, &paths, 4, &done, &cancel));
+                    Ok(ProbeInfo::default())
+                }) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>,
+            )
+        })
+        .collect();
+    let (done, cancel) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
+    let r = crate::io_sched::run_jobs(&ctx, jobs, 2, Result::is_ok, &cancel, &done).unwrap();
+    assert!(r.outcomes.iter().all(|o| matches!(o, JobOutcome::Done(Ok(_)))));
+    for res in got.lock().unwrap().iter() {
+        assert_eq!(res.len(), 2);
+        for (r, p) in res.iter().zip(["/a/x", "/a/y"]) {
+            assert_eq!(
+                r.as_ref().unwrap_err().message,
+                format!("{p}: several files can't be read from inside a file job (it would wait for itself)")
+            );
+        }
+    }
 }

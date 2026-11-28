@@ -1887,7 +1887,7 @@ pub fn import(s: &mut crate::Session, path: &Path, update_existing: bool) -> cra
 /// ([`crate::lightroom_job::LightroomJob::read_originals_later`]); `library.readOriginals` reads them afterwards.
 pub fn import_with(s: &mut crate::Session, path: &Path, update_existing: bool, read_originals_later: bool) -> crate::Result<Value> {
     let mut job = crate::lightroom_job::LightroomJob::new(s, path.to_path_buf(), update_existing)?.read_originals_later(read_originals_later);
-    let cancel = AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let prepared = job.prepare(&cancel)?;
     let completion = crate::lightroom_job::commit_prepared(s, prepared)?;
     if s.library.as_ref().is_some_and(|library| library.on_disk) {
@@ -5233,7 +5233,7 @@ pub(crate) mod tests {
 
         let mut job =
             crate::lightroom_job::LightroomJob::new(&mut session, fixture.path.clone(), false).expect("create synthetic Lightroom import job");
-        let result = job.prepare(&AtomicBool::new(false));
+        let result = job.prepare(&std::sync::Arc::new(AtomicBool::new(false)));
         let error = match result {
             Ok(_) => panic!("observed optional-source failure must abort preparation before staging"),
             Err(error) => error.to_string(),
@@ -5283,7 +5283,7 @@ pub(crate) mod tests {
 
         let mut job =
             crate::lightroom_job::LightroomJob::new(&mut session, fixture.path.clone(), false).expect("create synthetic Lightroom import job");
-        let result = job.prepare(&AtomicBool::new(false));
+        let result = job.prepare(&std::sync::Arc::new(AtomicBool::new(false)));
         let error = match result {
             Ok(_) => panic!("observed optional WAL read error must abort preparation before staging"),
             Err(error) => error.to_string(),
@@ -5463,7 +5463,7 @@ pub(crate) mod tests {
             Err("a known-missing original must not be probed".into())
         }));
         let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
-        let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+        let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(probes.load(Ordering::Relaxed), 0);
         let result = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap();
         assert_eq!(result.report["imported"], 1);
@@ -5493,7 +5493,7 @@ pub(crate) mod tests {
         }));
         for expected in [1, 0] {
             let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source.clone(), false).unwrap();
-            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
             let completion = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap();
             assert_eq!(completion.report["imported"], expected);
             assert_eq!(completion.report["missing"], json!([]));
@@ -6317,7 +6317,7 @@ pub(crate) mod tests {
                 s.set_develop(id, edit, "Personal edit").unwrap();
             }
             let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
-            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
             let report = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap().report;
             assert_eq!(report["imported"], 1, "the browsed photo joins the library (offline: {offline}): {report}");
             let photo = s.catalog.photo(id).unwrap();

@@ -14,7 +14,7 @@ use lcc_catalog::folders::{Mounts, VolumeKey, volume_key};
 
 use super::clock::{FakeClock, SEC};
 use super::run::{IoJob, JobOutcome};
-use super::shared::{COMPUTING_FACTOR, RECOVERY_EVERY, STALL_WITH_BYTES};
+use super::shared::{CANCEL_SILENCE, COMPUTING_FACTOR, RECOVERY_EVERY, STALL_WITH_BYTES};
 use super::tests::{H, Latch, R, bytes, job, ok_count, vnr_count, wait_until, wrote};
 
 /// A copy from `source` into `dest`.
@@ -708,6 +708,54 @@ fn cancel_skips_a_copys_dng_step_and_collects_it() {
     assert!(t.elapsed() < Duration::from_secs(2), "returned in {:?}", t.elapsed());
     assert!(matches!(r.outcomes.first(), Some(JobOutcome::Done(Ok(1)))), "skipped and collected: {:?}", r.outcomes);
     assert!(matches!(r.outcomes.get(1), Some(JobOutcome::Cancelled)), "{:?}", r.outcomes);
+}
+
+/// After cancel a copy isn't left behind as "outcome unknown" while it does legitimate work its
+/// bytes don't show on a volume (the clocks share one silence rule): flushing its file (well past
+/// cancel's 5 s), then reading its copy back on the destination, which the card doesn't see.
+#[test]
+fn cancel_waits_for_a_copys_flush_and_its_work_on_the_other_volume() {
+    let h = H::new();
+    let (hold, flushing, stop) = (Latch::new(), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let read_back = Arc::new(AtomicUsize::new(0));
+    let (l2, f2, s2, rb) = (hold.clone(), flushing.clone(), stop.clone(), read_back.clone());
+    let jobs = vec![
+        copy("/a/big.mov", "/b/out", move || {
+            bytes(1 << 20);
+            wrote(1 << 20);
+            {
+                let _flush = crate::memory::flushing();
+                f2.store(true, Ordering::SeqCst);
+                l2.wait();
+            }
+            while !s2.load(Ordering::SeqCst) {
+                if let Some(j) = crate::memory::current_job() {
+                    j.add(super::job::ByteKind::ReadBack, 1);
+                }
+                rb.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_micros(300));
+            }
+            Ok(1)
+        }),
+        job("/c/x", || Ok(2)),
+    ];
+    let call = h.start(jobs, 2);
+    wait_until(|| flushing.load(Ordering::SeqCst), "the flush");
+    call.cancel.store(true, Ordering::SeqCst);
+    call.settle(&h, 3);
+    h.advance(STALL_WITH_BYTES - SEC);
+    call.settle(&h, 3);
+    assert!(!call.finished(), "a flush isn't silence: cancel waits for it");
+    hold.release();
+    let n = read_back.load(Ordering::SeqCst);
+    wait_until(|| read_back.load(Ordering::SeqCst) > n + 3, "the read-back");
+    call.settle(&h, 3);
+    h.advance(CANCEL_SILENCE + SEC);
+    call.settle(&h, 3);
+    assert!(!call.finished(), "reading back on the destination isn't silence on the card");
+    stop.store(true, Ordering::SeqCst);
+    let r = call.join();
+    assert!(matches!(r.outcomes.first(), Some(JobOutcome::Done(Ok(1)))), "the copy finished: {:?}", r.outcomes);
 }
 
 /// A call with no jobs (an Add import's batch has no copies) returns at once: no mount read, no

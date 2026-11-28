@@ -4,6 +4,7 @@
   " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · unvollendete Kopien: {n} (Dateien können noch in ihren Zielordnern erscheinen, außerhalb der Bibliothek)",
   " · {n} not added to the library: {e}": " · {n} nicht zur Bibliothek hinzugefügt: {e}",
   " · {n} not imported: a drive stopped responding": " · {n} nicht importiert: ein Laufwerk antwortet nicht mehr",
+  " · {n} not imported: the app's file reader stopped; import them again": " · {n} nicht importiert: der Dateileser der App wurde beendet; bitte erneut importieren",
   " · {queued} waiting": " · {queued} wartend",
   "+ Create “{new}”": "+ „{new}“ erstellen",
   ", ": ", ",
