@@ -22,6 +22,7 @@ pub mod apple_photos;
 pub mod availability;
 mod background_merge;
 pub mod base64;
+pub(crate) mod bg_refresh;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
@@ -89,6 +90,7 @@ pub mod import;
 mod import_move;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instance;
+mod io_sched;
 pub mod legacy;
 pub mod lens_download;
 pub mod lens_profiles;

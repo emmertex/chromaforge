@@ -1,5 +1,10 @@
 {
   " ({n} could not be read)": " ({n} ei luettavissa)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · keskeneräiset kopiot: {n} (tiedosto voi vielä ilmestyä kansioon {folder} kirjaston ulkopuolelle)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · keskeneräiset kopiot: {n} (tiedostoja voi vielä ilmestyä kohdekansioihin kirjaston ulkopuolelle)",
+  " · {n} not added to the library: {e}": " · ei lisätty kirjastoon: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · ei tuotu: {n} (asema lakkasi vastaamasta)",
+  " · {n} not imported: the app's file reader stopped; import them again": " · ei tuotu: {n} (sovelluksen tiedostonlukija pysähtyi; tuo ne uudelleen)",
   "+ Create “{new}”": "+ Luo ”{new}”",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} hyväksytty, {pending} tarkistettavaa, {rejected} hylätty",

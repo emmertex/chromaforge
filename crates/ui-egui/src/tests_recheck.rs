@@ -219,10 +219,26 @@ fn reload_of_a_selection_runs_in_the_background() {
         .unwrap();
     let items = lcc_engine::cmd::reload::plan(&mut app.session, &json!({"ids": [id.0]})).unwrap();
     let probe = lcc_engine::cmd::reload::file_probe(&app.session);
-    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let results = lcc_engine::cmd::reload::probe(probe.as_ref(), &items, &cancelled, &|_| {});
-    assert!(lcc_engine::cmd::reload::apply(&mut app.session, items, results).unwrap().is_empty());
+    let applied = lcc_engine::cmd::reload::apply(&mut app.session, items, results).unwrap();
+    assert!(applied.reloaded.is_empty());
+    assert_eq!(applied.failed.len(), 1, "the file not reached is listed, left unchanged");
     assert!(app.session.catalog.photo(id).unwrap().preview_only.is_some());
+}
+
+/// A file Reload from Disk can't read (gone since) is said in the toast, not dropped silently.
+#[test]
+fn reload_says_which_files_could_not_be_read() {
+    let dir = Dir(std::env::temp_dir().join(format!("lc-ui-reload-gone-{}", std::process::id())));
+    let (mut app, id) = app_with_stale_photo(&dir.0);
+    let ctx = egui::Context::default();
+    let Some(lcc_catalog::Source::File { path }) = app.session.catalog.photo(id).map(|p| p.source.clone()) else { panic!("a file photo") };
+    std::fs::remove_file(&path).unwrap();
+    app.session.selection = lcc_engine::Selection { ids: vec![id], active: Some(id) };
+    app.run("photo.reload", json!({})).unwrap();
+    assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
+    assert!(app.ui.toast().is_some_and(|t| t.text.contains("1 could not be read")), "{:?}", app.ui.toasts);
 }
 
 /// With no photo selected the command is refused at once, as before (no task, no row).

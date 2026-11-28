@@ -1,5 +1,10 @@
 {
   " ({n} could not be read)": "（{n} 張無法讀取）",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · 未完成的複製：{n} 個（檔案仍可能出現在照片庫之外的 {folder} 中）",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · 未完成的複製：{n} 個（檔案仍可能出現在照片庫之外的目標檔案夾中）",
+  " · {n} not added to the library: {e}": " · {n} 個未加入照片庫：{e}",
+  " · {n} not imported: a drive stopped responding": " · {n} 個未匯入：某個磁碟機已停止回應",
+  " · {n} not imported: the app's file reader stopped; import them again": " · {n} 個未匯入：App 的檔案讀取程序已停止；請重新匯入",
   " · {queued} waiting": " · {queued} 張等待中",
   "+ Create “{new}”": "+ 建立「{new}」",
   ", ": "、",

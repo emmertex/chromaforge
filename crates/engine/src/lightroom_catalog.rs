@@ -1887,7 +1887,7 @@ pub fn import(s: &mut crate::Session, path: &Path, update_existing: bool) -> cra
 /// ([`crate::lightroom_job::LightroomJob::read_originals_later`]); `library.readOriginals` reads them afterwards.
 pub fn import_with(s: &mut crate::Session, path: &Path, update_existing: bool, read_originals_later: bool) -> crate::Result<Value> {
     let mut job = crate::lightroom_job::LightroomJob::new(s, path.to_path_buf(), update_existing)?.read_originals_later(read_originals_later);
-    let cancel = AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let prepared = job.prepare(&cancel)?;
     let completion = crate::lightroom_job::commit_prepared(s, prepared)?;
     if s.library.as_ref().is_some_and(|library| library.on_disk) {
@@ -1917,7 +1917,8 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
         .collect();
     let missing_sources: HashSet<String> =
         data.photos.iter().filter(|p| number(&p.image, "masterImage") == 0).filter(|p| !p.original_is_file()).map(|p| key(&p.path)).collect();
-    let files = crate::import::import(s, &paths, crate::import::ImportMode::Add)?;
+    let opts = crate::import::ImportOptions { mode: crate::import::ImportMode::Add, keep_sidecars: true, ..Default::default() };
+    let files = crate::import::import_with(s, &paths, &opts)?;
     let applied = match apply_prepared(
         s,
         data,
@@ -2006,7 +2007,8 @@ fn first_of_each_collection<'a>(data: &'a CatalogImport, warnings: &mut Vec<Stri
 /// Turn the read catalog into library records in one undo step and return the import report
 /// (added, missing, failed, warnings and skipped images).
 pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, context: ApplyPrepared<'_>) -> crate::Result<AppliedImport> {
-    let ApplyPrepared { update_existing, files, index, archive_path, missing_sources, undo0 } = context;
+    let ApplyPrepared { update_existing, mut files, index, archive_path, missing_sources, undo0 } = context;
+    let sidecars_read = std::mem::take(&mut files.sidecars_read);
     // nothing but a file type the app reads becomes a record, whichever route got here (#2135)
     refuse_non_media(&mut data);
     validate(&data).map_err(error)?;
@@ -2604,8 +2606,20 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
     collections_span.finish(lcc_diag::Outcome::Ok);
+    // The file step stamped each photo as its file and sidecar gave it; the catalog's values are over that now.
+    // Compare them: in step where they agree, a conflict where the sidecar says something else (Lightroom's "metadata
+    // was changed externally"), never "changed in the catalog" for every photo (issue #1312).
+    let disagree = s.stamp_against_sidecars(sidecars_read);
+    if disagree > 0 {
+        let (whose, say, marked) = if disagree == 1 { ("photo's XMP sidecar", "says", "it is") } else { ("photos' XMP sidecars", "say", "they are") };
+        warnings.push(format!(
+            "{disagree} {whose} {say} something other than the catalog (changed by another app?): the catalog's values were \
+             imported and {marked} marked with a metadata conflict. Read Metadata from File takes the sidecar's values, Save \
+             Metadata to File writes the catalog's"
+        ));
+    }
     Ok(AppliedImport {
-        report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
+        report: json!({"source":data.source,"sidecarsDisagree":disagree,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
     })
 }
@@ -5310,7 +5324,7 @@ pub(crate) mod tests {
 
         let mut job =
             crate::lightroom_job::LightroomJob::new(&mut session, fixture.path.clone(), false).expect("create synthetic Lightroom import job");
-        let result = job.prepare(&AtomicBool::new(false));
+        let result = job.prepare(&std::sync::Arc::new(AtomicBool::new(false)));
         let error = match result {
             Ok(_) => panic!("observed optional-source failure must abort preparation before staging"),
             Err(error) => error.to_string(),
@@ -5360,7 +5374,7 @@ pub(crate) mod tests {
 
         let mut job =
             crate::lightroom_job::LightroomJob::new(&mut session, fixture.path.clone(), false).expect("create synthetic Lightroom import job");
-        let result = job.prepare(&AtomicBool::new(false));
+        let result = job.prepare(&std::sync::Arc::new(AtomicBool::new(false)));
         let error = match result {
             Ok(_) => panic!("observed optional WAL read error must abort preparation before staging"),
             Err(error) => error.to_string(),
@@ -5540,7 +5554,7 @@ pub(crate) mod tests {
             Err("a known-missing original must not be probed".into())
         }));
         let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
-        let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+        let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(probes.load(Ordering::Relaxed), 0);
         let result = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap();
         assert_eq!(result.report["imported"], 1);
@@ -5570,7 +5584,7 @@ pub(crate) mod tests {
         }));
         for expected in [1, 0] {
             let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source.clone(), false).unwrap();
-            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
             let completion = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap();
             assert_eq!(completion.report["imported"], expected);
             assert_eq!(completion.report["missing"], json!([]));
@@ -6213,6 +6227,89 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Issue #1312: after the import each photo's metadata status says whether its sidecar agrees with the catalog.
+    /// One that agrees (keywords in another order too) is in step; one with an extra keyword or another copyright is a
+    /// conflict (never read automatically: the catalog's values stay), named in the warnings; a photo without a
+    /// sidecar has no status. None reads "changed in the catalog", as every photo did before.
+    #[test]
+    fn imported_photos_start_in_step_or_in_conflict_with_their_sidecars() {
+        use lcc_catalog::XmpStatus;
+        let dir = crate::tests_xmp::temp_dir("lightroom-sidecar-status");
+        let packet = |keywords: &[&str], rights: &str| {
+            let items: String = keywords.iter().map(|k| format!("<rdf:li>{k}</rdf:li>")).collect();
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmp:Rating="3"><dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">{rights}</rdf:li></rdf:Alt></dc:rights></rdf:Description></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        let catalog_packet = packet(&["PCA", "Race"], "Catalog rights");
+        let cases: [(&str, Option<String>, XmpStatus); 5] = [
+            ("same", Some(catalog_packet.clone()), XmpStatus::InSync),
+            ("reordered", Some(packet(&["Race", "PCA"], "Catalog rights")), XmpStatus::InSync),
+            ("extra", Some(packet(&["PCA", "Race", "Tagged elsewhere"], "Catalog rights")), XmpStatus::Conflict),
+            ("rights", Some(packet(&["PCA", "Race"], "Sidecar rights")), XmpStatus::Conflict),
+            ("bare", None, XmpStatus::Unknown),
+        ];
+        let mut photos = Vec::new();
+        for (i, (name, sidecar, _)) in cases.iter().enumerate() {
+            let raw = dir.join(format!("{name}.dng"));
+            // (different pixels: identical files would be one photo and its duplicates)
+            let pixels: Vec<u16> = (0..32 * 24).map(|p| 256 + (p * 7 + i * 101) as u16).collect();
+            std::fs::write(&raw, crate::tests_xmp::synthetic_dng_of(32, 24, "RGGB", pixels, None, Default::default())).unwrap();
+            if let Some(xmp) = sidecar {
+                std::fs::write(dir.join(format!("{name}.xmp")), xmp).unwrap();
+            }
+            let id = i as i64 + 1;
+            photos.push(CatalogPhoto {
+                source_id: id,
+                uuid: format!("photo-{id}"),
+                path: raw.to_string_lossy().into(),
+                image: row(json!({"id_local":id,"fileFormat":"DNG","fileWidth":32,"fileHeight":24,"rating":3})),
+                settings: String::new(),
+                xmp: catalog_packet.clone(),
+                keywords: vec!["PCA".into(), "Race".into()],
+                history: Vec::new(),
+                snapshots: Vec::new(),
+                caption: String::new(),
+                original: Original::Local,
+                as_shot_white: None,
+                capture_one: None,
+            });
+        }
+        let data = CatalogImport {
+            source: "test.lrcat".into(),
+            photos,
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut s = crate::Session::new().with_fs();
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["imported"], 5, "{r}");
+        for (i, (name, _, want)) in cases.iter().enumerate() {
+            let id = PhotoId(r["mapping"][(i + 1).to_string()].as_u64().unwrap());
+            let p = s.catalog.photo(id).unwrap();
+            // the catalog's values were imported, whatever the sidecar says
+            assert_eq!(p.meta.copyright, "Catalog rights", "{name}");
+            assert!(!p.meta.keywords.iter().any(|k| k == "Tagged elsewhere"), "{name}");
+            assert_eq!(s.xmp_status(id), *want, "{name}");
+        }
+        assert_eq!(r["sidecarsDisagree"], 2, "{r}");
+        assert!(r["warnings"].to_string().contains("2 photos' XMP sidecars say something other than the catalog"), "{r}");
+        // nothing reads a conflict automatically; Read Metadata from File settles it with the sidecar's values
+        let extra = PhotoId(r["mapping"]["3"].as_u64().unwrap());
+        let auto = s.execute("photo.autoReadMetadata", &json!({"ids": [extra.0]})).unwrap();
+        assert_eq!(auto["conflicts"], json!([extra.0]), "{auto}");
+        assert!(!s.catalog.photo(extra).unwrap().meta.keywords.iter().any(|k| k == "Tagged elsewhere"));
+        s.selection.ids = vec![extra];
+        s.execute("photo.readMetadataFromFile", &json!({"ids": [extra.0]})).unwrap();
+        assert!(s.catalog.photo(extra).unwrap().meta.keywords.iter().any(|k| k == "Tagged elsewhere"));
+        assert_eq!(s.xmp_status(extra), XmpStatus::InSync);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A catalog row whose develop text can't be read leaves a new photo with what its file's XMP and
     /// the default import preset gave it, not the camera's defaults (and shows that both reach it).
     #[test]
@@ -6311,7 +6408,7 @@ pub(crate) mod tests {
                 s.set_develop(id, edit, "Personal edit").unwrap();
             }
             let mut job = crate::lightroom_job::LightroomJob::new(&mut s, source, false).unwrap();
-            let prepared = job.prepare(&AtomicBool::new(false)).unwrap();
+            let prepared = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))).unwrap();
             let report = crate::lightroom_job::commit_prepared(&mut s, prepared).unwrap().report;
             assert_eq!(report["imported"], 1, "the browsed photo joins the library (offline: {offline}): {report}");
             let photo = s.catalog.photo(id).unwrap();

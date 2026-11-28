@@ -236,7 +236,55 @@ fn pairs(photos: &[&PhotoSamples], cap: usize) -> Vec<Pair> {
 }
 
 fn decodes(model: &Model, look: &LookModel, photos: &[&PhotoSamples]) -> Vec<Option<PhotoDecode>> {
-    photos.iter().map(|p| neutral(p).map(|n| model.photo(look, baseline(p), n))).collect()
+    photos.iter().map(|p| neutral(p).map(|n| model.photo(look, baseline(p) + raw_baseline_of(model, p), n))).collect()
+}
+
+/// The model's raw baseline where `p` is a raw without colour tags of its own (no `BaselineExposure` either), as
+/// `Dcp::apply` adds it; 0 for a file with its own tags.
+fn raw_baseline_of(model: &Model, p: &PhotoSamples) -> f64 {
+    if p.dng.is_none() && model.raw_baseline.is_finite() { model.raw_baseline } else { 0.0 }
+}
+
+/// Fewest photos of each kind (converted DNGs, raws without colour tags) [`fit_raw_baseline`] estimates from.
+const RAW_BASELINE_PHOTOS: usize = 3;
+/// The raw baseline's search range, in EV either way.
+const RAW_BASELINE_RANGE: f64 = 1.5;
+
+/// Issue #1485: the EV the editor adds to a raw without a `BaselineExposure` of its own (a CR2), which its converter
+/// writes into a DNG of the same camera (the Adobe converter's per-model baseline). Only a set with both kinds can
+/// tell it apart from the tone curve: the tone fitted on the DNGs alone, the raw baseline is the one that brings the
+/// raws' pairs closest (median ΔE00) through that tone. `None` with too few of either kind.
+fn fit_raw_baseline(model: &Model, photos: &[&PhotoSamples], pairs: &[Pair]) -> Result<Option<f64>> {
+    let own = |i: usize| photos.get(i).is_some_and(|p| p.dng.is_some());
+    let dngs = (0..photos.len()).filter(|i| own(*i)).count();
+    if dngs < RAW_BASELINE_PHOTOS || photos.len().saturating_sub(dngs) < RAW_BASELINE_PHOTOS {
+        return Ok(None);
+    }
+    let (dng_pairs, raw_pairs): (Vec<Pair>, Vec<Pair>) = pairs.iter().partition(|s| own(s.photo));
+    if dng_pairs.len() < 50 || raw_pairs.len() < 50 {
+        return Ok(None);
+    }
+    let no_look = LookModel::default();
+    // DNGs too few or too even in brightness for a tone of their own: no estimate, the fit goes on without one
+    let Ok(lut) = fit_tone(&tone_pairs(model, &no_look, photos, &dng_pairs)).and_then(|t| lut_for(&t)) else { return Ok(None) };
+    let cost = |b: f64| {
+        let m = Model { raw_baseline: b, ..model.clone() };
+        let mut e = errors(&m, &no_look, &lut, photos, &raw_pairs);
+        e.retain(|v| v.is_finite());
+        e.sort_by(f64::total_cmp);
+        e.get(e.len() / 2).copied().unwrap_or(f64::INFINITY)
+    };
+    let search = |centre: f64, half: f64, step: f64| -> f64 {
+        let n = (half / step).round() as i32;
+        (-n..=n)
+            .map(|k| (centre + f64::from(k) * step).clamp(-RAW_BASELINE_RANGE, RAW_BASELINE_RANGE))
+            .map(|b| (b, cost(b)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(centre, |(b, _)| b)
+    };
+    let coarse = search(0.0, RAW_BASELINE_RANGE, 0.05);
+    let fine = search(coarse, 0.05, 0.01);
+    Ok(Some((fine * 100.0).round() / 100.0))
 }
 
 fn luminance(scene: [f64; 3]) -> f64 {
@@ -523,7 +571,7 @@ pub fn fit(photos: &[PhotoSamples], opts: &FitOptions) -> Result<Calibration> {
     // 1. white points
     let prior = prior(&make, &model_name, train.iter().find_map(|p| p.dng.as_ref()));
     let (cm, white_points) = fit_white(&train, &prior.cm);
-    let mut model = Model { cm, fm: Some(prior.fm_target), hsm: None };
+    let mut model = Model { cm, fm: Some(prior.fm_target), hsm: None, raw_baseline: 0.0 };
 
     // 2–3. tone and forward matrices, alternated once
     let base_pairs = pairs(&base_train, LM_SAMPLES);
@@ -534,6 +582,15 @@ pub fn fit(photos: &[PhotoSamples], opts: &FitOptions) -> Result<Calibration> {
     let mut tone = fit_tone(&tone_pairs(&model, &no_look, &base_train, &base_pairs))?;
     let mut lut = lut_for(&tone)?;
     for _ in 0..2 {
+        let fm = fit_fm(&model, model.fm.unwrap_or(prior.fm_target), prior.fm_target, &base_train, &base_pairs, &lut);
+        model.fm = Some(fm);
+        tone = fit_tone(&tone_pairs(&model, &no_look, &base_train, &base_pairs))?;
+        lut = lut_for(&tone)?;
+    }
+    // a set of converted DNGs and raws: the raws' baseline, then the tone and matrices again with it (issue #1485)
+    let raw_baseline = fit_raw_baseline(&model, &base_train, &base_pairs)?;
+    if let Some(b) = raw_baseline {
+        model.raw_baseline = b;
         let fm = fit_fm(&model, model.fm.unwrap_or(prior.fm_target), prior.fm_target, &base_train, &base_pairs, &lut);
         model.fm = Some(fm);
         tone = fit_tone(&tone_pairs(&model, &no_look, &base_train, &base_pairs))?;
@@ -582,7 +639,7 @@ pub fn fit(photos: &[PhotoSamples], opts: &FitOptions) -> Result<Calibration> {
 
     // 7. evidence and gates
     let candidate = assemble(&who, &model, &looks, prior_fm, Evidence::default());
-    let before_model = Model { cm: prior.cm, fm: prior.fm, hsm: None };
+    let before_model = Model { cm: prior.cm, fm: prior.fm, hsm: None, raw_baseline: 0.0 };
     let before_lut = pipe::Lut::build(None)?;
     let mut rows = Vec::new();
     for l in &looks {
@@ -735,6 +792,7 @@ fn assemble(who: &Who, model: &Model, looks: &[FittedLook], prior_fm: [Mat3; 2],
             color_matrix: model.cm,
             forward_matrix: model.fm.unwrap_or(prior_fm),
             hue_sat_map: model.hsm.clone(),
+            raw_baseline_exposure: (model.raw_baseline != 0.0).then_some(model.raw_baseline),
         },
         looks: looks
             .iter()

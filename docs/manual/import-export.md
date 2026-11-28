@@ -11,8 +11,29 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
   duplicate and unverified files keep their sources.
 - **Organise** copies by date (`YYYY/YYYY-MM-DD`), month, flat, or a folder template such as `{date:%Y}/{date:%Y%m%d}`.
 - **Rename** with tokens (`{name}`, `{seq:4}`, `{date:%Y%m%d}`, `{camera}`, `{lens}` …; `photo.renameTokens` explains
-  each), optionally convert raws to DNG while copying.
+  each), optionally convert raws to DNG while copying. A raw Copy as DNG couldn't convert (Cancel while it waited,
+  memory held by a drive that stopped responding, a failed conversion) is imported as its raw copy and listed by
+  reason in File → More Imports → Import Warnings…; Convert Photo to DNG… converts it later.
 - Apply a develop preset, a metadata preset, keywords, and add the photos to a collection.
+- Files on several drives, cards or shares are read side by side (per drive, never more readers than before on any one
+  drive). A drive that stops answering for about 30 s (longer after it was idle or the computer woke) has its files
+  reported as "volume not responding" while the others are read; Cancel returns even while a drive hangs; a file that
+  crashes the reader fails alone. Work reading the same drive at the same time (the review beside Reading originals,
+  say) shares that drive's readers and takes turns, instead of each adding its own.
+- With Copy or Move, several cards or drives are copied into the destination side by side; names, rename sequence
+  numbers, duplicates (a backup card's copy of a file already copied) and the order photos join the library stay
+  what they were, and each card is read only a little ahead of its copies.
+- During Copy or Move, a card or destination drive that stops answering stops only its own copies: those not yet
+  started fail "volume not responding", one under way is reported "outcome unknown" (it may still finish, leaving a
+  file in the destination folder that the library doesn't list; the original is always kept). The message at the end
+  counts these apart from unreadable files ("not imported: a drive stopped responding"; "copies left unfinished",
+  with the folder), and a batch the library couldn't add (a failed save) as "not added", with the reason;
+  `library.import` lists such files in `interrupted` (`why`: `volumeNotResponding` or `outcomeUnknown`; files the
+  app's file reader never read because it stopped on an internal error: `schedulerStopped`, counted as "not
+  imported: the app's file reader stopped; import them again"). Cancel
+  returns even while a drive hangs; a raw waiting for Copy as DNG when you cancel is kept as its raw copy; a copy
+  still being written to disk, read back or converted to DNG when you cancel is finished first instead of left
+  unfinished (on a slow drive Cancel can then take up to several minutes).
 - Duplicates are detected and reported; a file in Recently Deleted can be skipped, restored with its edits, or
   imported fresh. Library → Find Duplicates… later finds copies already in the library ([duplicates.md](../duplicates.md)).
 - Plug-ins can join the import ([plugins.md](../plugins.md)): a before-import hook can replace a file as it is

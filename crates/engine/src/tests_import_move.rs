@@ -187,6 +187,76 @@ fn copies_are_written_in_large_chunks() {
     }
 }
 
+/// A job state for the thread, on a fake clock.
+fn io_job() -> std::sync::Arc<crate::io_sched::JobState> {
+    let clock: std::sync::Arc<dyn crate::io_sched::clock::Clock> = std::sync::Arc::new(crate::io_sched::clock::FakeClock::default());
+    let key = lcc_catalog::folders::volume_key("/a", &lcc_catalog::folders::Mounts::none());
+    std::sync::Arc::new(crate::io_sched::JobState::new(1, key, clock, std::sync::Weak::new()))
+}
+
+/// A reader and a writer that note the side the thread's job says it is on at each call.
+struct Noting<'a, T> {
+    inner: T,
+    job: &'a crate::io_sched::JobState,
+    seen: &'a std::sync::Mutex<Vec<Option<crate::io_sched::job::Side>>>,
+}
+
+impl<T: std::io::Read> std::io::Read for Noting<'_, T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.seen.lock().unwrap().push(self.job.on());
+        self.inner.read(buf)
+    }
+}
+
+impl<T: std::io::Write> std::io::Write for Noting<'_, T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.seen.lock().unwrap().push(self.job.on());
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A copy tells its I/O job, before every call, which volume the call is on (each read on the
+/// source, each write on the destination: a call that hangs then names its volume to the
+/// scheduler), and counts each byte as what it was: read, written, read back. Verified against
+/// the probe's hash, a copy reads the source once and reads the copy back once; verified byte for
+/// byte, it reads the source twice.
+#[test]
+fn a_copy_tells_its_job_which_volume_each_call_is_on() {
+    use crate::import_move::{COPY_CHUNK, copy_in_chunks, copy_verified};
+    use crate::io_sched::job::Side;
+    let job = io_job();
+    let len = 2 * COPY_CHUNK + 5;
+    let src: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
+    let (reads, writes) = (std::sync::Mutex::new(Vec::new()), std::sync::Mutex::new(Vec::new()));
+    let n = crate::memory::with_job(Some(job.clone()), || {
+        let mut from = Noting { inner: Trickle(&src), job: &job, seen: &reads };
+        let mut to = Noting { inner: CountedWrites::default(), job: &job, seen: &writes };
+        copy_in_chunks(&mut from, &mut to).unwrap()
+    });
+    assert_eq!(n, len as u64);
+    let (reads, writes) = (reads.into_inner().unwrap(), writes.into_inner().unwrap());
+    assert!(!reads.is_empty() && reads.iter().all(|s| *s == Some(Side::Source)), "{reads:?}");
+    assert!(!writes.is_empty() && writes.iter().all(|s| *s == Some(Side::Dest)), "{writes:?}");
+    let m = job.moved();
+    assert_eq!((m.read, m.written, m.read_back), (len as u64, len as u64, 0));
+
+    let base = temp_dir("sides");
+    let path = base.join("a.bin");
+    std::fs::write(&path, &src).unwrap();
+    let hash = lcc_preview::hash_bytes(&src);
+    for (expect, reads) in [(Some(hash), 1u64), (None, 2)] {
+        let job = io_job();
+        let dst = base.join(format!("copy-{reads}.bin"));
+        crate::memory::with_job(Some(job.clone()), || copy_verified(&path, &dst, expect)).unwrap();
+        let m = job.moved();
+        assert_eq!((m.read, m.written, m.read_back), (reads * len as u64, len as u64, len as u64), "expect {:?}", expect.is_some());
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 /// A copy that fails while writing, or comes out different, leaves nothing behind and keeps the
 /// source; nothing is catalogued.
 #[test]
