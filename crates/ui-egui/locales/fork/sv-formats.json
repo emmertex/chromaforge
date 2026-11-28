@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": " ({n} kunde inte läsas)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · ofullbordade kopior: {n} (en fil kan fortfarande dyka upp i {folder}, utanför biblioteket)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · ofullbordade kopior: {n} (filer kan fortfarande dyka upp i sina målmappar, utanför biblioteket)",
+  " · {n} not added to the library: {e}": " · inte tillagda i biblioteket: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · inte importerade: {n} (en enhet slutade svara)",
   "+ Create “{new}”": "+ Skapa ”{new}”",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} accepterade, {pending} att granska, {rejected} refuserade",

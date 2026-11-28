@@ -418,7 +418,17 @@ pub struct ImportTask {
     pub duplicates: usize,
     /// The library photos the skipped duplicates match (shown when nothing new was added).
     existing: Vec<u64>,
+    /// Files that couldn't be read, copied or moved (their own failure).
     pub failed: usize,
+    /// Files not imported because a drive they need stopped responding.
+    pub not_responding: usize,
+    /// Copies or moves left unfinished (a drive stopped responding, or Cancel, while they were
+    /// under way): a file may still appear in their destination folders, `unfinished_in`.
+    pub unfinished: usize,
+    unfinished_in: Vec<String>,
+    /// Files of batches the library couldn't add (a commit or save error), and the first error.
+    pub not_added: usize,
+    not_added_why: Option<String>,
     /// Move: originals moved, and sources left in place (reported by the engine with a reason).
     pub moved: usize,
     pub kept: usize,
@@ -1298,7 +1308,7 @@ fn commit_batch(app: &mut LccApp, task: &mut ImportTask, prepared: lcc_engine::i
             task.restored += len("restored");
             task.duplicates += len("duplicates");
             task.existing.extend(v.field("duplicates").as_array().into_iter().flatten().filter_map(|d| d.field("existing").as_u64()));
-            task.failed += len("failed");
+            tally_failures(task, &v);
             task.moved += len("moved");
             task.kept += len("kept");
             task.warnings
@@ -1311,11 +1321,64 @@ fn commit_batch(app: &mut LccApp, task: &mut ImportTask, prepared: lcc_engine::i
                 task.first = ["imported", "restored"].iter().find_map(|k| v.field(k).as_array().and_then(|a| a.first()).and_then(Value::as_u64));
             }
         }
-        Err(e) => {
-            log::warn!("import: {e}");
-            task.failed += n;
+        Err(e) => not_added(task, n, &e.to_string()),
+    }
+}
+
+/// A batch of `n` files the library couldn't add (a commit or save error `e`): the files
+/// themselves are fine, so they aren't counted as unreadable; the toast says why.
+fn not_added(task: &mut ImportTask, n: usize, e: &str) {
+    log::warn!("import: {n} files not added: {e}");
+    task.not_added += n;
+    task.not_added_why.get_or_insert_with(|| e.to_string());
+}
+
+/// Count a committed batch's failures (`v`, its report): `failed` lists every failure,
+/// `interrupted` says which were a drive's that stopped responding or a copy left unfinished
+/// (with its folder), not the file's own.
+fn tally_failures(task: &mut ImportTask, v: &Value) {
+    let interrupted = v.field("interrupted").as_array().map_or(&[][..], Vec::as_slice);
+    task.failed += v.field("failed").as_array().map_or(0, Vec::len).saturating_sub(interrupted.len());
+    for i in interrupted {
+        if *i.field("why") == "outcomeUnknown" {
+            task.unfinished += 1;
+            if let Some(folder) = i.field("folder").as_str()
+                && !task.unfinished_in.iter().any(|f| f == folder)
+            {
+                task.unfinished_in.push(folder.to_string());
+            }
+        } else {
+            task.not_responding += 1;
         }
     }
+}
+
+/// What an import couldn't do that isn't a file's own failure, as toast parts (" · …"): files a
+/// drive that stopped responding kept out, copies left unfinished (where a stray file may
+/// appear), batches the library couldn't add (and why).
+fn interruptions(task: &ImportTask) -> String {
+    let mut msg = String::new();
+    if task.not_responding > 0 {
+        msg.push_str(&crate::i18n::tr_format!(" · {n} not imported: a drive stopped responding", n = task.not_responding));
+    }
+    if task.unfinished > 0 {
+        msg.push_str(&match task.unfinished_in.as_slice() {
+            [folder] => crate::i18n::tr_format!(
+                " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)",
+                n = task.unfinished,
+                folder = folder
+            ),
+            _ => crate::i18n::tr_format!(
+                " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)",
+                n = task.unfinished
+            ),
+        });
+    }
+    if task.not_added > 0 {
+        let e = task.not_added_why.as_deref().unwrap_or_default();
+        msg.push_str(&crate::i18n::tr_format!(" · {n} not added to the library: {e}", n = task.not_added, e = e));
+    }
+    msg
 }
 
 /// The import is done (or cancelled): one undo step, show and select the first photo (unless the
@@ -1359,12 +1422,20 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
         }
         return;
     }
+    let interrupted = interruptions(&task);
     if task.browse {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
             app.toast_error(ctx, format!("{line} · {}", crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")));
-        } else if task.failed > 0 {
-            app.toast(ctx, crate::i18n::tr_format!("{} photo{} not readable", task.failed, if task.failed == 1 { "" } else { "s" }));
+        } else if task.failed > 0 || !interrupted.is_empty() {
+            let mut msg = if task.failed > 0 {
+                crate::i18n::tr_format!("{} photo{} not readable", task.failed, if task.failed == 1 { "" } else { "s" })
+            } else {
+                String::new()
+            };
+            msg.push_str(&interrupted);
+            // (the parts start " · ", or "・" in Japanese: none before the first)
+            app.toast(ctx, msg.trim_start_matches([' ', '·', '・']).to_string());
         }
         return;
     }
@@ -1384,6 +1455,7 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.imported == 0
         && task.restored == 0
         && task.failed == 0
+        && interrupted.is_empty()
         && task.warnings.is_empty()
         && !task.cancelled
         && show_existing(app, ctx, &task.existing)
@@ -1416,6 +1488,7 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.failed > 0 {
         msg.push_str(&crate::i18n::tr_format!(" · {} not readable", task.failed));
     }
+    msg.push_str(&interrupted);
     if !task.warnings.is_empty() {
         // the details open in their own window; the toast stays one line
         let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, true);
@@ -2596,6 +2669,43 @@ mod tests {
         assert_eq!(grid_height(700.0, -50.0, 142.0), 700.0);
         assert_eq!(grid_height(700.0, f32::NAN, 142.0), 700.0);
         assert_eq!(grid_height(f32::INFINITY, 300.0, 142.0), DIALOG_SIZE[1] - DEFAULT_BELOW_GRID);
+    }
+
+    /// A batch's failures are told apart: a file's own failure is "not readable"; one a drive that
+    /// stopped responding kept out, and a copy left unfinished (with the folder a stray file may
+    /// appear in), are said as such; a batch the library couldn't add is "not added" with why,
+    /// never "not readable". Nothing of the kind: no part at all.
+    #[test]
+    fn a_batchs_failures_are_told_apart() {
+        let mut task = ImportTask::default();
+        assert_eq!(interruptions(&task), "");
+        tally_failures(
+            &mut task,
+            &json!({
+                "failed": [["/card/a.nef", "volume not responding (/card)"], ["/card/b.nef", "outcome unknown: …"], ["/card/c.nef", "not a photo"]],
+                "interrupted": [
+                    {"path": "/card/a.nef", "why": "volumeNotResponding", "volume": "/card"},
+                    {"path": "/card/b.nef", "why": "outcomeUnknown", "volume": "/lib", "folder": "/lib/2026"},
+                ],
+            }),
+        );
+        assert_eq!((task.failed, task.not_responding, task.unfinished), (1, 1, 1));
+        let msg = interruptions(&task);
+        assert!(msg.contains("1 not imported: a drive stopped responding"), "{msg}");
+        assert!(msg.contains("a file may still appear in /lib/2026"), "{msg}");
+        // a second folder: the message no longer names one
+        tally_failures(
+            &mut task,
+            &json!({"failed": [["/card/d.nef", "…"]], "interrupted": [{"path": "/card/d.nef", "why": "outcomeUnknown", "folder": "/lib/2027"}]}),
+        );
+        assert!(interruptions(&task).contains("copies left unfinished: 2 (files may still appear in their destination folders"));
+        // a report with no `interrupted` (none): every failure is the file's own
+        tally_failures(&mut task, &json!({"failed": [["/card/e.nef", "bad"]]}));
+        assert_eq!(task.failed, 2);
+        not_added(&mut task, 64, "disk full");
+        not_added(&mut task, 3, "another error");
+        assert_eq!((task.failed, task.not_added), (2, 67), "not counted as unreadable");
+        assert!(interruptions(&task).ends_with(" · 67 not added to the library: disk full"), "{}", interruptions(&task));
     }
 
     /// Six candidates, all checked; candidate 3 is a duplicate (unchecked, not importable).

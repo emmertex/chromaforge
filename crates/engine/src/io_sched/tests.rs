@@ -131,13 +131,21 @@ impl Latch {
 }
 
 pub(super) fn job(path: &str, f: impl FnOnce() -> R + Send + 'static) -> IoJob<R> {
-    IoJob { source: path.to_string(), run: Box::new(f) }
+    IoJob::read(path.to_string(), Box::new(f))
 }
 
-/// Count `n` bytes for the thread's job (as the capped counting reader does).
+/// Count `n` bytes for the thread's job (as the capped counting reader does): read from its source.
 pub(super) fn bytes(n: usize) {
     if let Some(j) = crate::memory::current_job() {
         j.add_bytes(n);
+    }
+}
+
+/// Count `n` bytes written to the thread's job's destination (as a copy's counting writer does):
+/// its current call is then on the destination.
+pub(super) fn wrote(n: usize) {
+    if let Some(j) = crate::memory::current_job() {
+        j.add(super::job::ByteKind::Written, n);
     }
 }
 
@@ -451,7 +459,7 @@ fn a_hung_volume_is_declared_not_responding() {
     assert_eq!(ok_count(&r), 4);
     for o in r.outcomes.iter().take(6) {
         match o {
-            JobOutcome::VolumeNotResponding { volume } => assert_eq!(volume.id(), "/a"),
+            JobOutcome::VolumeNotResponding { volume, .. } => assert_eq!(volume.id(), "/a"),
             other => panic!("{other:?}"),
         }
     }
@@ -1368,9 +1376,14 @@ fn an_unreadable_mount_list_keeps_the_last_one() {
 
 // ---------------------------------------------------------------- the probe_all wrapper
 
+/// A probe outcome's message, if it failed.
+fn msg(r: &Result<crate::media::ProbeInfo, crate::import::ProbeError>) -> Option<&str> {
+    r.as_ref().err().map(|e| e.message.as_str())
+}
+
 /// The wrapper gives today's strings: "not probed" for files cancel left unreached where today's
 /// loop ran threads, "cancelled" where it ran serially (one CPU); typed outcomes become their
-/// messages.
+/// messages, and a volume that stopped responding is also named as such (only then).
 #[test]
 fn the_probe_wrapper_keeps_todays_strings() {
     let h = H::new();
@@ -1384,13 +1397,14 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let (done, cancel) = (AtomicUsize::new(0), AtomicBool::new(false));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
     assert!(r.first().is_some_and(|r| r.is_ok()));
-    assert!(r.get(1).is_some_and(|r| r.as_ref().is_err_and(|e| e.starts_with("/a/boom: ") && e.contains("bad file"))));
+    assert!(r.get(1).and_then(msg).is_some_and(|e| e.starts_with("/a/boom: ") && e.contains("bad file")));
+    assert!(r.iter().all(|r| r.as_ref().err().is_none_or(|e| e.not_responding.is_none())), "a panic isn't a volume's");
     assert_eq!(done.load(Ordering::SeqCst), 3);
     let cancel = AtomicBool::new(true);
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 4, &done, &cancel);
-    assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("not probed")));
+    assert!(r.iter().all(|r| msg(r) == Some("not probed")));
     let r = crate::import::probe_scheduled(&h.ctx, &probe, &paths, 1, &done, &cancel);
-    assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("cancelled")));
+    assert!(r.iter().all(|r| msg(r) == Some("cancelled") && r.as_ref().err().is_some_and(|e| e.not_responding.is_none())));
     // one file, cancelled before it starts: not probed, as today's single-file path
     let ran = Arc::new(AtomicBool::new(false));
     let ran2 = ran.clone();
@@ -1399,7 +1413,7 @@ fn the_probe_wrapper_keeps_todays_strings() {
         Ok(crate::media::ProbeInfo::default())
     });
     let r = crate::import::probe_scheduled(&h.ctx, &watched, &paths[..1], crate::import::workers(1), &done, &cancel);
-    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(String::as_str), Some("cancelled"));
+    assert_eq!(r.first().and_then(msg), Some("cancelled"));
     assert!(!ran.load(Ordering::SeqCst));
     // a stalled volume's files, within the minute after its recovery job answered without data
     let _hung = stall_volume(&h, "/c");
@@ -1407,10 +1421,12 @@ fn the_probe_wrapper_keeps_todays_strings() {
     let bytes_less: crate::media::FileProbe = Arc::new(|_| Err("gone".into()));
     let cancel = AtomicBool::new(false);
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &["/c/0".to_string()], 4, &done, &cancel);
-    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(String::as_str), Some("gone"), "the recovery job's own result");
+    assert_eq!(r.first().and_then(msg), Some("gone"), "the recovery job's own result");
+    assert_eq!(r.first().and_then(|r| r.as_ref().err()).map(|e| e.not_responding.is_none()), Some(true), "its own failure, not the volume's");
     let paths: Vec<String> = ["/c/1", "/c/2"].iter().map(|s| s.to_string()).collect();
     let r = crate::import::probe_scheduled(&h.ctx, &bytes_less, &paths, 4, &done, &cancel);
-    assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).map(String::as_str), Some("/c/2: volume not responding (/c)"));
+    assert_eq!(r.get(1).and_then(msg), Some("/c/2: volume not responding (/c)"));
+    assert_eq!(r.get(1).and_then(|r| r.as_ref().err()).and_then(|e| e.not_responding.as_deref()), Some("/c"), "typed, not read from the message");
 }
 
 /// Threads that checked a cached probe, and a latch the check waits on for `/a` (a hung share).
@@ -1469,7 +1485,7 @@ fn cached_probes_are_checked_off_the_calling_thread() {
     h.advance(CANCEL_SILENCE);
     wait_until(|| call.is_finished(), "cancel to return while the checks hang");
     let r = call.join().unwrap();
-    assert!(r.iter().all(|r| r.as_ref().err().map(String::as_str) == Some("cancelled")), "{r:?}");
+    assert!(r.iter().all(|r| msg(r) == Some("cancelled")), "{r:?}");
     HANG_A.get_or_init(Latch::new).release();
 }
 
@@ -1491,7 +1507,7 @@ fn the_desktop_probe_counts_its_bytes() {
         .iter()
         .map(|p| {
             let (probe, p2) = (probe.clone(), p.clone());
-            IoJob { source: p.clone(), run: Box::new(move || probe(&p2).map(|_| 1u32).map_err(|e| e.to_string())) as Box<dyn FnOnce() -> R + Send> }
+            IoJob::read(p.clone(), Box::new(move || probe(&p2).map(|_| 1u32).map_err(|e| e.to_string())) as Box<dyn FnOnce() -> R + Send>)
         })
         .collect();
     let (r, _) = h.run(jobs, 2);

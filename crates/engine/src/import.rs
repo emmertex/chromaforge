@@ -276,8 +276,12 @@ pub struct ImportReport {
     /// imported (from its copy, or in place).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<Kept>,
-    /// (path, error)
+    /// (path, error): every file that failed, those of `interrupted` included.
     pub failed: Vec<(String, String)>,
+    /// The files of `failed` that failed for a reason outside the file: a drive stopped responding,
+    /// or a copy was left unfinished (each also in `failed`, with its message).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interrupted: Vec<Interrupted>,
     /// Files skipped as still being copied in (`lcc_catalog::incoming`): a later scan or import picks them up.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub still_copying: Vec<String>,
@@ -302,7 +306,36 @@ pub struct ImportReport {
     pub sidecars_read: Vec<(PhotoId, crate::sidecar::SidecarData)>,
 }
 
-/// A structured diagnostic from foreign XMP develop settings.
+/// Why a file failed when the cause is outside the file (the I/O scheduler's typed outcomes,
+/// never read from a message).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Interruption {
+    /// A drive it needs stopped responding before its read, copy or move started: nothing was done.
+    VolumeNotResponding,
+    /// Its copy or move was left unfinished (the drive stopped responding, or the import was
+    /// cancelled, while it was under way): it may still finish, leaving a file in `folder` that the
+    /// library doesn't list. The original is kept.
+    OutcomeUnknown,
+}
+
+/// A file of [`ImportReport::failed`] that failed for an [`Interruption`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Interrupted {
+    pub path: String,
+    pub why: Interruption,
+    /// The drive that stopped responding (none: the import was cancelled while the copy was under
+    /// way).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<String>,
+    /// [`Interruption::OutcomeUnknown`]: the folder the copy or move was going into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+/// A structured import diagnostic: foreign XMP develop settings that didn't carry over, or a
+/// Copy as DNG that wasn't made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImportWarningCode {
@@ -312,6 +345,15 @@ pub enum ImportWarningCode {
     UprightGeometry,
     /// One or more other XMP develop fields have no mapping in the app.
     UnmappedXmp,
+    /// Copy as DNG: the import was cancelled while the raw waited to be converted; it was imported
+    /// as its raw copy.
+    DngCancelled,
+    /// Copy as DNG: memory is held by reads that are not returning (a drive that stopped
+    /// responding), so the raw wasn't converted; it was imported as its raw copy.
+    DngMemoryHeld,
+    /// Copy as DNG: the conversion or the DNG's write failed (the log says how); the raw was
+    /// imported as its raw copy.
+    DngFailed,
 }
 
 /// The saved Lightroom Upright mode associated with a foreign geometry transform.
@@ -840,6 +882,36 @@ pub(crate) fn probe_all(
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Vec<Result<ProbeInfo, String>> {
+    probe_all_typed(probe, paths, done, cancel).into_iter().map(|r| r.map_err(ProbeError::into_message)).collect()
+}
+
+/// Why a file's probe failed: its message, and the drive when the scheduler failed it because
+/// that drive stopped responding (typed: the import tells the user so instead of "not readable").
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProbeError {
+    pub(crate) message: String,
+    pub(crate) not_responding: Option<String>,
+}
+
+impl ProbeError {
+    pub(crate) fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for ProbeError {
+    fn from(message: String) -> ProbeError {
+        ProbeError { message, not_responding: None }
+    }
+}
+
+/// [`probe_all`], with each failure's [`ProbeError`].
+pub(crate) fn probe_all_typed(
+    probe: Option<&crate::media::FileProbe>,
+    paths: &[String],
+    done: &std::sync::atomic::AtomicUsize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Result<ProbeInfo, ProbeError>> {
     let Some(probe) = probe.cloned() else {
         return paths
             .iter()
@@ -886,9 +958,9 @@ pub(crate) fn probe_all(
         .iter()
         .map(|p| {
             if cancel.load(Relaxed) {
-                return Err("cancelled".into());
+                return Err(ProbeError::from(String::from("cancelled")));
             }
-            let r = probe(p);
+            let r = probe(p).map_err(ProbeError::from);
             done.fetch_add(1, Relaxed);
             r
         })
@@ -926,17 +998,17 @@ pub(crate) fn probe_all_cached(
     keep: KeepCached,
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Vec<Result<ProbeInfo, String>> {
+) -> Vec<Result<ProbeInfo, ProbeError>> {
     if cached.is_empty() {
-        return probe_all(probe, paths, done, cancel);
+        return probe_all_typed(probe, paths, done, cancel);
     }
     // (no probe hook: no files are read, so a cached probe is reused as it is)
     let Some(probe) = probe.cloned() else {
         let mut cached = cached;
-        let fresh = probe_all(None, paths, done, cancel);
+        let fresh = probe_all_typed(None, paths, done, cancel);
         return paths.iter().zip(fresh).map(|(p, f)| cached.remove(p).map(Ok).unwrap_or(f)).collect();
     };
-    probe_all(Some(&cached_probe(probe, cached, keep)), paths, done, cancel)
+    probe_all_typed(Some(&cached_probe(probe, cached, keep)), paths, done, cancel)
 }
 
 /// `probe`, but a path in `cached` whose probe still holds (`keep`, on the job's thread) gets it
@@ -955,7 +1027,8 @@ pub(crate) fn cached_probe(probe: crate::media::FileProbe, cached: HashMap<Strin
 
 /// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
 /// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
-/// ran threads, `"cancelled"` where it ran serially on one CPU).
+/// ran threads, `"cancelled"` where it ran serially on one CPU), a drive that stopped responding
+/// also typed.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn probe_scheduled(
     ctx: &std::sync::Arc<crate::io_sched::IoContext>,
@@ -964,13 +1037,13 @@ pub(crate) fn probe_scheduled(
     workers: usize,
     done: &std::sync::atomic::AtomicUsize,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Vec<Result<ProbeInfo, String>> {
+) -> Vec<Result<ProbeInfo, ProbeError>> {
     use crate::io_sched::{IoJob, JobOutcome};
     let jobs = paths
         .iter()
         .map(|p| {
             let (probe, path) = (probe.clone(), p.clone());
-            IoJob { source: p.clone(), run: Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send> }
+            IoJob::read(p.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>)
         })
         .collect();
     let report = crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done);
@@ -980,11 +1053,13 @@ pub(crate) fn probe_scheduled(
         .into_iter()
         .zip(paths)
         .map(|(o, p)| match o {
-            JobOutcome::Done(r) => r,
-            JobOutcome::NotStarted => Err(unreached.into()),
-            JobOutcome::Cancelled => Err("cancelled".into()),
-            JobOutcome::VolumeNotResponding { volume } => Err(format!("{p}: volume not responding ({volume})")),
-            JobOutcome::Panicked(m) => Err(format!("{p}: {m}")),
+            JobOutcome::Done(r) => r.map_err(ProbeError::from),
+            JobOutcome::NotStarted => Err(ProbeError::from(unreached.to_string())),
+            JobOutcome::Cancelled => Err(ProbeError::from(String::from("cancelled"))),
+            JobOutcome::VolumeNotResponding { volume, .. } => {
+                Err(ProbeError { message: format!("{p}: volume not responding ({volume})"), not_responding: Some(volume.to_string()) })
+            }
+            JobOutcome::Panicked(m) => Err(ProbeError::from(format!("{p}: {m}"))),
         })
         .collect()
 }
@@ -1235,7 +1310,8 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     progress.done.store(0, Relaxed);
     let probed = probe_all_cached(input.probe.as_ref(), &todo, cached, keep, &progress.done, &progress.cancel);
     crate::memory::release();
-    let mut probes: HashMap<String, Result<ProbeInfo, String>> = todo.into_iter().zip(probed).collect();
+    let mut probes: HashMap<String, Result<ProbeInfo, String>> =
+        todo.into_iter().zip(probed.into_iter().map(|r| r.map_err(ProbeError::into_message))).collect();
     // (who in the library has a content that was probed: asked once the probes are in)
     let probed_hashes = probes
         .values()
@@ -1407,6 +1483,8 @@ enum PreparedItem {
         hash: Option<String>,
     },
     Failed(String, String),
+    /// Failed for a reason outside the file (and its message).
+    Interrupted(Box<Interrupted>, String),
     /// Still being copied in: left for a later scan.
     Copying(String),
     Kept(Kept),
@@ -1423,6 +1501,8 @@ struct ReadyFile {
     /// A Local (browsed) record whose file was copied or moved: the record follows the copy and
     /// joins the library, keeping its culling and edits, instead of a new photo being added.
     promote: Option<PhotoId>,
+    /// Copy as DNG was asked for and not made: why (one of the `Dng…` codes).
+    dng_not_made: Option<ImportWarningCode>,
 }
 
 impl Prepared {
@@ -1466,7 +1546,7 @@ impl Prepared {
                 items.push(item);
                 continue;
             };
-            let ReadyFile { path, stored, info, sidecar, placed, promote } = *ready;
+            let ReadyFile { path, stored, info, sidecar, placed, promote, dng_not_made } = *ready;
             let existing_path = paths.get(&normalize_import_path(&stored)).copied().or_else(|| paths.get(&normalize_import_path(&path)).copied());
             let existing_hash = info.content_hash.as_ref().and_then(|hash| hashes.get(crate::sync::base_hash(hash)).map(|(_, id)| *id));
             if let Some(existing) = existing_path.or(existing_hash) {
@@ -1480,7 +1560,7 @@ impl Prepared {
                     hash: info.content_hash,
                 });
             } else {
-                items.push(PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote })));
+                items.push(PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote, dng_not_made })));
             }
         }
         self.items = items;
@@ -1695,16 +1775,22 @@ impl ImportJob {
             let mut info = match info {
                 Ok(i) => i,
                 // still being copied in: skipped, and picked up by a later scan (issue #123)
-                Err(e) if lcc_catalog::incoming::is_still_being_written(&e) => {
-                    log::info!("import: skipped {e}");
+                Err(e) if lcc_catalog::incoming::is_still_being_written(&e.message) => {
+                    log::info!("import: skipped {}", e.message);
                     self.done.fetch_add(1, Relaxed);
                     plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
                     continue;
                 }
-                Err(e) => {
-                    log::warn!("import {path}: {e}");
+                Err(ProbeError { message, not_responding }) => {
+                    log::warn!("import {path}: {message}");
                     self.done.fetch_add(1, Relaxed);
-                    plan.slots.push(Slot::Item(PreparedItem::Failed(path, e)));
+                    plan.slots.push(Slot::Item(match not_responding {
+                        Some(volume) => PreparedItem::Interrupted(
+                            Box::new(Interrupted { path, why: Interruption::VolumeNotResponding, volume: Some(volume), folder: None }),
+                            message,
+                        ),
+                        None => PreparedItem::Failed(path, message),
+                    }));
                     continue;
                 }
             };
@@ -1830,7 +1916,7 @@ impl ImportJob {
             plan.slots.push(Slot::Item(match promote {
                 // (planned for a transfer that turned out not to need one: joins where it is)
                 Some(id) => PreparedItem::Promote(id),
-                None => PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None, promote: None })),
+                None => PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed: None, promote: None, dng_not_made: None })),
             }));
         }
         self.run_plan(&mut plan, &mut out, cancel);
@@ -1847,7 +1933,15 @@ impl ImportJob {
             let item = match slot {
                 Slot::Item(it) => it,
                 Slot::Transfer => match done.next().flatten() {
-                    Some(it) => it,
+                    Some(it) => {
+                        // (a probe's failure is logged where the plan meets it; a transfer's here)
+                        match &it {
+                            PreparedItem::Failed(path, e) => log::warn!("import {path}: {e}"),
+                            PreparedItem::Interrupted(why, e) => log::warn!("import {}: {e}", why.path),
+                            _ => {}
+                        }
+                        it
+                    }
                     None => {
                         out.cut_short = true;
                         continue;
@@ -1941,62 +2035,118 @@ pub fn batch_size() -> usize {
 
 /// Run `transfers` (several at once where threads exist); their outcomes in order, `None` for one
 /// not started because `cancel` was set. `done` counts each one finished.
+///
+/// Since the I/O scheduler's copies (I/O spec PR 2): each copy holds a slot on its source's and its
+/// destination's volume ([`crate::io_sched`]); a copy that panics fails only its file; a volume
+/// that stops responding fails its copies (the ones under way: "outcome unknown", since one may
+/// still finish and leave an untracked file at the destination, the source kept) while copies
+/// elsewhere go on; cancel returns even when a volume hangs (a copy waiting for memory for its
+/// Copy as DNG step skips it and keeps its raw copy).
 fn run_transfers(
     transfers: Vec<Transfer>,
     file_bytes: Option<&crate::merge::ByteReader>,
     cancel: &std::sync::atomic::AtomicBool,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
-    use std::sync::atomic::Ordering::Relaxed;
-    let one = |t: Transfer| {
-        if cancel.load(Relaxed) {
-            return None;
-        }
-        let path = t.path.clone();
-        // last-resort guard: a panic is this file's failure, not the import's
-        let item = crate::guard::catch("import", || run_transfer(t, file_bytes)).unwrap_or_else(|e| PreparedItem::Failed(path, e));
-        done.fetch_add(1, Relaxed);
-        Some(item)
-    };
+    // (a single transfer, as today: not started once cancelled, else run on this thread; the
+    // scheduler's single-job path honours `cancel`)
     #[cfg(not(target_arch = "wasm32"))]
     {
         let n = workers(transfers.len());
-        if n > 1 {
-            let mut results: Vec<Option<PreparedItem>> = std::iter::repeat_with(|| None).take(transfers.len()).collect();
-            let queue = std::sync::Mutex::new(transfers.into_iter().enumerate());
-            let out = std::sync::Mutex::new(&mut results);
-            // (the tests' injected faults hold for the workers too)
-            #[cfg(test)]
-            let fault = crate::import_move::injected_fault();
-            let work = &|| {
+        transfers_scheduled(crate::io_sched::IoContext::global(), transfers, file_bytes.cloned(), n, cancel, done)
+    }
+    // (no threads: one file after another, R10)
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        transfers
+            .into_iter()
+            .map(|t| {
+                if cancel.load(Relaxed) {
+                    return None;
+                }
+                let path = t.path.clone();
+                // last-resort guard: a panic is this file's failure, not the import's
+                let item = crate::guard::catch("import", || run_transfer(t, file_bytes)).unwrap_or_else(|e| PreparedItem::Failed(path, e));
+                done.fetch_add(1, Relaxed);
+                Some(item)
+            })
+            .collect()
+    }
+}
+
+/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count: each outcome
+/// as an item (`None`: not started).
+#[cfg(not(target_arch = "wasm32"))]
+fn transfers_scheduled(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    transfers: Vec<Transfer>,
+    file_bytes: Option<crate::merge::ByteReader>,
+    workers: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    done: &std::sync::atomic::AtomicUsize,
+) -> Vec<Option<PreparedItem>> {
+    use crate::io_sched::{IoJob, JobOutcome};
+    // (the tests' injected faults hold for the workers too)
+    #[cfg(test)]
+    let fault = crate::import_move::injected_fault();
+    let mut about = Vec::with_capacity(transfers.len());
+    let jobs = transfers
+        .into_iter()
+        .map(|t| {
+            let moving = matches!(t.how, How::Place { .. });
+            about.push((t.path.clone(), t.dir.clone(), moving));
+            let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
+            let file_bytes = file_bytes.clone();
+            let run = move || {
                 #[cfg(test)]
                 crate::import_move::inject(fault);
-                loop {
-                    let next = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next();
-                    let Some((i, t)) = next else { break };
-                    let r = one(t);
-                    if let Some(slot) = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(i) {
-                        *slot = r;
-                    }
-                }
+                let path = t.path.clone();
+                // last-resort guard: a panic is this file's failure, not the import's
+                crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
             };
-            std::thread::scope(|sc| {
-                let handles: Vec<_> =
-                    (0..n).filter_map(|i| std::thread::Builder::new().name(format!("lc-import-copy-{i}")).spawn_scoped(sc, work).ok()).collect();
-                if handles.is_empty() {
-                    // no thread to be had: copy here, one after another
-                    work();
+            IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> }
+        })
+        .collect();
+    let report = crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done);
+    report
+        .outcomes
+        .into_iter()
+        .zip(about)
+        .map(|(o, (path, dir, moving))| {
+            let what = if moving { "move" } else { "copy" };
+            let folder = dir.to_string_lossy().into_owned();
+            let interrupted = |path: String, why, volume: Option<&lcc_catalog::folders::VolumeKey>, msg| {
+                let folder = (why == Interruption::OutcomeUnknown).then(|| folder.clone());
+                PreparedItem::Interrupted(Box::new(Interrupted { path, why, volume: volume.map(ToString::to_string), folder }), msg)
+            };
+            match o {
+                JobOutcome::Done(item) => Some(item),
+                JobOutcome::NotStarted => None,
+                JobOutcome::Cancelled => Some(interrupted(
+                    path,
+                    Interruption::OutcomeUnknown,
+                    None,
+                    format!("outcome unknown: the {what} into {} was left behind when the import was cancelled (it showed no progress); a file may still appear there, outside the library; the original is kept", dir.display()),
+                )),
+                JobOutcome::VolumeNotResponding { volume, abandoned: true } => {
+                    let msg = format!("outcome unknown: volume {volume} stopped responding during the {what} into {}; a file may still appear there, outside the library; the original is kept", dir.display());
+                    Some(interrupted(path, Interruption::OutcomeUnknown, Some(&volume), msg))
                 }
-                for h in handles {
-                    if h.join().is_err() {
-                        log::error!("import: a copy worker stopped unexpectedly");
-                    }
+                JobOutcome::VolumeNotResponding { volume, abandoned: false } => {
+                    let msg = format!("volume not responding ({volume}): not {}; the original is kept", if moving { "moved" } else { "copied" });
+                    Some(interrupted(path, Interruption::VolumeNotResponding, Some(&volume), msg))
                 }
-            });
-            return results;
-        }
-    }
-    transfers.into_iter().map(one).collect()
+                JobOutcome::Panicked(m) => Some(PreparedItem::Failed(path, m)),
+            }
+        })
+        .collect()
+}
+
+/// A transfer whose result shows its volumes work (for the scheduler's recovery rule).
+#[cfg(not(target_arch = "wasm32"))]
+fn transfer_ok(item: &PreparedItem) -> bool {
+    matches!(item, PreparedItem::Ready(_))
 }
 
 /// Copy or move one planned file (and Copy as DNG); its item.
@@ -2017,20 +2167,46 @@ fn run_transfer(t: Transfer, file_bytes: Option<&crate::merge::ByteReader>) -> P
             Err(e) => return PreparedItem::Failed(path, e),
         },
     };
+    let mut dng_not_made = None;
     if dng {
+        // (its reads and writes are of the copy just made: on the destination)
+        crate::bounded_read::on(crate::io_sched::job::Side::Dest);
         // decoding the raw twice and encoding it takes several times the file's size in memory
         let weight = usize::try_from(info.file_size).unwrap_or(usize::MAX).saturating_mul(6);
-        let _permit = crate::memory::work_gate().acquire(weight);
-        match crate::cmd::convert::write_dng_with(file_bytes, &stored, String::new()) {
+        // (as an I/O scheduler job: cancel makes it skip this step, keeping the raw copy; a stall
+        // abandons it; memory held by reads that are not returning fails it)
+        let made = match crate::memory::work_gate().acquire_for_job(weight) {
+            Ok(_permit) => crate::cmd::convert::write_dng_with(file_bytes, &stored, String::new()).map_err(|e| (ImportWarningCode::DngFailed, e)),
+            Err(e) => Err((dng_refusal(&e), e.to_string())),
+        };
+        match made {
             Ok(dng) => {
                 let _ = std::fs::remove_file(&stored);
                 stored = dng;
                 info.format = "DNG".into();
             }
-            Err(e) => log::warn!("import {path}: copy as DNG: {e}"),
+            Err((code, e)) => {
+                log::warn!("import {path}: copy as DNG not made, the raw copy is imported: {e}");
+                dng_not_made = Some(code);
+            }
         }
     }
-    PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote }))
+    PreparedItem::Ready(Box::new(ReadyFile { path, stored, info, sidecar, placed, promote, dng_not_made }))
+}
+
+/// The warning for a Copy as DNG the work gate refused.
+fn dng_refusal(e: &crate::memory::GateError) -> ImportWarningCode {
+    match e {
+        crate::memory::GateError::Skipped => ImportWarningCode::DngCancelled,
+        crate::memory::GateError::CannotFit { .. } => ImportWarningCode::DngMemoryHeld,
+        // (abandoned: the scheduler has dropped the job's result already)
+        crate::memory::GateError::Abandoned => ImportWarningCode::DngFailed,
+    }
+}
+
+/// The import warning of a Copy as DNG not made (`code`) for the file at `path`, imported as `id`.
+fn dng_warning(path: &str, id: PhotoId, code: Option<ImportWarningCode>) -> Option<ImportWarning> {
+    Some(ImportWarning { path: path.to_string(), code: code?, profile: None, mode: None, fields: Vec::new(), photo: Some(id.0) })
 }
 
 /// A trashed photo's file is not where the library had it (never on the web, where paths are
@@ -2145,14 +2321,19 @@ fn commit_prepared_inner(s: &mut Session, opts: &ImportOptions, now: &str, prepa
                 }
             }
             PreparedItem::Failed(path, e) => report.failed.push((path, e)),
+            PreparedItem::Interrupted(why, e) => {
+                report.failed.push((why.path.clone(), e));
+                report.interrupted.push(*why);
+            }
             PreparedItem::Copying(path) => report.still_copying.push(path),
             PreparedItem::Kept(k) => report.kept.push(k),
             PreparedItem::Ready(r) if r.promote.is_some_and(|id| s.catalog.photo(id).is_some_and(|p| p.local)) => {
                 // a browsed photo copied or moved: its record follows the file into the library,
                 // keeping its culling and edits
-                let ReadyFile { stored, info, placed: pl, promote, .. } = *r;
+                let ReadyFile { path, stored, info, placed: pl, promote, dng_not_made, .. } = *r;
                 placed.extend(pl);
                 let Some(id) = promote else { continue };
+                report.warnings.extend(dng_warning(&path, id, dng_not_made));
                 let file_name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| stored.clone());
                 let format = s.catalog.photo(id).filter(|p| p.format != info.format).map(|_| info.format.clone());
                 ops.push(Op::Relink { id, file_name, source: Source::File { path: stored.clone() }, format });
@@ -2161,9 +2342,10 @@ fn commit_prepared_inner(s: &mut Session, opts: &ImportOptions, now: &str, prepa
                 report.imported.push(id.0);
             }
             PreparedItem::Ready(r) => {
-                let ReadyFile { path, stored, info, sidecar, placed: pl, .. } = *r;
+                let ReadyFile { path, stored, info, sidecar, placed: pl, dng_not_made, .. } = *r;
                 placed.extend(pl);
                 let id = s.catalog.alloc_photo_id();
+                report.warnings.extend(dng_warning(&path, id, dng_not_made));
                 if let Some(h) = &info.content_hash {
                     new_hash.insert(h.clone(), id);
                 }
@@ -2527,6 +2709,9 @@ impl Session {
 #[cfg(test)]
 #[path = "import/tests_known.rs"]
 mod tests_known;
+#[cfg(test)]
+#[path = "import/tests_transfers.rs"]
+mod tests_transfers;
 
 #[cfg(test)]
 mod prepared_tests {
@@ -2615,6 +2800,7 @@ mod prepared_tests {
             sidecar: None,
             placed: None,
             promote: None,
+            dng_not_made: None,
         };
         let mut prepared = Prepared {
             scanned: 2,
@@ -2626,6 +2812,59 @@ mod prepared_tests {
         prepared.revalidate_add(&s);
         assert!(matches!(prepared.items.first(), Some(PreparedItem::Duplicate { reason: "path", .. })));
         assert!(matches!(prepared.items.get(1), Some(PreparedItem::Ready(_))));
+    }
+
+    /// The report keeps why a file failed when the cause was outside it, typed: a drive that
+    /// stopped responding, a copy left unfinished (with the folder a stray file may appear in);
+    /// each is also in `failed` with its message, beside a file's own failure. A raw imported
+    /// without the DNG Copy as DNG was to make gets a warning naming why, on its photo.
+    #[test]
+    fn the_report_types_interruptions_and_a_dng_not_made() {
+        let mut s = Session::new();
+        let interrupted = |path: &str, why, folder: Option<&str>| {
+            PreparedItem::Interrupted(
+                Box::new(Interrupted { path: path.into(), why, volume: Some("/Volumes/CARD".into()), folder: folder.map(str::to_string) }),
+                format!("{path}: message"),
+            )
+        };
+        let raw = std::env::temp_dir().join("app-report-dng.nef").to_string_lossy().to_string();
+        let prepared = Prepared {
+            scanned: 4,
+            cut_short: false,
+            skipped: Skipped::default(),
+            plugin_skipped: 0,
+            items: vec![
+                interrupted("/card/a.nef", Interruption::VolumeNotResponding, None),
+                interrupted("/card/b.nef", Interruption::OutcomeUnknown, Some("/lib/2026")),
+                PreparedItem::Failed("/card/c.nef".into(), "not a photo".into()),
+                PreparedItem::Ready(Box::new(ReadyFile {
+                    path: "/card/d.nef".into(),
+                    stored: raw,
+                    info: ProbeInfo { format: "NEF".into(), ..ProbeInfo::default() },
+                    sidecar: None,
+                    placed: None,
+                    promote: None,
+                    dng_not_made: Some(ImportWarningCode::DngMemoryHeld),
+                })),
+            ],
+        };
+        let report = commit_prepared(&mut s, &ImportOptions::default(), "now", prepared).unwrap();
+        let failed: Vec<&str> = report.failed.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(failed, ["/card/a.nef", "/card/b.nef", "/card/c.nef"]);
+        let why: Vec<(&str, Interruption, Option<&str>)> = report.interrupted.iter().map(|i| (i.path.as_str(), i.why, i.folder.as_deref())).collect();
+        assert_eq!(why, [("/card/a.nef", Interruption::VolumeNotResponding, None), ("/card/b.nef", Interruption::OutcomeUnknown, Some("/lib/2026"))]);
+        let id = report.imported.first().copied();
+        assert!(id.is_some());
+        let dng: Vec<(&str, ImportWarningCode, Option<u64>)> = report.warnings.iter().map(|w| (w.path.as_str(), w.code, w.photo)).collect();
+        assert_eq!(dng, [("/card/d.nef", ImportWarningCode::DngMemoryHeld, id)]);
+        let v = serde_json::to_value(&report).unwrap();
+        assert_eq!(v["interrupted"][0]["why"], "volumeNotResponding");
+        assert_eq!(v["interrupted"][1]["why"], "outcomeUnknown");
+        assert_eq!(v["interrupted"][1]["folder"], "/lib/2026");
+        assert_eq!(v["warnings"][0]["code"], "dngMemoryHeld");
+        // with nothing interrupted the field is left out
+        let none = ImportReport::default();
+        assert!(serde_json::to_value(&none).unwrap().get("interrupted").is_none());
     }
 
     fn unread_paths(n: usize) -> Vec<String> {
