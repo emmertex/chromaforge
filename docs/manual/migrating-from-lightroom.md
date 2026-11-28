@@ -76,6 +76,11 @@ out on its own, and the result window says how many were left out of which table
 imports. The photo behind such a record keeps only what its files say. If the record is in a table every import
 needs (photos, files, folders), the result also says that photos may be missing. Text with invalid characters is imported with replacement characters, also counted in the result.
 
+The catalog's values win over XMP sidecars next to the originals. A sidecar that says something else (keywords
+added in Photo Mechanic, a newer copyright) marks its photo as a metadata conflict, counted in the result; Read
+Metadata from File takes the sidecar's values, Save Metadata to File writes the catalog's. A sidecar that agrees
+starts in step.
+
 ## Safety
 
 Before changing anything, the importer saves the source records, decoded XMP, develop settings, history, snapshots

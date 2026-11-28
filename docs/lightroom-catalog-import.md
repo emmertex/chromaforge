@@ -143,6 +143,15 @@ behind; the folder is synced once the archive is saved.
 `Interop/lightroom-index.json` records imported identities (read and written up to 1 GiB, about 45 bytes a photo, so a re-import of a large catalog finds what it made before). Source catalogs and originals are
 never overwritten.
 
+Photos whose originals have an XMP sidecar get their metadata status from comparing it with the
+catalog once the catalog's values are applied: a sidecar that Read Metadata from File would change
+nothing from (keyword order aside) starts in step; one that says something else (a keyword, rating,
+copyright or edit the catalog doesn't have) starts as a conflict, so the badge and the Metadata
+Status filter show it, automatic reading leaves it alone, and the result counts them
+(`sidecarsDisagree`, with a warning). The catalog's values are what is imported either way; Read
+Metadata from File takes the sidecar's, Save Metadata to File writes the catalog's (issue #1312).
+Before, every imported photo read "changed in the catalog".
+
 Native import reads MAIN database pages on demand; no whole-file size cutoff or MAIN-file read
 allocation is used. Committed WAL validation is streamed into a compact page index; WAL remains
 capped at 1 GiB and 4,000,000 frames. MAIN is structurally bounded to 16,777,216 pages (up to

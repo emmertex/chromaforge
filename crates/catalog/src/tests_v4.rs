@@ -74,7 +74,10 @@ pub(crate) fn fill(j: &mut Journal, c: &mut Catalog, n: u64) {
         ops.push(Op::AddStack { stack: Stack { id: c.alloc_stack_id(), photos: vec![ids[3], ids[4]], collapsed: true } });
     }
     ops.push(Op::SetSha1 { id: ids[0], sha1: Some("A9993E364706816ABA3E25717850C26C9CD0D89D".into()) });
-    ops.push(Op::SetXmpStamp { id: ids[0], stamp: Some(XmpStamp { fingerprint: 7, file: Some(SidecarStat { mtime: 5, size: 9 }) }) });
+    ops.push(Op::SetXmpStamp {
+        id: ids[0],
+        stamp: Some(XmpStamp { fingerprint: 7, file: Some(SidecarStat { mtime: 5, size: 9 }), disagrees: false }),
+    });
     ops.push(Catalog::link_remote_op(link(ids[1], "asset-1")));
     ops.push(Op::SetPreview {
         id: ids[1],

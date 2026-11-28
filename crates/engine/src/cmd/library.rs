@@ -167,6 +167,7 @@ pub fn import_params(s: &Session, p: &Value) -> Result<ImportRequest> {
         camera_profile: crate::profile_bodies::ImportProfile::parse(p.get("cameraProfile")).map_err(|e| bad("library.import", e))?,
         local: bool_or(p, "local", false),
         preset_profile: bool_or(p, "presetProfile", false),
+        keep_sidecars: false,
         recipe: super::recipe_param(p, "library.import")?,
         import_duplicates: bool_or(p, "importDuplicates", false),
         plugin_hooks: bool_or(p, "pluginHooks", true),
