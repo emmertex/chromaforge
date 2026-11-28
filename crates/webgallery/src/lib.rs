@@ -21,6 +21,9 @@ pub mod tokens;
 
 #[cfg(all(feature = "sftp", not(target_arch = "wasm32")))]
 pub mod sftp;
+#[cfg(all(not(feature = "sftp"), not(target_arch = "wasm32")))]
+#[path = "sftp_off.rs"]
+pub mod sftp;
 
 pub use settings::{Appearance, GallerySettings, ImageInfo, MetadataMode, Output, Palette, Server, SiteInfo, Template};
 pub use site::{GalleryPhoto, ImageRequest, Site, SiteFile, generate};

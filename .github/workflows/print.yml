@@ -8,13 +8,6 @@ on:
   schedule:
     - cron: '41 3 * * 1'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'crates/print/**'
-      - 'crates/layout/**'
-      - 'crates/pdf/**'
-      - 'crates/ui-egui/src/print_ui.rs'
-      - '.github/workflows/print.yml'
 
 permissions:
   contents: read

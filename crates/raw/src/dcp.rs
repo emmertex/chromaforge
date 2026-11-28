@@ -91,9 +91,14 @@ impl Dcp {
     /// Replace a raw's colour model with this profile's: matrices, illuminants, baseline exposure
     /// offset, hue/saturation map, look table and tone curve. The file's own white balance
     /// (`AsShotNeutral`, vendor multipliers, analog balance) is kept; its per-unit
-    /// `CameraCalibration` is dropped, as it belongs to the file's own profile.
+    /// `CameraCalibration` is dropped, as it belongs to the file's own profile. A raw without colour tags of its own
+    /// (no `BaselineExposure` either) gets the profile's per-camera raw baseline ([`ColorData::raw_baseline_exposure`]),
+    /// so it renders as bright as a converted DNG of the same photo (issue #1485).
     pub fn apply(&self, color: &mut ColorData) {
         let p = &self.color;
+        if !crate::color::has_matrix(color) && p.raw_baseline_exposure.is_finite() {
+            color.baseline_exposure += p.raw_baseline_exposure;
+        }
         color.illuminant = p.illuminant;
         color.color_matrix = p.color_matrix;
         color.forward_matrix = p.forward_matrix;
@@ -672,6 +677,27 @@ mod tests {
         assert_eq!(d.name, "Test Look");
         assert_eq!(d.color.illuminant[0], 21);
         assert!(d.color.color_matrix[0].is_some());
+    }
+
+    /// Issue #1485: a profile's raw baseline brightens a raw without colour tags of its own (a CR2) and leaves a file
+    /// that has them (a converted DNG, whose own `BaselineExposure` stands) as it was; the look's offset adds to both.
+    #[test]
+    fn raw_baseline_reaches_only_raws_without_colour_tags() {
+        let mut d = parse(&tiny_dcp("Canon EOS 6D")).unwrap();
+        d.color.baseline_exposure = 0.1;
+        d.color.raw_baseline_exposure = 0.25;
+        let mut cr2 = ColorData::default();
+        d.apply(&mut cr2);
+        assert!((cr2.baseline_exposure - 0.35).abs() < 1e-12, "{}", cr2.baseline_exposure);
+        assert_eq!(cr2.raw_baseline_exposure, 0.0, "the decoded file carries none");
+        let mut dng = ColorData { color_matrix: [Some(lcc_color::Mat3::IDENTITY), None], baseline_exposure: 0.25, ..Default::default() };
+        d.apply(&mut dng);
+        assert!((dng.baseline_exposure - 0.35).abs() < 1e-12, "{}", dng.baseline_exposure);
+        // a hostile value adds nothing
+        d.color.raw_baseline_exposure = f64::NAN;
+        let mut cr2 = ColorData::default();
+        d.apply(&mut cr2);
+        assert!((cr2.baseline_exposure - 0.1).abs() < 1e-12);
     }
 
     #[test]

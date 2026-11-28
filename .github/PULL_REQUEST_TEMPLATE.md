@@ -27,7 +27,7 @@ Fixes #
 ## How it was checked
 
 - [ ] `cargo xtask ci --fast`, `cargo xtask sil` and `cargo test -p` for the touched crates pass on this branch, up to
-      date with `main` (merged in, not rebased)
+      date with `staging` (merged in, not rebased)
 - [ ] A test that fails without this change (for a crash fix: a hostile-input check that the bad input gives an
       error, not a panic)
 - [ ] User-visible change: ran the app and looked at the result
@@ -50,7 +50,7 @@ Fixes #
   setting that is off by default, with an entry in docs/whats-new/. "unchanged" is fine. -->
 - **Shared numbers taken:** <!-- catalog format `VERSION` (crates/catalog/src/journal.rs), `RENDER_CACHE_VERSION`,
   `LOOK_VERSION`, process version: the number this takes. If another pull request lands with it first, take one
-  past main's when you merge main in. -->
+  past staging's when you merge staging in. -->
 - **Where it came from:** <!-- for a decoder, camera or lens data, or fitted constants: the public spec, your own
   measurements, or observed output, and the files measured. Material that forbids derivation is out (Adobe
   profiles/files, CC BY-NC/ND, no licence); anything permitting derivatives, sharing and commercial use is in —

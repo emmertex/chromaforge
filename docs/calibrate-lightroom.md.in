@@ -149,6 +149,12 @@ Every example below writes `{{cli_binary}}`: put the path or prefix you used her
    default **only for files with colour matrices of their own** (DNGs converted from those raws, which get no JPEG
    fit), and the JSON says `"ownMatrixOnly": true`. Its looks can still be chosen for any photo.
 
+   **Mix converted DNGs and raws** of the same camera when you can (three or more of each, e.g. some CR2s and DNGs
+   the Adobe converter made from other CR2s). Lightroom renders a raw as bright as its converted DNG, which carries
+   that brightness in its `BaselineExposure`; a raw has no such tag. From a mixed set the fit measures that baseline
+   for the camera and writes it as `"raw_baseline_exposure"`, so the app's raws and DNGs of the camera come out
+   equally bright. From raws or DNGs alone it can't be told apart from the tone curve and is left out (issue #1485).
+
 6. **Send the JSON file** where `fit` tells you to: the project's calibration thread on Discord (the link is printed),
    or an issue on the project's repository. `--contributor`
    is optional; leave it out to stay anonymous.
@@ -180,6 +186,7 @@ What differs from a Lightroom calibration:
 ## Privacy: what the file holds
 
 Only aggregate numbers: camera make and model, two colour and two forward matrices, optional hue/saturation maps,
+the raws' baseline exposure when fitted,
 per look an exposure offset, tone curve and optional look table, and the evidence (number of photos and samples,
 photos per white-balance range, hue coverage, held-out ΔE00). The optional contributor name and the tool version.
 

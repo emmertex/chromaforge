@@ -552,7 +552,13 @@ mod tests {
             tool_version: "1".into(),
             contributor: None,
             licence: c::LICENCE.into(),
-            camera: c::CameraModel { illuminants: [17, 21], color_matrix: [cm, cm], forward_matrix: [fm, fm], hue_sat_map: None },
+            camera: c::CameraModel {
+                illuminants: [17, 21],
+                color_matrix: [cm, cm],
+                forward_matrix: [fm, fm],
+                hue_sat_map: None,
+                raw_baseline_exposure: None,
+            },
             looks: vec![c::Look { name: look.into(), baseline_exposure_offset: 0.0, look_table: None, tone_curve: vec![] }],
             evidence: c::Evidence { photos: 10, samples: 100, hue_coverage: 0.5, ..Default::default() },
         }
