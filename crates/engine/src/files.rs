@@ -741,6 +741,12 @@ fn denoised_camera_rgb(raw: &lcc_raw::RawImage, spec: &DenoiseSpec, factor: usiz
     }
 }
 
+/// Whether a raw's full-size demosaic may go to the GPU (issue #1377): unless `<PREFIX>_GPU_DEMOSAIC=0`. The GPU's own
+/// switches (the preference, `<PREFIX>_GPU=0`) apply too, and without a GPU the CPU does it.
+fn gpu_demosaic() -> bool {
+    std::env::var(lcc_brand::env_var("GPU_DEMOSAIC")).map_or(true, |v| v.trim() != "0")
+}
+
 fn load_bytes_now(
     bytes: std::borrow::Cow<'_, [u8]>,
     max_edge: usize,
@@ -861,8 +867,14 @@ fn load_bytes_now(
         let (img, clip_mask) = match binned {
             Some((img, mask)) => (img, Some(mask)),
             None => {
-                let method = if max_edge <= 600 { lcc_raw::Method::Bilinear } else { lcc_raw::Method::Ahd };
-                (raw.develop(method).map_err(|e| e.to_string())?, None)
+                let img = if max_edge <= 600 {
+                    raw.develop(lcc_raw::Method::Bilinear)
+                } else if gpu_demosaic() {
+                    raw.develop_ahd_with(lcc_gpu::demosaic_ahd)
+                } else {
+                    raw.develop(lcc_raw::Method::Ahd)
+                };
+                (img.map_err(|e| e.to_string())?, None)
             }
         };
         // the same development from the denoised mosaic, when the photo has been denoised

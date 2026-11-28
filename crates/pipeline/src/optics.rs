@@ -291,6 +291,13 @@ impl Warp {
         self.inside(g).then(|| (Point::new(cx, cy), g))
     }
 
+    /// [`frame`](Self::frame) without the test for the image: where output pixel `(x, y)` falls on or past the
+    /// source (a fill of the canvas past the photo's edge is placed there). `None` only when it is not finite.
+    pub fn frame_past_edge(&self, o2t: &Affine, x: usize, y: usize) -> Option<(Point, Point)> {
+        let ((cx, cy), (gx, gy)) = self.framing(o2t, x as f64 + 0.5, y as f64 + 0.5);
+        [cx, cy, gx, gy].iter().all(|v| v.is_finite()).then(|| (Point::new(cx, cy), Point::new(gx, gy)))
+    }
+
     /// Whether output pixel `(x, y)` shows the image ([`frame`](Self::frame) is `Some`).
     pub fn covers(&self, o2t: &Affine, x: usize, y: usize) -> bool {
         self.frame(o2t, x, y).is_some()

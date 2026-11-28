@@ -79,7 +79,10 @@ background compaction (fjall, sled), and its whole-store integrity check backs t
 
 **What stays the same.** The `Catalog` / `Op` / `Journal` API: every change is still an op, applied in memory and
 appended (fsynced) to `catalog.log` before a command returns; undo still uses inverse ops; the log is still the change
-feed. The `Catalog` stays in memory (the engine reads `&Arc<Photo>`), so "lazy" loading is about what is loaded and how
+feed. One op is one log record, but a batch whose JSON passes about 4 MiB (a Lightroom catalog import is one
+batch for all its photos) is written as several records of consecutive ops, each about 4 MiB at most, handed to the
+log 32 MiB at a time; they replay one after the other to what the batch does, and a crash while they are written keeps
+the records before it (`journal.rs`, `record_bodies`; issue #1361). The `Catalog` stays in memory (the engine reads `&Arc<Photo>`), so "lazy" loading is about what is loaded and how
 fast (below), not about leaving photos on disk.
 
 **What changes.** The snapshot is replaced by the store (`crates/catalog/src/db.rs`):

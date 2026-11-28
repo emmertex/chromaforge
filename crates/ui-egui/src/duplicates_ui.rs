@@ -33,7 +33,14 @@ const CARD_W: f32 = 184.0;
 /// steps aside with its marks kept; Find Duplicates… brings it back.
 pub const COMPARE: &str = "library.compareDuplicateGroup";
 
-pub const COMMANDS: &[UiCommand] = &[(OPEN, "Find Duplicates…", None, "Library"), (COMPARE, "Compare Group in Survey", None, "")];
+/// Settle one group as it is marked, at once (#1399): its marked photos go to Recently Deleted (one undo step), the
+/// rest are kept, and the group leaves the list (`{group, above?, keepAll?}`: `above` settles every group from the
+/// first down to this one, as one step; `keepAll` keeps the whole group whatever is marked). So a long list can be
+/// worked through a few groups at a time.
+pub const APPLY: &str = "library.applyDuplicateGroup";
+
+pub const COMMANDS: &[UiCommand] =
+    &[(OPEN, "Find Duplicates…", None, "Library"), (COMPARE, "Compare Group in Survey", None, ""), (APPLY, "Apply Duplicate Group", None, "")];
 
 /// The review window's state, kept while it can be reopened.
 pub struct Finder {
@@ -90,6 +97,24 @@ impl Finder {
         self.groups.iter().flat_map(|g| g.members.iter().filter(|m| m.marked).map(|m| m.id)).collect()
     }
 
+    /// The marked photos of the groups `first..=last` (indices past the end are left out).
+    fn marked_in(&self, first: usize, last: usize) -> Vec<PhotoId> {
+        self.groups
+            .iter()
+            .skip(first)
+            .take(last.saturating_sub(first).saturating_add(1))
+            .flat_map(|g| g.members.iter().filter(|m| m.marked).map(|m| m.id))
+            .collect()
+    }
+
+    /// Take the groups `first..=last` off the list (indices past the end are left out).
+    fn drop_groups(&mut self, first: usize, last: usize) {
+        let end = last.saturating_add(1).min(self.groups.len());
+        if first < end {
+            self.groups.drain(first..end);
+        }
+    }
+
     /// Drop `gone` from the groups; a group left with fewer than two photos is no longer a group.
     /// The survivors keep their marks.
     fn drop_ids(&mut self, gone: &[PhotoId]) {
@@ -140,6 +165,43 @@ fn compare_group(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     }
     app.renderer.forget_duplicates();
     Ok(json!({"group": group, "photos": ids}))
+}
+
+/// `library.applyDuplicateGroup`: settle group `group` (and, `above`, every group before it) as marked: the marked
+/// photos go to Recently Deleted in one `photo.delete` (one undo step), the others are kept, and the groups leave the
+/// list. `keepAll` keeps every photo of the group instead. Returns what was removed and how many groups are left.
+fn apply_group(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    let group = match p.get("group") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("`group` must be a whole number (0 is the first group)")?,
+    };
+    let flag = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => Ok(false),
+        Some(v) => v.as_bool().ok_or(format!("`{k}` must be true or false")),
+    };
+    let (above, keep_all) = (flag("above")?, flag("keepAll")?);
+    if above && keep_all {
+        return Err("`above` and `keepAll` can't be combined".into());
+    }
+    let finder = app.duplicates.as_ref().filter(|f| f.open).ok_or("open Find Duplicates… first")?;
+    if group >= finder.groups.len() {
+        return Err(format!("no duplicate group {group}"));
+    }
+    let first = if above { 0 } else { group };
+    let removed = if keep_all { Vec::new() } else { finder.marked_in(first, group) };
+    if !removed.is_empty() {
+        app.run("photo.delete", json!({"ids": removed.iter().map(|i| i.0).collect::<Vec<_>>()}))?;
+    }
+    let left = match app.duplicates.as_mut() {
+        Some(f) => {
+            f.drop_groups(first, group);
+            f.groups.len()
+        }
+        None => 0,
+    };
+    // the thumbnails are drawn by index: the groups below moved up
+    app.renderer.forget_duplicates();
+    Ok(json!({"removed": removed.iter().map(|i| i.0).collect::<Vec<_>>(), "groupsLeft": left}))
 }
 
 /// Find Similar Copies: read every photo's picture on a worker and swap the groups in when it is
@@ -202,7 +264,7 @@ fn summary_text(report: &ScanReport) -> String {
 pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     match id {
         OPEN => Some(app.session.catalog.photos().next().is_some()),
-        COMPARE => Some(app.duplicates.as_ref().is_some_and(|f| f.open && !f.groups.is_empty())),
+        COMPARE | APPLY => Some(app.duplicates.as_ref().is_some_and(|f| f.open && !f.groups.is_empty())),
         _ => None,
     }
 }
@@ -211,6 +273,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
     match id {
         OPEN => Some(open(app)),
         COMPARE => Some(compare_group(app, p)),
+        APPLY => Some(apply_group(app, p)),
         _ => None,
     }
 }
@@ -233,6 +296,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let mut similar = false;
     let mut forget = false;
     let mut compare: Option<usize> = None;
+    // a group settled from its own buttons: (group, above, keep all)
+    let mut settle: Option<(usize, bool, bool)> = None;
     let (done_count, total) = finder.progress.as_ref().and_then(|p| p.lock().ok().map(|p| *p)).unwrap_or((0, 0));
     let scanning = finder.progress.is_some();
     let marked = finder.marked();
@@ -308,6 +373,40 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             if r.clicked() {
                                 compare = Some(gi);
                             }
+                            // settle this group now (#1399), or every group down to it, like the faces review's ↑
+                            ui.horizontal_wrapped(|ui| {
+                                let n = g.members.iter().filter(|m| m.marked).count();
+                                let label = if n == 0 {
+                                    tr("Keep This Group").to_string()
+                                } else {
+                                    tr_format!("Remove {n} and Keep the Rest", n = n).to_string()
+                                };
+                                let r = ui.add(egui::Button::new(label).min_size(vec2(0.0, 24.0))).on_hover_text(tr(
+                                    "Apply this group's marks now: the marked photos go to Recently Deleted, the others stay, and the group leaves the list",
+                                ));
+                                register(ui.ctx(), format!("button:duplicates.apply:{gi}"), r.rect);
+                                if r.clicked() {
+                                    settle = Some((gi, false, false));
+                                }
+                                if n > 0 {
+                                    let r = ui
+                                        .add(egui::Button::new(tr("Keep All")).min_size(vec2(0.0, 24.0)))
+                                        .on_hover_text(tr("Keep every photo of this group, whatever is marked, and take it off the list"));
+                                    register(ui.ctx(), format!("button:duplicates.keep:{gi}"), r.rect);
+                                    if r.clicked() {
+                                        settle = Some((gi, false, true));
+                                    }
+                                }
+                                if gi > 0 {
+                                    let r = ui
+                                        .add(egui::Button::new(tr("↑ Apply This and All Above")).min_size(vec2(0.0, 24.0)))
+                                        .on_hover_text(tr("Apply the marks of every group from the first down to this one, in one step"));
+                                    register(ui.ctx(), format!("button:duplicates.applyAbove:{gi}"), r.rect);
+                                    if r.clicked() {
+                                        settle = Some((gi, true, false));
+                                    }
+                                }
+                            });
                             ui.add_space(4.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
@@ -369,6 +468,21 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(group) = compare {
         match compare_group(app, &json!({"group": group})) {
             Ok(_) => app.toast(ctx, tr("Find Duplicates… brings the window back with its marks")),
+            Err(e) => app.toast_error(ctx, e),
+        }
+    }
+    if let Some((group, above, keep_all)) = settle {
+        match apply_group(app, &json!({"group": group, "above": above, "keepAll": keep_all})) {
+            Ok(r) => {
+                let n = r.get("removed").and_then(|v| v.as_array()).map_or(0, Vec::len);
+                let left = r.get("groupsLeft").and_then(|v| v.as_u64()).unwrap_or(0);
+                let text = if n == 0 {
+                    tr_format!("Kept. Groups left: {left}", left = left).to_string()
+                } else {
+                    tr_format!("Removed {n} to Recently Deleted. Groups left: {left}", n = n, left = left).to_string()
+                };
+                app.toast(ctx, text);
+            }
             Err(e) => app.toast_error(ctx, e),
         }
     }

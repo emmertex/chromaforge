@@ -73,6 +73,18 @@ impl CropHandle {
 /// - with `aspect`, the frame keeps that shape on every handle (when `start` had it);
 /// - the drag stops at the image edge instead of pushing the frame around, and slides along it.
 pub fn drag_crop(start: CropGeometry, handle: CropHandle, grab: Point, pointer: Point, w: f64, h: f64, aspect: Option<f64>) -> CropGeometry {
+    drag(start, handle, grab, pointer, w, h, aspect, false)
+}
+
+/// [`drag_crop`] for a crop that may extend past the photo (Crop ▸ Extend Past the Edge, issue #861): the frame
+/// stays inside [`CropGeometry::extended_bounds`] and keeps part of the photo, instead of staying inside the photo.
+/// The other guarantees are [`drag_crop`]'s.
+pub fn drag_crop_extended(start: CropGeometry, handle: CropHandle, grab: Point, pointer: Point, w: f64, h: f64, aspect: Option<f64>) -> CropGeometry {
+    drag(start, handle, grab, pointer, w, h, aspect, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drag(start: CropGeometry, handle: CropHandle, grab: Point, pointer: Point, w: f64, h: f64, aspect: Option<f64>, extend: bool) -> CropGeometry {
     let sane = |v: f64| v.is_finite();
     let r0 = start.rect;
     if ![w, h, grab.x, grab.y, pointer.x, pointer.y, start.angle, r0.x0, r0.y0, r0.x1, r0.y1].iter().copied().all(sane)
@@ -84,8 +96,18 @@ pub fn drag_crop(start: CropGeometry, handle: CropHandle, grab: Point, pointer: 
         return start;
     }
     // Start from a valid frame, then work in pixels of the straightened frame.
-    let mut base = start.constrained(w, h);
-    if base.angle == 0.0 {
+    let mut base = if extend { start.bounded_extended(w, h) } else { start.constrained(w, h) };
+    // extending: the box the frame stays in, and the turned photo's bounding box it must overlap
+    let bounds = base.extended_bounds(w, h);
+    let photo = Rect::from_center(
+        bounds.center(),
+        bounds.width() / (1.0 + 2.0 * crate::crop::MAX_EXTEND),
+        bounds.height() / (1.0 + 2.0 * crate::crop::MAX_EXTEND),
+    );
+    if extend {
+        let r = base.rect_px(w, h).intersect(&bounds);
+        base.rect = r.scale(1.0 / w, 1.0 / h);
+    } else if base.angle == 0.0 {
         // absorb the 1e-6 tolerance of `is_within_image` so the exact test below accepts the start
         let r = base.rect;
         base.rect = Rect::new(r.x0.clamp(0.0, 1.0), r.y0.clamp(0.0, 1.0), r.x1.clamp(0.0, 1.0), r.y1.clamp(0.0, 1.0));
@@ -98,7 +120,9 @@ pub fn drag_crop(start: CropGeometry, handle: CropHandle, grab: Point, pointer: 
     // Unrotated, the frame must be exactly inside the image (`is_within_image` tolerates 1e-6, which
     // would leak out as a sliver past the edge and, after any clamp, a shifted ratio).
     let feasible = |r: Rect| {
-        if base.angle == 0.0 {
+        if extend {
+            r.x0 >= bounds.x0 && r.y0 >= bounds.y0 && r.x1 <= bounds.x1 && r.y1 <= bounds.y1 && !r.intersect(&photo).is_empty()
+        } else if base.angle == 0.0 {
             r.x0 >= 0.0 && r.y0 >= 0.0 && r.x1 <= w && r.y1 <= h
         } else {
             CropGeometry { rect: r.scale(1.0 / w, 1.0 / h), angle: base.angle }.is_within_image(w, h)
@@ -113,7 +137,7 @@ pub fn drag_crop(start: CropGeometry, handle: CropHandle, grab: Point, pointer: 
                 cur.translate(Vec2::new(ax * t, ay * t))
             };
             // straightened, go to the nearest place that fits, so the frame slides along tilted edges (#2299)
-            let nearest = if base.angle != 0.0 {
+            let nearest = if base.angle != 0.0 && !extend {
                 let from = |r: Rect| nearest_move(r, base.angle, w, h, Vec2::new(dx, dy)).map(|v| r.translate(v)).filter(|r| feasible(*r));
                 // a frame at the tolerance's edge on opposite sides moves only once it is inside it
                 from(sr).or_else(|| shrunk_inside(sr, base.angle, w, h).and_then(from))
@@ -620,5 +644,51 @@ mod tests {
             assert!(g.is_within_image(W, H) && g.rect.x0 < 0.01, "{:?}", g.rect);
         }
         assert!(b.rect.y0 > a.rect.y0 + 0.01 && a.rect.y0 > start.rect.y0, "{:?} then {:?}", a.rect, b.rect);
+    }
+
+    /// Issue #861: with Extend Past the Edge the frame may leave the photo, up to the extended bounds, and never
+    /// loses the photo altogether; without it the same drag stops at the edge.
+    #[test]
+    fn an_extending_drag_goes_past_the_edge_within_its_bounds() {
+        let full = geo(0.0, 0.0, 1.0, 1.0);
+        let out = drag_crop_extended(full, Right, p(1.0, 0.5), p(1.3, 0.5), W, H, None);
+        assert!((out.rect.x1 - 1.3).abs() < 1e-6, "{:?}", out.rect);
+        assert_eq!(drag(full, Right, p(1.0, 0.5), p(1.3, 0.5), None).rect, full.rect, "without it the edge holds");
+        // far past the bounds: stops on them
+        let far = drag_crop_extended(full, TopLeft, p(0.0, 0.0), p(-9.0, -9.0), W, H, None);
+        let b = full.extended_bounds(W, H);
+        assert!((far.rect.x0 * W - b.x0).abs() < 1e-6 && (far.rect.y0 * H - b.y0).abs() < 1e-6, "{:?} vs {b:?}", far.rect);
+        // a locked aspect keeps its shape past the edge
+        let wide = drag_crop_extended(full, BottomRight, p(1.0, 1.0), p(1.2, 1.2), W, H, Some(1.5));
+        let r = wide.rect_px(W, H);
+        assert!((r.width() / r.height() - 1.5).abs() < 1e-6 && r.x1 > W, "{r:?}");
+        // moved off the photo: it keeps some of it
+        let small = geo(0.4, 0.4, 0.6, 0.6);
+        let moved = drag_crop_extended(small, Move, p(0.5, 0.5), p(5.0, 5.0), W, H, None);
+        let m = moved.rect_px(W, H);
+        assert!(m.x0 < W && m.y0 < H && m.width() > 0.0, "{m:?}");
+        // turned: the bounds follow the turned photo
+        let turned = CropGeometry { rect: Rect::UNIT, angle: 10.0 };
+        let t = drag_crop_extended(turned, Left, p(0.0, 0.5), p(-0.2, 0.5), W, H, None);
+        assert!(t.rect.x0 < -0.15 && t.angle == 10.0, "{:?}", t.rect);
+    }
+
+    /// Hostile numbers never panic and leave a finite frame inside the extended bounds.
+    #[test]
+    fn an_extending_drag_survives_hostile_numbers() {
+        for v in [f64::NAN, f64::INFINITY, -1e308, 1e308] {
+            for hd in [TopLeft, Right, Move] {
+                let g = drag_crop_extended(geo(0.0, 0.0, 1.0, 1.0), hd, p(0.5, 0.5), p(v, 0.5), W, H, None);
+                assert!([g.rect.x0, g.rect.y0, g.rect.x1, g.rect.y1].iter().all(|x| x.is_finite()), "{v} {hd:?}");
+                // a start that isn't a frame comes back as it was, as with `drag_crop`
+                let start = geo(v, 0.0, 1.0, 1.0);
+                let s = drag_crop_extended(start, hd, p(0.5, 0.5), p(0.6, 0.5), W, H, Some(v));
+                assert!(s.rect.x1 == start.rect.x1 || [s.rect.x0, s.rect.y0, s.rect.x1, s.rect.y1].iter().all(|x| x.is_finite()), "{v} {hd:?}");
+            }
+        }
+        let b = CropGeometry { rect: Rect::new(-50.0, -50.0, 50.0, 50.0), angle: 0.0 }.bounded_extended(W, H);
+        let r = b.rect_px(W, H);
+        let bounds = b.extended_bounds(W, H);
+        assert!(r.x0 >= bounds.x0 - 1e-6 && r.x1 <= bounds.x1 + 1e-6, "{r:?}");
     }
 }
