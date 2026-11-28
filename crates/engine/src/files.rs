@@ -154,7 +154,8 @@ pub fn embedded_lens(raw: &lcc_raw::RawInfo) -> Option<lcc_develop::EmbeddedLens
 pub fn probe_video_file(path: &std::path::Path) -> Result<ProbeInfo, String> {
     use std::io::Read;
     let name = path.to_string_lossy().to_string();
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
+    // (counted, so the I/O scheduler sees a long clip progressing)
+    let mut f = crate::bounded_read::counting(std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?);
     let mut hash = lcc_preview::Hasher128::new();
     let mut sha = lcc_hash::Sha1::new();
     let mut buf = vec![0u8; 1 << 20];
@@ -558,6 +559,16 @@ pub fn bin_factor(raw: &lcc_raw::RawImage, max_edge: usize) -> Option<usize> {
     [8usize, 6, 4, 3, 2].into_iter().find(|&k| raw.can_bin(k) && (long / k >= need || (k == 3 && !raw.can_bin(2) && long / k >= need3)))
 }
 
+/// The block an export bins a raw by ([`crate::media::LoadOptions::keep_binned`], #1377): the smallest that the
+/// sensor allows and that leaves at least `edge` pixels on the long side. Smallest, not largest: a box over a larger
+/// block aliases the detail between its own Nyquist limit and the output's (the `bin_sharpness` example's zone
+/// plate: SSIM 0.96 against a full demosaic with a block of 4 at 1024 px from 45 MP, 0.998 with a block of 2).
+pub fn export_bin_factor(raw: &lcc_raw::RawImage, edge: usize) -> Option<usize> {
+    let c = raw.crop.clipped(raw.active_area.width, raw.active_area.height);
+    let long = if c.width > 1 && c.height > 1 { c.width.max(c.height) } else { raw.active_area.width.max(raw.active_area.height) };
+    [2usize, 3, 4, 6, 8].into_iter().find(|&k| raw.can_bin(k)).filter(|&k| long / k >= edge.max(1))
+}
+
 /// Decode a file into a linear Rec.2020 image no larger than `max_edge`, oriented.
 ///
 /// Runs on a rayon worker: its many short parallel loops then start on the worker's own queue
@@ -759,6 +770,12 @@ fn denoised_camera_rgb(raw: &lcc_raw::RawImage, spec: &DenoiseSpec, factor: usiz
     }
 }
 
+/// Whether a raw's full-size demosaic may go to the GPU (issue #1377): unless `<PREFIX>_GPU_DEMOSAIC=0`. The GPU's own
+/// switches (the preference, `<PREFIX>_GPU=0`) apply too, and without a GPU the CPU does it.
+fn gpu_demosaic() -> bool {
+    std::env::var(lcc_brand::env_var("GPU_DEMOSAIC")).map_or(true, |v| v.trim() != "0")
+}
+
 fn load_bytes_now(
     bytes: std::borrow::Cow<'_, [u8]>,
     max_edge: usize,
@@ -869,7 +886,7 @@ fn load_bytes_now(
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
         let t0 = web_time::Instant::now();
-        let bin = bin_factor(&raw, max_edge);
+        let bin = if options.keep_binned { export_bin_factor(&raw, max_edge) } else { bin_factor(&raw, max_edge) };
         // (binned: block means, and which colours had a clipped sample in each block)
         let binned = match bin {
             Some(k) => raw.develop_binned_masked(k, HIGHLIGHT_CLIP).map_err(|e| e.to_string())?,
@@ -879,8 +896,14 @@ fn load_bytes_now(
         let (img, clip_mask) = match binned {
             Some((img, mask)) => (img, Some(mask)),
             None => {
-                let method = if max_edge <= 600 { lcc_raw::Method::Bilinear } else { lcc_raw::Method::Ahd };
-                (raw.develop(method).map_err(|e| e.to_string())?, None)
+                let img = if max_edge <= 600 {
+                    raw.develop(lcc_raw::Method::Bilinear)
+                } else if gpu_demosaic() {
+                    raw.develop_ahd_with(lcc_gpu::demosaic_ahd)
+                } else {
+                    raw.develop(lcc_raw::Method::Ahd)
+                };
+                (img.map_err(|e| e.to_string())?, None)
             }
         };
         // the same development from the denoised mosaic, when the photo has been denoised
@@ -924,7 +947,8 @@ fn load_bytes_now(
             colour.apply(&mut img);
             stages.push(("colour", t0.elapsed()));
             // a full-size render keeps the picture (fitting it to its own size would copy it, ~390 MB at 33 MP)
-            let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Box) } else { img };
+            // (an export's binned source keeps its size: the pipeline takes it to the output in one Lanczos step)
+            let img = if !options.keep_binned && img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Box) } else { img };
             stages.push(("fit", t0.elapsed()));
             let img = img.into_oriented(raw.orientation);
             stages.push(("orient", t0.elapsed()));
@@ -1654,7 +1678,9 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
             return Ok(info);
         }
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
-        let _permit = crate::memory::work_gate().acquire(len);
+        // (as an I/O scheduler job: the wait ends when the job is abandoned, or when memory held by
+        // abandoned reads means this file can never fit)
+        let _permit = crate::memory::work_gate().acquire_for_job(len).map_err(|e| format!("{path}: {e}"))?;
         let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES)
             .map_err(|e| format!("{path}: {e}"))?;
         // (a short file that hasn't changed for a while is corrupt: the decode below reports it)
@@ -1663,7 +1689,12 @@ pub fn fs_hooks() -> (FileLoader, FileProbe) {
         {
             return Err(format!("{path}: {}", lcc_catalog::incoming::STILL_BEING_WRITTEN));
         }
-        let mut info = probe_bytes(path, &bytes)?;
+        // pure CPU: the scheduler doesn't count it as the volume's silence (the metadata calls
+        // before and after are I/O and stay outside)
+        let mut info = {
+            let _computing = crate::memory::computing();
+            probe_bytes(path, &bytes)?
+        };
         info.file_modified = file_modified(path);
         Ok(info)
     });
@@ -2513,7 +2544,11 @@ pub(crate) mod tests {
         assert_eq!((plain.width, plain.height), (24, 32));
         assert_eq!((cached.width, cached.height), (plain.width, plain.height));
         let worst = plain.data.iter().zip(&cached.data).flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs())).fold(0.0f32, f32::max);
-        assert!(worst < 0.002, "color finish differs beyond cache half-float rounding: {worst}");
+        // The plain member may demosaic on the GPU (#1377): where the device's rounding tips AHD's
+        // homogeneity count it takes the other, equally good candidate (crates/gpu/src/demosaic.rs), and this
+        // test's deliberately extreme look table amplifies one candidate switch to about 0.01. A finish bug
+        // (the double application this guards against) moves every pixel, not one: it still clears 0.002.
+        assert!(worst < 0.012, "color finish differs beyond cache half-float rounding and demosaic rounding: {worst}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

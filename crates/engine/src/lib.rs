@@ -23,6 +23,7 @@ pub mod availability;
 mod background_merge;
 pub mod base64;
 pub mod base_curves;
+pub(crate) mod bg_refresh;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
@@ -57,6 +58,7 @@ pub mod dust_map;
 pub mod email;
 pub mod enhance;
 mod errors;
+pub mod expand;
 pub mod export;
 pub mod export_video;
 pub mod eye_cull;
@@ -89,6 +91,7 @@ pub mod import;
 mod import_move;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instance;
+mod io_sched;
 pub mod legacy;
 pub mod lens_download;
 pub mod lens_profiles;
@@ -240,6 +243,11 @@ pub enum EngineError {
     ModelMissing { model: AiModel, msg: String },
     #[error("{0}")]
     Other(String),
+}
+
+/// The diagnostics outcome of an engine error (issue #1363): a cancel is `cancelled`, anything else `failed`.
+pub(crate) fn diag_outcome(e: &EngineError) -> lcc_diag::Outcome {
+    if matches!(e, EngineError::Cancelled(_)) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Failed }
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -746,6 +754,8 @@ pub struct Session {
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// Generative fill: keys, consent, the running generation, the patch cache ([`genfill`]).
     pub genfill: genfill::GenfillState,
+    /// Crop ▸ Fill Edges: the running fill of a crop's area past the photo ([`expand`]).
+    pub edge_fill: expand::EdgeFillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Builds asked for while one was already running, waiting for their turn
@@ -1054,6 +1064,7 @@ impl Session {
             quality_scan: None,
             video: Default::default(),
             genfill: Default::default(),
+            edge_fill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
             preview_queue: Default::default(),
@@ -2919,7 +2930,11 @@ mod tests_edit_roundtrip;
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
 #[cfg(test)]
+mod tests_expand;
+#[cfg(test)]
 mod tests_export;
+#[cfg(test)]
+mod tests_export_binning;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
@@ -3059,6 +3074,8 @@ mod tests_profile_manager;
 mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
+#[cfg(test)]
+mod tests_reload_sha1;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]

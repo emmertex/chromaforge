@@ -24,6 +24,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod graph;
+
 use std::path::{Path, PathBuf};
 
 #[cfg(all(feature = "ort", not(any(target_arch = "wasm32", target_os = "android"))))]
@@ -360,6 +362,67 @@ pub fn webgpu_candidates(library: &Path) -> Vec<PathBuf> {
     let set = lcc_brand::env_os("ONNXRUNTIME_WEBGPU").filter(|v| !v.is_empty());
     let dir = library.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf);
     candidates(set.as_deref(), dir.as_deref(), webgpu_names(), false)
+}
+
+/// The newest ONNX Runtime release a Windows WebGPU plug-in was tested against: plug-in 0.5.0 is built from ONNX
+/// Runtime 1.31. Plug-in 0.6.0 (ONNX Runtime 1.32) ends the process on Windows (docs/onnxruntime.md), and nothing
+/// in-process can catch that, so a newer plug-in is refused unless `<PREFIX>_ONNXRUNTIME_WEBGPU_UNTESTED=1` (for
+/// retesting before the pin moves).
+pub const WEBGPU_TESTED_WINDOWS: (u16, u16) = (1, 31);
+
+/// Largest file [`pe_file_version`] reads.
+const MAX_PE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The file version (`major.minor.build.revision`) in a Windows DLL's `VS_VERSION_INFO` resource, read as plain bytes
+/// (the library is not loaded). `None` when the file has none or can't be read.
+pub fn pe_file_version(path: &Path) -> Option<[u16; 4]> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PE_BYTES).read_to_end(&mut bytes).ok()?;
+    file_version_in(&bytes)
+}
+
+/// [`pe_file_version`] on bytes: the `VS_FIXEDFILEINFO` (signature `0xFEEF04BD`) that follows the `VS_VERSION_INFO`
+/// key, within its padding.
+pub fn file_version_in(bytes: &[u8]) -> Option<[u16; 4]> {
+    let key: Vec<u8> = "VS_VERSION_INFO".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let at = bytes.windows(key.len()).position(|w| w == key.as_slice())?;
+    let after = at.checked_add(key.len())?;
+    let window = bytes.get(after..after.saturating_add(16).min(bytes.len()))?;
+    let sig = window.windows(4).position(|w| w == [0xbd, 0x04, 0xef, 0xfe])?;
+    let fixed = after.checked_add(sig)?;
+    let word = |off: usize| -> Option<u32> {
+        let b = bytes.get(fixed.checked_add(off)?..fixed.checked_add(off + 4)?)?;
+        Some(u32::from_le_bytes([*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]))
+    };
+    let (ms, ls) = (word(8)?, word(12)?);
+    Some([(ms >> 16) as u16, (ms & 0xffff) as u16, (ls >> 16) as u16, (ls & 0xffff) as u16])
+}
+
+/// Why the Windows WebGPU plug-in at `path` must not be registered: it was built from an ONNX Runtime newer than
+/// [`WEBGPU_TESTED_WINDOWS`], and `untested` (the setting) does not allow it. `None`: go ahead (other systems, an
+/// unreadable version, a tested one).
+pub fn webgpu_refusal(path: &Path, windows: bool, untested: bool) -> Option<String> {
+    if !windows || untested {
+        return None;
+    }
+    let [major, minor, ..] = pe_file_version(path)?;
+    ((major, minor) > WEBGPU_TESTED_WINDOWS).then(|| {
+        format!(
+            "{}: this WebGPU plug-in (ONNX Runtime {major}.{minor}) is newer than the tested one ({}.{}), and newer ones \
+             have ended the app on Windows; set {}=1 to try it anyway",
+            path.display(),
+            WEBGPU_TESTED_WINDOWS.0,
+            WEBGPU_TESTED_WINDOWS.1,
+            lcc_brand::env_var("ONNXRUNTIME_WEBGPU_UNTESTED")
+        )
+    })
+}
+
+/// Whether `<PREFIX>_ONNXRUNTIME_WEBGPU_UNTESTED` allows an untested Windows WebGPU plug-in.
+pub fn webgpu_untested_allowed() -> bool {
+    lcc_brand::env_os("ONNXRUNTIME_WEBGPU_UNTESTED").is_some_and(|v| matches!(v.to_str().map(str::trim), Some("1" | "yes" | "true" | "on")))
 }
 
 /// Where the library is looked for, in order: `<PREFIX>_ONNXRUNTIME` when it names a file or folder (`off` or `0`:

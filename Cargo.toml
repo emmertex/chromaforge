@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*", "xtask"]
 exclude = ["vendor", "sdk"]
 
 [workspace.package]
-version = "26.48.1"
+version = "26.48.2"
 edition = "2024"
 license = "MIT OR GPL-3.0-or-later"
 rust-version = "1.95"
@@ -23,6 +23,7 @@ lcc-denoise = { path = "crates/denoise", default-features = false }
 lcc-geom = { path = "crates/geom" }
 lcc-faces = { path = "crates/faces" }
 lcc-sysmem = { path = "crates/sysmem" }
+lcc-diag = { path = "crates/diag" }
 lcc-libraw = { path = "crates/libraw" }
 lcc-hdrmeta = { path = "crates/hdrmeta" }
 lcc-gpumem = { path = "crates/gpumem" }
@@ -45,7 +46,9 @@ lcc-camdb = { path = "crates/camdb" }
 lcc-camprof = { path = "crates/camprof" }
 lcc-fidelity = { path = "crates/fidelity" }
 lcc-colourfit = { path = "crates/colourfit" }
-lcc-codecs = { path = "crates/codecs" }
+# Lossy WebP (libwebp, C) is not among the features every crate gets: lcc-engine turns it on as a default feature
+# of its own, so a library user can build without C (`default-features = false` on lcc-engine).
+lcc-codecs = { path = "crates/codecs", default-features = false, features = ["parallel", "jxl", "avif"] }
 lcc-meta = { path = "crates/meta" }
 lcc-develop = { path = "crates/develop" }
 lcc-lensdb = { path = "crates/lensdb" }

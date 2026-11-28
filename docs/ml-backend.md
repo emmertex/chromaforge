@@ -95,15 +95,35 @@ and toggle background indexing.
 **ONNX Runtime** (`crates/onnxrt`, [`docs/onnxruntime.md`](onnxruntime.md)): desktop builds can run `.onnx` models
 through ONNX Runtime on the graphics card (its WebGPU plug-in, Core ML or CUDA), loaded at run time from beside the
 app. AI Denoise and AI Super Resolution use it first, checked against the CPU; `ml.status` reports it as
-`onnxRuntime`. The other models move onto it next.
+`onnxRuntime`. CLIP's vision tower does too (`crates/ml/src/onnx.rs`): it is written as an ONNX graph (opset 17)
+from the weights the CPU encoder loaded, so there is no second download, and tried before the wgpu kernels, checked
+against the CPU encoder the same way. The text tower stays on the wgpu kernels.
+
+**Orientation detection** (#490; `crates/ml/src/orient.rs`, `crates/engine/src/ml_orient.rs`, manual page
+`ai/orientation`): `photo.autoOrient {ids?, minConfidence?, apply?, wait?}` (Photo ▸ Rotate & Flip ▸ Auto Orient (AI))
+renders each photo as it is shown (its orientation only, long edge 448 px), turns it 0°, 90°, 180° and 270°
+clockwise and embeds the four views with the active CLIP model in one batch (`orient:<id>` jobs on the shared queue).
+An `orientationHead` classifier (`4 × embed_dim` weights and a bias, JSON, checked on load: version, shape, finite
+numbers) says for each view how far the upright scene is turned in it; the four answers are pooled (view `k` of a
+photo turned `r` shows `r + k`, so each votes for one `r`, averaged in log-probability) into a turn and a confidence.
+Turns at or above the classifier's threshold are applied when every photo of the run has an answer, as one
+"Auto Orient" history step built like Rotate Left/Right (crop and masks turn too); a photo turned by hand meanwhile
+is left alone. The run's row is `mlOrient` "Detecting orientation · n of m"; its ✕ stops it and nothing is turned.
+`ml.orientation.fit {ids?, out?, steps?}` fits the classifier on the library's photos as shown, taken to be upright:
+softmax regression by full-batch gradient descent in plain Rust, one photo in five (by a hash of its id) held out to
+measure view and pooled accuracy and to choose the lowest threshold whose held-out answers are 98 % right, then
+fitted again on all of them; saved as `<models>/orientation-<model id>.json`, which is used when its `embedder` is
+the installed model's exact tag. A head built in for a model (`lcc_ml::orient::builtin`) is used otherwise; none
+ships yet. `ml.orientation.status` names the classifier in use, its fit report and the last run's answer.
 
 ## What's next
 
 In the order of the plan on issue #491:
 
-1. **Downstream AI features (#488–#490)** on the cached embeddings: aesthetic scoring
-   head (#488), culling suggestions (#489), and orientation suggestions (#490). Suggestions are proposals the user
-   accepts, never silent writes.
+1. **Downstream AI features (#488, #489)** on the cached embeddings: aesthetic scoring head (#488) and culling
+   suggestions (#489). Suggestions are proposals the user accepts, never silent writes.
+2. **Orientation:** a built-in classifier for CLIP ViT-B/32, fitted on photos whose owner agrees (only the numbers
+   ship), and an option to run it during import.
 
 ## Testing
 

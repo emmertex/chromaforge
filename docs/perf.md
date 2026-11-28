@@ -183,6 +183,21 @@ stage time per photo (raw decode 0.56 s, Remove Hot Pixels 0.13 s, Fix Hot and D
 colour finish 0.21 s) and the render 0.73 s. Full size: 9.7 s wall and 33 CPU-s per photo, 5.1 GB peak, of which the
 CPU render is 10.0 s of stage time and the demosaic 1.6 s.
 
+Step 2 of #1377, same machine, 3 synthetic photos, two interleaved before/after runs: an export reads a raw binned
+two by two when that leaves 1.15 times the source pixels the output needs (`EXPORT_BIN_MARGIN`), kept at that size
+for one Lanczos step. To 3000 px: 3.61 s → 1.95 s wall, 12.0 → 6.2 CPU-s, 1.86 → 1.06 GB peak per photo. To 2048 px:
+unchanged (1.26 → 1.29 s wall, 3.97 → 3.97 CPU-s; the colour finish is 0.21 → 0.09 s, the render 0.72 → 0.91 s on the
+larger source), but sharper. The `bin_sharpness` example (`cargo run --release -p lcc-engine --example
+bin_sharpness`) is the visual check: SSIM against a full AHD demosaic ≥ 0.998 on the demo scenes from 1024 to 3840
+px; on a zone plate 0.96–0.998 binned by 2, against 0.64–0.80 for the old box fit to 2560 px. Crops are written to
+`target/bench/bin-sharpness/`.
+
+Step 3 of #1377: a Bayer raw's full-size AHD runs on the GPU (`lcc_gpu::demosaic`, `docs/gpu-pipeline.md`). On this
+container's software Vulkan (lavapipe, `<PREFIX>_GPU_SOFTWARE=1`) it is bit-identical to the CPU's in every Bayer phase
+and across strip seams, and the export path takes it (`gpu` column 17 % busy, 2 photos at full size). That machine's
+"GPU" is the same 4 cores, so the time there (demosaic stage 2.84 s against 1.65 s on the CPU) says nothing about a
+real card; `<PREFIX>_GPU_DEMOSAIC=0` against the default on a machine with one is the comparison to make.
+
 ## Start-up (`cargo xtask bench`, `startup_bench`; plan item 4.1, #979)
 
 `cargo run --release -p lcc-ui-egui --example startup_bench -- [DIR] [PHOTOS]` makes a synthetic library (default

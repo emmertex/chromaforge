@@ -70,8 +70,16 @@ impl Frame {
     pub fn with_lens(src_w: usize, src_h: usize, s: &DevelopSettings, apply_crop: bool, lens: Option<&EmbeddedLens>) -> Frame {
         let orient = s.orientation;
         let (ow, oh) = if orient.swaps_axes() { (src_h as f64, src_w as f64) } else { (src_w as f64, src_h as f64) };
+        // a crop extended past the photo (issue #861) shows blank canvas there: sampled through a warp
+        // (an identity one when nothing else warps), whose pixels past the source are blank, never the
+        // photo's edge pixels drawn out
+        let extend = apply_crop && s.crop.extend;
         // bounded: a crop from a sidecar or an agent can reach far past the photo (issue #2555)
-        let crop = if apply_crop { s.crop.geometry.bounded(ow, oh) } else { CropGeometry::default() };
+        let crop = match (apply_crop, extend) {
+            (false, _) => CropGeometry::default(),
+            (true, false) => s.crop.geometry.bounded(ow, oh),
+            (true, true) => s.crop.geometry.bounded_extended(ow, oh),
+        };
         let lens = lens.map(|l| reorient_lens(l, orient, src_w as f64, src_h as f64));
         let mut warp = Warp::from_settings(ow, oh, s, lens.as_ref());
         let persp = perspective(s, ow, oh);
@@ -91,12 +99,13 @@ impl Frame {
             // a flip is not part of the crop: the crop tool's uncropped view shows it too
             flip_h: s.crop.flip_h,
             flip_v: s.crop.flip_v,
-            warp: (!warp.is_identity()).then_some(warp),
+            warp: (extend || !warp.is_identity()).then_some(warp),
             view: None,
             downscale: Filter::Mitchell,
             masks_on_photo: false,
         };
-        if apply_crop {
+        // (an extended crop keeps the canvas the lens correction shows past the photo, for the fill)
+        if apply_crop && !extend {
             f.constrain_to_image(s.geometry.constrain_crop);
         }
         f

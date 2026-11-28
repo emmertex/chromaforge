@@ -389,26 +389,13 @@ impl Library {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn library_id(dir: &Path) -> String {
     use std::hash::{Hash, Hasher};
-    let mut cs = lcc_catalog::library::CatalogSettings::load(dir);
-    if let Some(id) = cs.library_id.as_ref().filter(|s| !s.is_empty()) {
-        return id.clone();
-    }
-    let hash = |fresh: bool| {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        dir.hash(&mut h);
-        if fresh {
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default().hash(&mut h);
-            std::process::id().hash(&mut h);
-        }
-        format!("{:016x}", h.finish())
-    };
-    let id = hash(true);
-    cs.library_id = Some(id.clone());
-    match cs.save(dir) {
-        Ok(()) => id,
+    match lcc_catalog::library::ensure_library_id(dir) {
+        Ok(id) => id,
         Err(e) => {
             log::warn!("library id: {e}");
-            format!("path-{}", hash(false))
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            dir.hash(&mut h);
+            format!("path-{:016x}", h.finish())
         }
     }
 }
@@ -1061,6 +1048,7 @@ impl Session {
         let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
         let upgraded = upgrade_notice(&report);
         let torn = torn_notice(&report);
+        let unreadable = unreadable_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -1075,7 +1063,13 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(torn).chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref())
+                .into_iter()
+                .chain(upgraded)
+                .chain(torn)
+                .chain(unreadable)
+                .chain(settings.warnings)
+                .collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
@@ -1154,6 +1148,11 @@ impl Session {
     /// Called after every top-level command; cheap when nothing changed. Fails (with
     /// [`EngineError::NotSaved`]) only when the queued ops couldn't be written; they stay queued.
     pub fn persist(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): at `detail`, since it runs after every command; listed while it runs
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "persist", &[], crate::diag_outcome, |_| self.persist_inner())
+    }
+
+    fn persist_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         if !self.pending_log.is_empty() {
             let mut appended = lib.journal.append(&self.pending_log);
@@ -1363,6 +1362,13 @@ impl Session {
     /// by a thread of its own). An error: a write failed and the changes it lost are saved by
     /// the next save (a snapshot). A no-op without a library.
     pub fn flush_catalog(&mut self) -> Result<()> {
+        // diagnostics (issue #1363): waiting for the log writer, listed while it runs
+        lcc_diag::traced(lcc_diag::Level::Detail, lcc_diag::Subsystem::Catalog, "flush_catalog", &[], crate::diag_outcome, |_| {
+            self.flush_catalog_inner()
+        })
+    }
+
+    fn flush_catalog_inner(&mut self) -> Result<()> {
         let Some(lib) = self.library.as_mut() else { return Ok(()) };
         lib.journal.flush().map_err(|e| {
             let reason = e.to_string();
@@ -1790,6 +1796,26 @@ fn torn_notice(report: &LoadReport) -> Option<String> {
     })
 }
 
+/// What a library whose catalog store holds records this version could not read must tell the user: they are left
+/// out of what the library shows, kept as they are in the store, and the store is not optimised meanwhile (that would
+/// delete them). The likely cause is a version of the app that wrote something this one can't read.
+fn unreadable_notice(report: &LoadReport) -> Option<String> {
+    let n = report.unreadable;
+    (n > 0).then(|| {
+        let what = if n == 1 { "1 record".to_string() } else { format!("{n} records") };
+        format!(
+            "{what} in this library's catalog could not be read, so the photos, collections or other items {} are \
+             left out of what the library shows. {} kept in the catalog as {}, and the catalog is not optimised \
+             while this lasts, because optimising would delete {}. If another version of the app opened this library \
+             recently, open it in that version; otherwise restore the catalog from a backup.",
+            if n == 1 { "it holds" } else { "they hold" },
+            if n == 1 { "It is" } else { "They are" },
+            if n == 1 { "it is" } else { "they are" },
+            if n == 1 { "it" } else { "them" },
+        )
+    })
+}
+
 fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
     lock.filter(|l| !l.held()).map(|_| {
         "This library could not be locked (its catalog.lock file can't be locked where it is stored, e.g. on some network \
@@ -1844,6 +1870,17 @@ mod resolve_tests {
         let big = torn_notice(&r(6_442_450_941)).unwrap();
         assert!(big.contains("6.4 GB") && big.contains("import them"), "{big}");
         assert!(torn_notice(&r(49_000_000)).unwrap().contains("49 MB"));
+    }
+
+    /// Records the catalog store could not decode are said in plain words at open; a library read whole says nothing.
+    #[test]
+    fn unreadable_catalog_records_are_said_in_plain_words() {
+        let r = |unreadable| LoadReport { unreadable, ..Default::default() };
+        assert!(unreadable_notice(&r(0)).is_none());
+        let one = unreadable_notice(&r(1)).unwrap();
+        assert!(one.starts_with("1 record ") && one.contains("not optimised") && one.contains("backup"), "{one}");
+        let many = unreadable_notice(&r(12)).unwrap();
+        assert!(many.starts_with("12 records ") && many.contains("delete them"), "{many}");
     }
 
     /// `--library <dir>/catalog.snap` failed with the OS's "File exists" (creating a folder over

@@ -48,6 +48,7 @@ thread_local! {
     static SYNCS: Cell<u64> = const { Cell::new(0) };
     static NO_FULL_SYNC: Cell<bool> = const { Cell::new(false) };
     static PLAIN_FSYNCS: Cell<u64> = const { Cell::new(0) };
+    static SPOIL: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How many file and folder syncs this module made **on the calling thread** (for tests: a
@@ -145,6 +146,40 @@ impl Drop for FaultGuard {
     }
 }
 
+/// Fault injection for tests (in any crate): while the returned guard lives, every file this
+/// module writes **on the calling thread** reads back with its first byte changed after it was
+/// written and synced, as from a failing drive or a flaky network volume.
+#[doc(hidden)]
+pub fn spoil_written_files() -> SpoilGuard {
+    SPOIL.with(|c| c.set(true));
+    SpoilGuard(())
+}
+
+/// Ends a [`spoil_written_files`] when dropped.
+#[doc(hidden)]
+pub struct SpoilGuard(());
+
+impl Drop for SpoilGuard {
+    fn drop(&mut self) {
+        SPOIL.with(|c| c.set(false));
+    }
+}
+
+/// Under [`spoil_written_files`]: change the first byte of the file at `path`.
+fn spoil(path: &Path) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    if !SPOIL.with(Cell::get) {
+        return Ok(());
+    }
+    let mut f = OpenOptions::new().read(true).write(true).open(path)?;
+    let mut b = [0u8; 1];
+    if f.read(&mut b)? == 1 {
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&[!b[0]])?;
+    }
+    Ok(())
+}
+
 /// Counts what is written; fails past an injected limit.
 struct Limited<W> {
     inner: W,
@@ -203,9 +238,10 @@ fn create_temp(path: &Path) -> io::Result<(PathBuf, File)> {
     Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("no free temp file name in {}", dir.display())))
 }
 
-/// Write a temp file next to `path` with what `fill` writes, synced to disk when `sync`. On
-/// failure the temp file is removed. Returns its path and length.
-fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(PathBuf, u64)> {
+/// Write a temp file next to `path` with what `fill` writes, synced to disk when `sync` is given
+/// (the sync runs through its [`WriteProgress::flushing`]). On failure the temp file is removed.
+/// Returns its path and length.
+fn write_temp(path: &Path, sync: Option<&dyn WriteProgress>, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<(PathBuf, u64)> {
     let (tmp, file) = create_temp(path)?;
     let r = (|| {
         let limit = FAIL_AFTER.with(Cell::get);
@@ -214,9 +250,11 @@ fn write_temp(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> i
         w.flush()?;
         let n = w.n;
         let f = w.inner.into_inner().map_err(|e| e.into_error())?;
-        if sync {
-            counted_sync(&f)?;
+        if let Some(p) = sync {
+            p.flushing(&mut || counted_sync(&f))?;
         }
+        drop(f);
+        spoil(&tmp)?;
         Ok(n)
     })();
     match r {
@@ -251,7 +289,7 @@ pub fn write_atomic_nosync(path: &Path, data: &[u8]) -> io::Result<()> {
 fn replace_with(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<u64> {
     let real = replace_target(path)?;
     let path = real.as_path();
-    let (tmp, n) = write_temp(path, sync, fill)?;
+    let (tmp, n) = write_temp(path, sync.then_some(&NoProgress as &dyn WriteProgress), fill)?;
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -260,6 +298,31 @@ fn replace_with(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) ->
         sync_dir(parent_of(path));
     }
     Ok(n)
+}
+
+/// Replace `path`, an original the user may have no other copy of (Update DNG rewrites a raw in
+/// place), with `data`: as [`write_atomic`], but the synced temp file is read back and must hold
+/// exactly `data` before it is renamed over `path`. When it reads back different (a failing drive,
+/// a flaky network volume) the temp file is removed and `path` is left as it was. The same check
+/// as [`write_new`]'s (issue #134 point 4), for a file that replaces rather than adds one.
+pub fn replace_verified(path: &Path, data: &[u8]) -> io::Result<()> {
+    let real = replace_target(path)?;
+    let path = real.as_path();
+    let (tmp, _) = write_temp(path, Some(&NoProgress), &mut |w| w.write_all(data))?;
+    let checked = match same_content(&tmp, data, &NoProgress) {
+        Ok(true) => fs::rename(&tmp, path),
+        Ok(false) => Err(io::Error::other(
+            "the new file read back different from what was written (a failing drive or connection?), so it did not replace the \
+             original, which was left as it was",
+        )),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = checked {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    sync_dir(parent_of(path));
+    Ok(())
 }
 
 /// The file a replacement of `path` must land on. A symbolic link is written **through**: the
@@ -295,16 +358,55 @@ pub fn write_new(path: &Path, data: &[u8]) -> io::Result<()> {
 /// `IMG_1.dng`, `IMG_1-2.dng`, …): the file is written once and then given the first name that
 /// is not taken. Returns that name; `AlreadyExists` when every candidate is taken.
 pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8]) -> io::Result<PathBuf> {
+    write_new_unique_progress(candidates, data, &NoProgress)
+}
+
+/// Bytes per write (and at most per read back) of [`write_new_unique_progress`], so `progress`
+/// hears from a slow volume often.
+const PROGRESS_CHUNK: usize = 4 << 20;
+
+/// What [`write_new_unique_progress`] tells its caller as it goes, so a caller watching a slow
+/// volume sees it moving, and can mark the new file's flush, which moves no byte it sees (the
+/// device writes what the page cache holds: seconds per gigabyte on a slow drive).
+pub trait WriteProgress {
+    /// `n` more bytes written to the new file (at most 4 MiB at a time).
+    fn wrote(&self, n: usize);
+    /// `n` more bytes of it read back to check it.
+    fn read_back(&self, n: usize);
+    /// Run `flush`, the new file's sync to disk, and return its result.
+    fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()>;
+}
+
+/// A [`WriteProgress`] no one listens to.
+pub struct NoProgress;
+
+impl WriteProgress for NoProgress {
+    fn wrote(&self, _: usize) {}
+    fn read_back(&self, _: usize) {}
+    fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        flush()
+    }
+}
+
+/// [`write_new_unique`], telling `progress` the bytes it writes and reads back as it goes (at most
+/// 4 MiB at a time), and running the temp file's flush through it.
+pub fn write_new_unique_progress(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8], progress: &dyn WriteProgress) -> io::Result<PathBuf> {
     let mut candidates = candidates.peekable();
     let Some(first) = candidates.peek().cloned() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name to write"));
     };
-    let (tmp, _) = write_temp(&first, true, &mut |w| w.write_all(data))?;
+    let (tmp, _) = write_temp(&first, Some(progress), &mut |w| {
+        for chunk in data.chunks(PROGRESS_CHUNK) {
+            w.write_all(chunk)?;
+            progress.wrote(chunk.len());
+        }
+        Ok(())
+    })?;
     let r = (|| {
         // Kept (issue #134 point 4): these files replace raws (Convert / Copy as DNG) or become
         // library photos (merges). On a local disk the read usually comes from the cache, but on a
         // network volume it can go back to the server, and next to encoding a DNG it costs little.
-        if !same_content(&tmp, data)? {
+        if !same_content(&tmp, data, progress)? {
             return Err(io::Error::other("the written file reads back different (failing drive or connection?)"));
         }
         for path in candidates.by_ref().take(100_000) {
@@ -350,7 +452,7 @@ fn publish_new_by_rename(tmp: &Path, path: &Path, before_claim: &dyn Fn()) -> io
 }
 
 /// Does the file at `path` hold exactly `data`?
-fn same_content(path: &Path, data: &[u8]) -> io::Result<bool> {
+fn same_content(path: &Path, data: &[u8], progress: &dyn WriteProgress) -> io::Result<bool> {
     use std::io::Read;
     let mut f = File::open(path)?;
     if f.metadata()?.len() != data.len() as u64 {
@@ -365,6 +467,7 @@ fn same_content(path: &Path, data: &[u8]) -> io::Result<bool> {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
+        progress.read_back(k);
         if data.get(at..at + k) != buf.get(..k) {
             return Ok(false);
         }
@@ -730,6 +833,56 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    /// What a [`WriteProgress`] heard: (written, read back) chunks, and the syncs made inside its
+    /// `flushing` and outside it.
+    #[derive(Default)]
+    struct Heard {
+        wrote: std::sync::Mutex<Vec<usize>>,
+        read_back: std::sync::Mutex<Vec<usize>>,
+        synced_inside: Cell<u64>,
+    }
+
+    impl WriteProgress for Heard {
+        fn wrote(&self, n: usize) {
+            self.wrote.lock().unwrap().push(n);
+        }
+        fn read_back(&self, n: usize) {
+            self.read_back.lock().unwrap().push(n);
+        }
+        fn flushing(&self, flush: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+            let before = syncs_on_this_thread();
+            let r = flush();
+            self.synced_inside.set(self.synced_inside.get() + syncs_on_this_thread() - before);
+            r
+        }
+    }
+
+    /// Progress hears every byte written and every byte read back, each as its own kind, never
+    /// more than 4 MiB at a time (an empty file: nothing; a file of exactly 4 MiB, one write;
+    /// 4 MiB + 1, two), and the temp file's sync runs inside its `flushing` (the folder's after
+    /// the name is given doesn't).
+    #[test]
+    fn new_files_report_their_progress() {
+        for len in [0usize, 1, PROGRESS_CHUNK - 1, PROGRESS_CHUNK, PROGRESS_CHUNK + 1, 2 * PROGRESS_CHUNK + 7] {
+            let d = temp(&format!("progress-{len}"));
+            let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let heard = Heard::default();
+            let syncs = syncs_on_this_thread();
+            let got = write_new_unique_progress(&mut std::iter::once(d.join("a.dng")), &data, &heard).unwrap();
+            assert_eq!(fs::read(&got).unwrap(), data);
+            let (wrote, back) = (heard.wrote.into_inner().unwrap(), heard.read_back.into_inner().unwrap());
+            assert_eq!((wrote.iter().sum::<usize>(), back.iter().sum::<usize>()), (len, len), "{len}: written and read back");
+            assert!(wrote.iter().chain(&back).all(|&n| n > 0 && n <= PROGRESS_CHUNK), "{len}: {wrote:?} {back:?}");
+            assert_eq!(wrote.len(), len.div_ceil(PROGRESS_CHUNK), "{len}: {wrote:?}");
+            assert_eq!(heard.synced_inside.get(), 1, "{len}: the temp file's sync, through `flushing`");
+            // Unix only: on Windows a directory cannot be opened, so there is no folder sync to
+            // hear (`sync_dir` ignores the error; NTFS journals the rename itself).
+            #[cfg(unix)]
+            assert!(syncs_on_this_thread() - syncs > 1, "{len}: and the folder's, outside it");
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
+
     #[test]
     fn same_file_sees_a_hard_link_under_another_name() {
         let d = temp("same-link");
@@ -894,5 +1047,76 @@ mod tests {
         assert!(!same_file_id((7, 42), (8, 42)));
         assert!(!same_file_id((7, 0), (7, 0)), "two files on a volume that reports index 0 are not the same file");
         assert!(!same_file_id((0, 0), (0, 0)));
+    }
+}
+
+/// A file that replaces an original ([`replace_verified`]) or adds one ([`write_new`]) must read back as written
+/// before it takes the name; [`write_atomic`] (catalog files, sidecars) has no such check.
+#[cfg(test)]
+mod read_back_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> lcc_testkit::TempDir {
+        lcc_testkit::TempDir::new(&format!("safe-file-read-back-{tag}"))
+    }
+
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn an_original_is_replaced_by_a_file_that_reads_back_as_written() {
+        let d = scratch("ok");
+        let p = d.path().join("IMG_1.dng");
+        fs::write(&p, b"the original").unwrap();
+        replace_verified(&p, b"the new file").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"the new file");
+        assert_eq!(names(d.path()), ["IMG_1.dng"], "no temp file left");
+    }
+
+    #[test]
+    fn an_original_is_left_as_it_was_when_its_replacement_reads_back_different() {
+        let d = scratch("spoiled");
+        let p = d.path().join("IMG_1.dng");
+        fs::write(&p, b"the original").unwrap();
+        let e = {
+            let _spoil = spoil_written_files();
+            replace_verified(&p, b"the new file").expect_err("refused")
+        };
+        assert!(e.to_string().contains("read back different") && e.to_string().contains("left as it was"), "{e}");
+        assert_eq!(fs::read(&p).unwrap(), b"the original");
+        assert_eq!(names(d.path()), ["IMG_1.dng"], "the temp file is removed");
+    }
+
+    /// Issue #134 point 4: a new file that replaces a raw (Convert / Copy as DNG) is read back too.
+    #[test]
+    fn a_new_file_that_reads_back_different_is_not_published() {
+        let d = scratch("new");
+        let p = d.path().join("IMG_1.dng");
+        let e = {
+            let _spoil = spoil_written_files();
+            write_new(&p, b"converted").expect_err("refused")
+        };
+        assert!(e.to_string().contains("reads back different"), "{e}");
+        assert!(names(d.path()).is_empty(), "neither the file nor its temp file is left");
+    }
+
+    #[test]
+    fn a_folder_or_a_dangling_link_is_never_replaced() {
+        let d = scratch("targets");
+        let folder = d.path().join("dir.dng");
+        fs::create_dir(&folder).unwrap();
+        assert!(replace_verified(&folder, b"x").is_err());
+        assert!(folder.is_dir());
+        #[cfg(unix)]
+        {
+            let link = d.path().join("gone.dng");
+            std::os::unix::fs::symlink(d.path().join("nowhere"), &link).unwrap();
+            assert!(replace_verified(&link, b"x").is_err());
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is kept");
+        }
     }
 }

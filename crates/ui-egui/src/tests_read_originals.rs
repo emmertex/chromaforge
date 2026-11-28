@@ -89,3 +89,41 @@ fn a_stopped_run_does_not_start_again_by_itself() {
     crate::read_originals::tick(&mut app);
     assert!(app.tasks.is_empty(), "a stopped run doesn't start again by itself");
 }
+
+/// The files read ahead while one batch is read are used by the batches after it: across the
+/// run's batches (one task each), every original is read once. With a cancel flag per batch the
+/// reader dropped its reads ahead at every batch and read those files again.
+#[test]
+fn files_read_ahead_are_used_by_the_next_batches_each_read_once() {
+    let dir = Dir(std::env::temp_dir().join(format!("lc-ui-read-originals-ahead-{}", std::process::id())));
+    let (mut app, ids) = app_with_unread_photos(&dir.0, 9);
+    let ctx = egui::Context::default();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let real = app.session.media.file_probe.clone().expect("file access");
+    let c = calls.clone();
+    app.session.media.file_probe = Some(std::sync::Arc::new(move |path: &str| {
+        c.lock().unwrap().push(path.to_string());
+        real(path)
+    }));
+    crate::read_originals::use_batches_of(&mut app, 2);
+    let mut batches = 0;
+    loop {
+        crate::read_originals::tick(&mut app);
+        if app.tasks.is_empty() {
+            break;
+        }
+        batches += 1;
+        assert!(crate::tasks::wait(&mut app, &ctx, Duration::from_secs(10)));
+        // (the reads ahead of this batch have time to end before the next one starts)
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    assert_eq!(batches, 5, "batches of two");
+    for id in &ids[..8] {
+        assert!(app.session.catalog.photo(*id).unwrap().content_hash.is_some(), "photo {id:?} was read");
+    }
+    let mut read = calls.lock().unwrap().clone();
+    read.sort();
+    let n = read.len();
+    read.dedup();
+    assert_eq!((n, read.len()), (9, 9), "each original read once: {read:?}");
+}

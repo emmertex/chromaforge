@@ -24,6 +24,7 @@ lcc-pipeline = { workspace = true }
 lcc-gpu = { workspace = true }
 # the memory the process may use (cgroup limits on Linux) for the budget
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 lcc-catalog = { workspace = true }
 lcc-geo = { workspace = true }
 lcc-hash = { workspace = true }
@@ -48,6 +49,8 @@ lcc-ml = { workspace = true }
 miniz_oxide = { workspace = true }
 lcc-merge = { workspace = true }
 lcc-genfill = { workspace = true }
+# Crop ▸ Fill Edges: content-aware fill of a crop's area past the photo
+lcc-inpaint = { workspace = true }
 lcc-geocode = { workspace = true }
 lcc-psd = { workspace = true }
 lcc-actions = { workspace = true }
@@ -90,7 +93,7 @@ sha2 = { workspace = true }
 lcc-publish = { workspace = true }
 lcc-tether = { workspace = true }
 lcc-credentials = { workspace = true }
-lcc-webgallery = { workspace = true, features = ["sftp"] }
+lcc-webgallery = { workspace = true }
 lcc-plugins = { workspace = true }
 # M14.8: video clips in an export batch
 lcc-video-export = { workspace = true }
@@ -105,6 +108,11 @@ trash = { workspace = true }
 rustix = { workspace = true }
 
 [features]
+# SFTP upload in Web Gallery publishing (russh, whose ring backend compiles C) and lossy WebP export (libwebp, C).
+# On for the apps; a library user that only develops photos turns default features off.
+default = ["sftp", "webp-lossy"]
+sftp = ["lcc-webgallery/sftp"]
+webp-lossy = ["lcc-codecs/webp-lossy"]
 # Opt-in cpal sound for targets without a default path (macOS / Windows always use cpal, Linux and
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
@@ -138,8 +146,6 @@ lcc-fidelity = { workspace = true }
 lcc-testkit = { workspace = true }
 # the catalog-upgrade test marks a store as an older build left it
 redb = { workspace = true }
-# genfill_check example: the mock provider fills with content-aware fill
-lcc-inpaint = { workspace = true }
 # HDR JPEG XL tests read the file's colour encoding
 jxl-oxide = { workspace = true }
 # the updater's end-to-end test builds a release with a real checksum, signed with a throwaway key

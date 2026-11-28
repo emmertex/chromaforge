@@ -29,6 +29,14 @@ usually much faster than our own kernels (issue #491). This page describes how i
   (`card_is_faster`) and keeps getting tiles right; a wrong tile runs on the CPU. Settings ▸ AI Denoise shows the
   result as the adapter, e.g. "ONNX Runtime (WebGPU)" (with the version when the library's build info names it; Microsoft's PyPI builds don't).
 
+- **CLIP's vision tower** (semantic search, auto orient; `lcc_ml::onnx`): written as an ONNX graph in memory
+  (`lcc_onnxrt::graph`, a small protobuf writer, opset 17) from the weights the CPU encoder already loaded from
+  `model.safetensors`, so no `.onnx` file is downloaded and the one SHA-256 check covers it. It is the first GPU runner
+  the engine offers for the tower (`clip_accelerator_for`), before the wgpu kernels, and like them it is checked against
+  the CPU encoder on a two-image test input before use; any error sends the job back to the CPU. The graph is checked
+  against the CPU encoder on a random tower by `clip::tests::the_onnx_export_matches_the_cpu_encoder` (ONNX Runtime's
+  CPU provider; it skips without the library).
+
 ## Where the library comes from
 
 `cargo xtask onnxruntime fetch --dest DIR [--platform P]` takes Microsoft's own PyPI builds of `onnxruntime` 1.32.0
@@ -48,8 +56,11 @@ The plug-in stays on 0.5.0 (tested 2026-11-27 on Windows 11, RTX 4090): the 0.6.
 DirectX 12 Agility SDK. Without it, ONNX Runtime ends the process while it builds a WebGPU session (a fast-fail that
 `catch_unwind` can't catch); with it, DXC fails to compile Dawn's shaders even with Developer Mode on. Before moving
 the pin, run the GPU test on a Windows machine with a graphics card: `cargo xtask onnxruntime fetch --dest target/ort`,
-then `<PREFIX>_ONNXRUNTIME=<absolute path>/target/ort cargo test -p lcc-onnxrt --features lcc-onnxrt/ort` (it must
-report `the_gpu_is_tried_and_says_why_not ... ok`, not skip it or end the test process).
+then `<PREFIX>_ONNXRUNTIME=<absolute path>/target/ort <PREFIX>_ONNXRUNTIME_WEBGPU_UNTESTED=1 cargo test -p lcc-onnxrt --features lcc-onnxrt/ort` (it must
+report `the_gpu_is_tried_and_says_why_not ... ok`, not skip it or end the test process). Because that crash can't be caught,
+the app refuses a Windows plug-in built from an ONNX Runtime newer than the tested one (its DLL's file version, read
+without loading it: 1.31 for plug-in 0.5.0; `WEBGPU_TESTED_WINDOWS` in `crates/onnxrt`) and says why in `ml.status`,
+unless `<PREFIX>_ONNXRUNTIME_WEBGPU_UNTESTED=1` is set. Moving the pin moves that constant too.
 
 At run time the library is looked for in this order: `<PREFIX>_ONNXRUNTIME` (a file or a folder; `off` switches ONNX
 Runtime off), beside the executable, its `lib/`, `../lib/<binary>/`, `../lib/`, `../Frameworks/`, then (not on
@@ -74,7 +85,8 @@ and our CPU runner agree on a synthetic U-Net.
 
 ## What's next
 
-- Face detection and recognition (`lcc-faces`), the CLIP search encoder (an ONNX export of the same checkpoint), SAM
-  and the MediaPipe models onto `lcc-onnxrt`, each checked against its pure-Rust runner.
+- Face detection and recognition (`lcc-faces`), CLIP's text tower, SAM and the MediaPipe models onto `lcc-onnxrt`,
+  each checked against its pure-Rust runner.
 - ONNX Runtime's CPU provider as the CPU runner where it is faster than ours.
-- Orientation (#490) and aesthetic scores (#488) on top, with commercially licensable models.
+- Aesthetic scores (#488) on top, with a commercially licensable model. Orientation (#490) runs on the CLIP vision
+  tower above.

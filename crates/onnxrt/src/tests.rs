@@ -250,3 +250,55 @@ fn a_fixed_input_shape_names_its_free_dimensions() {
     let s = Session::from_bytes_for_shape(&model, Want::Cpu { threads: 1 }, &[]).unwrap();
     assert_eq!(s.run_one(Tensor::new(vec![1, 1], vec![1.0]).unwrap()).unwrap().data, vec![2.0]);
 }
+
+/// A file with a `VS_VERSION_INFO` resource for `version`, laid out as in the plug-in's DLLs (two bytes of padding
+/// between the key's terminator and the fixed-info signature).
+fn version_resource(version: [u16; 4]) -> Vec<u8> {
+    let mut b = b"MZ\x90\x00 some header bytes".to_vec();
+    b.extend("VS_VERSION_INFO".encode_utf16().flat_map(u16::to_le_bytes));
+    b.extend([0, 0, 0, 0]);
+    b.extend(0xFEEF_04BDu32.to_le_bytes());
+    b.extend(0x0001_0000u32.to_le_bytes());
+    b.extend(((u32::from(version[0]) << 16) | u32::from(version[1])).to_le_bytes());
+    b.extend(((u32::from(version[2]) << 16) | u32::from(version[3])).to_le_bytes());
+    b.extend([0; 40]);
+    b
+}
+
+#[test]
+fn file_versions_are_read_from_the_resource() {
+    assert_eq!(file_version_in(&version_resource([1, 32, 0, 1116])), Some([1, 32, 0, 1116]));
+    assert_eq!(file_version_in(&version_resource([1, 31, 0, 1029])), Some([1, 31, 0, 1029]));
+    // hostile: nothing, no key, a key with no signature, a file cut short anywhere
+    assert_eq!(file_version_in(&[]), None);
+    assert_eq!(file_version_in(b"MZ just bytes"), None);
+    let mut no_sig = version_resource([1, 32, 0, 0]);
+    let sig = no_sig.len() - 40 - 16; // the signature's first byte
+    no_sig[sig] ^= 0xff;
+    assert_eq!(file_version_in(&no_sig), None);
+    let full = version_resource([1, 32, 0, 0]);
+    for cut in 0..full.len() {
+        let _ = file_version_in(&full[..cut]);
+    }
+}
+
+#[test]
+fn a_newer_windows_webgpu_plug_in_is_refused() {
+    let dir = std::env::temp_dir().join(format!("onnxrt-webgpu-version-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let newer = dir.join("newer.dll");
+    let tested = dir.join("tested.dll");
+    let unversioned = dir.join("unversioned.dll");
+    std::fs::write(&newer, version_resource([1, 32, 0, 1116])).unwrap();
+    std::fs::write(&tested, version_resource([1, 31, 0, 1029])).unwrap();
+    std::fs::write(&unversioned, b"MZ").unwrap();
+    let why = webgpu_refusal(&newer, true, false).unwrap();
+    assert!(why.contains("1.32") && why.contains(&lcc_brand::env_var("ONNXRUNTIME_WEBGPU_UNTESTED")), "{why}");
+    // the setting allows it, other systems don't care, the tested one and an unreadable one go ahead
+    assert!(webgpu_refusal(&newer, true, true).is_none());
+    assert!(webgpu_refusal(&newer, false, false).is_none());
+    assert!(webgpu_refusal(&tested, true, false).is_none());
+    assert!(webgpu_refusal(&unversioned, true, false).is_none());
+    assert!(webgpu_refusal(&dir.join("missing.dll"), true, false).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

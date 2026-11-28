@@ -331,7 +331,7 @@ impl LightroomJob {
     }
 
     /// Read/probe/stage all source data off the owner thread.
-    pub fn prepare(&mut self, cancel: &AtomicBool) -> crate::Result<PreparedLightroom> {
+    pub fn prepare(&mut self, cancel: &std::sync::Arc<AtomicBool>) -> crate::Result<PreparedLightroom> {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
@@ -375,7 +375,21 @@ impl LightroomJob {
 }
 
 /// Apply prepared data on the owner thread.  No source, archive or index filesystem work occurs.
-pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+pub fn commit_prepared(s: &mut crate::Session, prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+    // diagnostics (issue #1363): once per catalog import, so `critical` (on disk before it starts); ends with its real
+    // outcome (`cancelled` for a cancel) on every path
+    let photos = prepared.data.photos.len() as u64;
+    lcc_diag::traced(
+        lcc_diag::Level::Critical,
+        lcc_diag::Subsystem::Commit,
+        "lightroom_commit",
+        &[("photos", lcc_diag::Val::U64(photos))],
+        crate::diag_outcome,
+        |_| commit_prepared_inner(s, prepared),
+    )
+}
+
+fn commit_prepared_inner(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
     if prepared.cancelled {
         prepared.normal.rollback();
         return Err(cancelled());
@@ -392,7 +406,9 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
 
     let undo0 = s.undo.len();
     prepared.normal.revalidate_add(s);
-    let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+    // (each photo's sidecar is kept, to compare with the catalog's values once they are applied)
+    let options =
+        ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, keep_sidecars: true, ..ImportOptions::default() };
     let now = prepared.now.clone();
     let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
@@ -414,9 +430,15 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
         // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
         // album id it can't give) must not leave them so, without the catalog's ratings, flags, edits or collections,
         // while it reports only the error: take that step back. It is records only: Add moves and copies no file.
+        //
+        // A large import commits (and saves) in parts folded into the file step (issue #1361): then the file step is no
+        // longer the last commit, and the parts and it go back as an undo would, logged.
         Err(e) => {
-            let Some(step) = file_step else { return Err(e) };
-            return Err(match s.take_back(step) {
+            let back = match file_step {
+                Some(step) if s.take_back(step).is_ok() => Ok(()),
+                _ => undo_since(s, undo0),
+            };
+            return Err(match back {
                 Ok(()) => e,
                 Err(back) => crate::EngineError::Other(format!("{e}; the photos it added could not be taken back: {back}")),
             });
@@ -427,8 +449,23 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
         report["originalsToRead"] = serde_json::json!(prepared.originals_to_read);
     }
     let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
-    let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
+    let bytes = if path.is_some() {
+        Some(lcc_diag::traced(lcc_diag::Level::Normal, lcc_diag::Subsystem::Commit, "index_json", &[], crate::diag_outcome, |_| {
+            serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))
+        })?)
+    } else {
+        None
+    };
     Ok(LightroomCompletion { report, finalization: LightroomArchiveFinalization { path, bytes } })
+}
+
+/// Undo every step committed since the undo stack was `undo0` long, leaving nothing to redo.
+pub(crate) fn undo_since(s: &mut crate::Session, undo0: usize) -> crate::Result<()> {
+    while s.undo.len() > undo0 {
+        s.undo_step()?;
+        s.redo.pop();
+    }
+    Ok(())
 }
 
 fn original_paths(data: &CatalogImport, cancel: &AtomicBool) -> crate::Result<(Vec<String>, HashSet<String>)> {
@@ -596,11 +633,11 @@ mod tests {
     fn a_cancelled_read_is_cancelled_by_kind() {
         let mut session = crate::Session::new();
         let mut job = LightroomJob::new(&mut session, PathBuf::from("/nonexistent/cancelled.lrcat"), false).unwrap();
-        let Err(e) = job.prepare(&AtomicBool::new(true)) else { panic!("cancelled before it started") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(true))) else { panic!("cancelled before it started") };
         assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
         // the `error` text clients see is unchanged
         assert_eq!(e.to_string(), "invalid parameters for `library.importLightroom`: Lightroom import cancelled");
-        let Err(e) = job.prepare(&AtomicBool::new(false)) else { panic!("no such catalog") };
+        let Err(e) = job.prepare(&std::sync::Arc::new(AtomicBool::new(false))) else { panic!("no such catalog") };
         assert_ne!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
     }
 

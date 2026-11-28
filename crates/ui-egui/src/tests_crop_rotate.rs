@@ -430,3 +430,40 @@ fn crop_on_and_off_with_an_unchanged_edit_renders_nothing_again() {
     h.settle(SETTLE);
     assert!(h.app.renderer.main_requested > before, "an edit renders");
 }
+
+/// Issue #861: the drawer's Extend Past the Edge lets the crop reach past the photo, and Fill Edges ▸ Content-Aware
+/// fills it in the background, landing on the photo as one undo step; Clear Fill takes it away.
+#[test]
+fn the_drawer_extends_the_crop_and_fills_its_edges() {
+    let mut h = crop_tool();
+    let id = h.app.session.active().expect("a photo");
+    assert!(!has(&h, "button:fillEdgesContentAware"), "Fill Edges only with Extend on");
+    let r = h.request("ui.clickWidget", json!({"id": "check:cropExtend"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let crop = |h: &Headless| h.app.session.catalog.photo(id).map(|p| p.develop.crop).unwrap_or_default();
+    assert!(crop(&h).extend);
+    let r = h.request("engine.execute", json!({"command": "crop.set", "params": {"rect": [-0.2, 0.0, 1.0, 1.0]}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(crop(&h).geometry.rect.x0 < -0.1, "{:?}", crop(&h));
+    let r = h.request("ui.clickWidget", json!({"id": "button:fillEdgesContentAware"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    let filled = |h: &Headless| h.app.session.catalog.photo(id).is_some_and(|p| p.develop.edge_fill.is_some());
+    // (the fill runs on its own thread: slow on a loaded machine)
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < SETTLE {
+        if filled(&h) {
+            break;
+        }
+        h.settle(Duration::from_millis(200));
+    }
+    assert!(filled(&h), "the fill landed on the photo");
+    // (said as it lands, never as a failure; how long the toast stays depends on the machine's speed)
+    assert!(!h.app.ui.toasts.iter().any(|t| t.text.contains("failed")), "{:?}", h.app.ui.toasts);
+    h.settle(SETTLE);
+    let r = h.request("ui.clickWidget", json!({"id": "button:fillEdgesClear"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(!filled(&h));
+}

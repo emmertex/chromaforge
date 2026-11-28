@@ -18,7 +18,7 @@ catalog and your originals are opened read-only and never changed. You can keep 
 File → Import Lightroom Catalog… shows what will come across (`library.inspectLightroom`: photo and collection
 counts, missing files, warnings) and then imports it in the background, with progress and Cancel. When it finishes,
 the result window lists every warning and failure in a scrollable area; **Copy** puts the whole report on the clipboard.
-One undo step reverses it. From the command line:
+One undo step reverses it. A large catalog is saved in parts as it imports; if the app stops partway (a crash, power loss), the photos already saved stay, and importing the catalog again adds the rest (virtual copies saved before the stop may then come in twice). From the command line:
 
 ```sh
 <cli> run --library "<library_default>" library.inspectLightroom path="Lightroom Catalog.lrcat"
@@ -29,7 +29,10 @@ Photos you already edited in <app> keep their edits; `updateExisting=true` repla
 
 The photos appear as soon as the catalog is read: <app> doesn't wait for the original files. It reads them
 afterwards in the background (**Reading originals** on the activity stack, which you can stop), filling in the
-content hash, file size, lens data and other facts only the file has. Your ratings, keywords and edits are there from
+content hash, file size, lens data and other facts only the file has. Other work on the same drive meanwhile (a
+Reload, Find Missing, an import review) takes turns with it, so a few files aren't held up behind thousands. While
+it saves what it has read, the next files are already being read, from several drives at once when they are on
+several. Your ratings, keywords and edits are there from
 the start. If you stop it, quit, or a drive is unplugged, the rest is read the next time the library opens (any photo whose
 file hasn't been read yet, including missing originals from earlier imports, is tried once each time the library
 opens). Because files aren't read during the import, a photo already in the library under another path is added
@@ -75,11 +78,16 @@ out on its own, and the result window says how many were left out of which table
 imports. The photo behind such a record keeps only what its files say. If the record is in a table every import
 needs (photos, files, folders), the result also says that photos may be missing. Text with invalid characters is imported with replacement characters, also counted in the result.
 
+The catalog's values win over XMP sidecars next to the originals. A sidecar that says something else (keywords
+added in Photo Mechanic, a newer copyright) marks its photo as a metadata conflict, counted in the result; Read
+Metadata from File takes the sidecar's values, Save Metadata to File writes the catalog's. A sidecar that agrees
+starts in step.
+
 ## Safety
 
 Before changing anything, the importer saves the source records, decoded XMP, develop settings, history, snapshots
 and collection content to compressed recovery archives in the library's `Interop/` folder (best-effort, capped in
-size). Imports are bounded: a 1 GiB database, one million rows for each table kept whole (keyword assignments, develop history and metadata are read a row at a time, without that limit). Details and limits:
+size). Imports are bounded by memory, not by a number of photos: the read may keep three quarters of the memory free when it starts, and a catalog that needs more stops with an error and imports nothing. Set `<PREFIX>_LIGHTROOM_IMPORT_MEMORY` to a number of GiB to allow more (or less). Details and limits:
 [lightroom-catalog-import.md](../lightroom-catalog-import.md).
 
 ## Habits that carry over

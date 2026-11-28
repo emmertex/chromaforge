@@ -21,15 +21,16 @@ Chromaforge's AI features are optional. Nothing is bundled, nothing is downloade
 | [Generative remove](generative-remove/) | an online account with a cloud image service (your own key) | partial |
 | [Faces and people](faces/) | MediaPipe face model; optional recognition model | partial |
 | [AI search](search/) | a CLIP model | available |
+| [Auto orient](orientation/) | the CLIP model and an orientation classifier you fit | partial |
 | [People retouch](retouch/): Skin, Blemishes, Teeth | MediaPipe people and face models | available |
 
 Set-up and model locations: [Models and set-up](models/).
 
 ## Where the work runs
 
-- **Locally, in pure Rust.** Segmentation, denoise, upscaling, face and search models run on this computer: on the GPU where one works (Metal, Vulkan, DirectX 12), otherwise the CPU. No Python, no C libraries.
+- **Locally, Rust first.** Segmentation, denoise, upscaling, face and search models run on this computer: on the GPU where one works (Metal, Vulkan, DirectX 12), otherwise the CPU. No Python. On the desktop, AI Denoise, Super Resolution, AI search and Auto orient can also run through ONNX Runtime (MIT, loaded from beside the app) on the graphics card; the app's own Rust code is always there as the fallback.
 - **Downloads are the only network use** for these models. Each asks first, shows the licence, and is checked against a pinned size and SHA-256 before it is used.
-- **One exception: Generative remove** sends a cropped part of your photo to the cloud service you chose. Read [Generative remove](generative-remove/) first.
+- **One exception: Generative remove** sends a cropped part of your photo to the cloud service you chose, and so does **Crop ▸ Fill Edges ▸ Generative** ([Crop and straighten](../develop/crop/)). Read [Generative remove](generative-remove/) first.
 - **Models stay out of your edits.** An AI mask stores its result with the mask, so renders and exports never need the model and the library still opens without it.
 - **Long jobs show in the activity stack** and can be cancelled. Cancelling a large batch is immediate.
 
@@ -38,7 +39,7 @@ Set-up and model locations: [Models and set-up](models/).
 These are planned or absent. Do not expect them:
 
 - **Landscape** mask classes (Mountains, Architecture, ground): no screen for them; only Sky, Water and Vegetation exist internally.
-- **Aesthetic scores, culling suggestions and orientation detection** on the search model: planned.
+- **Aesthetic scores and culling suggestions** on the search model: planned.
 - **Automatic keyword tagging or captions by AI**: not built.
 - **An on-device generative model**: Generative remove is cloud-only.
 - **AI Denoise on X-Trans or Foveon raws**: not supported.

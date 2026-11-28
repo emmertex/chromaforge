@@ -79,7 +79,10 @@ background compaction (fjall, sled), and its whole-store integrity check backs t
 
 **What stays the same.** The `Catalog` / `Op` / `Journal` API: every change is still an op, applied in memory and
 appended (fsynced) to `catalog.log` before a command returns; undo still uses inverse ops; the log is still the change
-feed. The `Catalog` stays in memory (the engine reads `&Arc<Photo>`), so "lazy" loading is about what is loaded and how
+feed. One op is one log record, but a batch whose JSON passes about 4 MiB (a Lightroom catalog import is one
+batch for all its photos) is written as several records of consecutive ops, each about 4 MiB at most, handed to the
+log 32 MiB at a time; they replay one after the other to what the batch does, and a crash while they are written keeps
+the records before it (`journal.rs`, `record_bodies`; issue #1361). The `Catalog` stays in memory (the engine reads `&Arc<Photo>`), so "lazy" loading is about what is loaded and how
 fast (below), not about leaving photos on disk.
 
 **What changes.** The snapshot is replaced by the store (`crates/catalog/src/db.rs`):
@@ -177,10 +180,23 @@ My Catalog/
   the v3 library (migrated again on the next open) or the finished v4 one.
 - **Backup**: `Journal::backup(catalog, root, keep)` checkpoints, copies the store, log, stub, settings and entry point
   into `root/<time>/`, opens the copy and runs redb's integrity check on it, then prunes to the newest `keep`.
+  The settings copy carries the library's id (`ensure_library_id`, made if missing), and a new folder is always
+  used (`<time>-2`, … when taken). `backup_folder` is the one test of what a folder in a backup root is to a
+  library, used by both pruning and `latest_backup`: a scheduled backup (a real folder named by a backup's time,
+  holding a store or a v3 snapshot, whose settings copy names this library; one naming no library only in the
+  library's own `backups/`), a copy kept before an upgrade (`before-v<N> <time>`, never pruned), or nothing
+  (never pruned, never offered to restore).
   `Journal::backup_if_due` applies `catalog-settings.json` (never / every exit / daily / weekly / monthly; integrity
   test before, optimise after). `Journal::check_integrity` (store pages, photo count, dangling album/stack
   references) and `Journal::optimize` (the store rewritten from the catalog: unused settings dropped, indexes rebuilt;
   then compacted).
+- **Unreadable records**: a load skips any store record it can't decode (photo, settings, album, stack, preview,
+  vignetting map, remote link) and counts it in `LoadReport::unreadable` (also folded into `failed`); the app says so
+  at open and `library.info` → `load.unreadable` reports it. The record stays in the store (a checkpoint writes only
+  what changed), and everything that rewrites the store whole from memory, which would delete it, is refused while
+  `CatalogDb::unreadable` is non-zero: `CatalogDb::rewrite` (Optimise), and the full rewrite of a checkpoint that
+  finds the store changed by another writer (its changes stay in the log). `backup_if_due` makes the backup and
+  leaves out its optimise. Skipped photo records also fail the integrity test (`stored_photos != photos`).
 
 ## Export as library / import from another library
 

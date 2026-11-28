@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 lcc-brand = { workspace = true }
+# writes CLIP's vision tower as an ONNX model and runs it through ONNX Runtime where the build has it (desktop)
+lcc-onnxrt = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

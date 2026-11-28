@@ -185,6 +185,8 @@ pub struct CatalogDb {
     known: Arc<RwLock<HashSet<u128>>>,
     base: Baseline,
     last: CheckpointStats,
+    /// Records the last load could not decode (see [`CatalogDb::unreadable`]).
+    unreadable: usize,
 }
 
 /// What a checkpoint wrote.
@@ -326,6 +328,7 @@ impl CatalogDb {
             known: Arc::default(),
             base: Baseline::default(),
             last: CheckpointStats::default(),
+            unreadable: 0,
         }
     }
 
@@ -578,6 +581,7 @@ impl CatalogDb {
         }
         cat.remote = links.into_iter().collect();
         cat.next_photo = cat.next_photo.max(cat.photos.keys().next_back().map_or(1, |k| k.0 + 1));
+        self.unreadable = bad;
         self.base = Baseline {
             photos: cat.photos.iter().map(|(k, v)| (*k, v.clone())).collect(),
             albums: cat.albums.clone(),
@@ -627,7 +631,17 @@ impl CatalogDb {
             Err(_) => 0,
         };
         if !full && current != self.generation {
-            // written by someone else since we read it: our baseline says nothing about it
+            // written by someone else since we read it: our baseline says nothing about it. Rewritten whole from
+            // memory, which deletes whatever the load left out: refused while that is anything (the changes stay in
+            // the log; opening the library again loads the store as it is now)
+            if self.unreadable > 0 {
+                return Err(CatalogError::Corrupt(format!(
+                    "{} was changed by another program since it was loaded, and saving would rewrite it whole, deleting {}; \
+                     nothing was written and the changes are kept in the log. Close the library and open it again",
+                    self.path.display(),
+                    self.unreadable_records()
+                )));
+            }
             log::warn!("catalog: {} changed since it was loaded; rewriting it whole", self.path.display());
             full = true;
         }
@@ -781,8 +795,18 @@ impl CatalogDb {
 
     /// Replace the whole content with `cat` (a fresh file next to this one, renamed over it): the
     /// optimise step, which also drops develop settings nothing refers to any more and rebuilds
-    /// every index. On an error the old file is left as it was.
+    /// every index. On an error the old file is left as it was. Refused while the store holds
+    /// records the load could not decode ([`CatalogDb::unreadable`]): `cat` doesn't have them, so
+    /// the rewrite would delete them for good.
     pub fn rewrite(&mut self, cat: &Catalog, seq: u64) -> Result<()> {
+        if self.unreadable > 0 {
+            return Err(CatalogError::Corrupt(format!(
+                "{} holds {}, and optimising rewrites it from what was read, which would delete them; nothing was changed. \
+                 Open the library in the version of the app that last worked with it, or restore it from a backup",
+                self.path.display(),
+                self.unreadable_records()
+            )));
+        }
         let tmp = self.path.with_extension("redb.rewrite");
         let _ = std::fs::remove_file(&tmp);
         let written = CatalogDb::create(&tmp).and_then(|mut fresh| guarded("rewrite", || fresh.write_tables(cat, seq, true)).map(|_| fresh));
@@ -986,6 +1010,17 @@ impl CatalogDb {
     /// What the last checkpoint wrote.
     pub fn last_checkpoint(&self) -> CheckpointStats {
         self.last
+    }
+    /// Records the last load could not decode: left out of the catalog it returned, kept as they
+    /// are in the store (a checkpoint writes only what changed), and the reason nothing rewrites
+    /// the store whole from memory ([`CatalogDb::rewrite`], the rewrite after another writer).
+    pub fn unreadable(&self) -> usize {
+        self.unreadable
+    }
+    /// "N records … could not be read", for the refusals.
+    fn unreadable_records(&self) -> String {
+        let n = self.unreadable;
+        format!("{n} record{} that could not be read when the library was opened", if n == 1 { "" } else { "s" })
     }
 }
 
