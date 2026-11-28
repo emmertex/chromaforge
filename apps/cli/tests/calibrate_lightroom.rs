@@ -48,7 +48,13 @@ fn xiaomi() -> lcc_camdb::calibration::Calibration {
         tool_version: "26.43.7".into(),
         contributor: Some("A Contributor".into()),
         licence: lcc_camdb::calibration::LICENCE.into(),
-        camera: lcc_camdb::calibration::CameraModel { illuminants: [17, 21], color_matrix: [cm, cm], forward_matrix: [fm, fm], hue_sat_map: None },
+        camera: lcc_camdb::calibration::CameraModel {
+            illuminants: [17, 21],
+            color_matrix: [cm, cm],
+            forward_matrix: [fm, fm],
+            hue_sat_map: None,
+            raw_baseline_exposure: None,
+        },
         looks: vec![lcc_camdb::calibration::Look {
             name: "Camera Standard".into(),
             baseline_exposure_offset: 0.0,
