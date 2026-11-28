@@ -190,6 +190,13 @@ My Catalog/
   test before, optimise after). `Journal::check_integrity` (store pages, photo count, dangling album/stack
   references) and `Journal::optimize` (the store rewritten from the catalog: unused settings dropped, indexes rebuilt;
   then compacted).
+- **Unreadable records**: a load skips any store record it can't decode (photo, settings, album, stack, preview,
+  vignetting map, remote link) and counts it in `LoadReport::unreadable` (also folded into `failed`); the app says so
+  at open and `library.info` → `load.unreadable` reports it. The record stays in the store (a checkpoint writes only
+  what changed), and everything that rewrites the store whole from memory, which would delete it, is refused while
+  `CatalogDb::unreadable` is non-zero: `CatalogDb::rewrite` (Optimise), and the full rewrite of a checkpoint that
+  finds the store changed by another writer (its changes stay in the log). `backup_if_due` makes the backup and
+  leaves out its optimise. Skipped photo records also fail the integrity test (`stored_photos != photos`).
 
 ## Export as library / import from another library
 

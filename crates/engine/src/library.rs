@@ -1048,6 +1048,7 @@ impl Session {
         let frozen = if own_store { serde_json::Map::new() } else { read_frozen(files.as_mut()) };
         let upgraded = upgrade_notice(&report);
         let torn = torn_notice(&report);
+        let unreadable = unreadable_notice(&report);
         self.library = Some(Library {
             dir,
             on_disk,
@@ -1062,7 +1063,13 @@ impl Session {
             forgot_local: None,
             presets_saved,
             view_written,
-            settings_warnings: unlocked_warning(lock.as_ref()).into_iter().chain(upgraded).chain(torn).chain(settings.warnings).collect(),
+            settings_warnings: unlocked_warning(lock.as_ref())
+                .into_iter()
+                .chain(upgraded)
+                .chain(torn)
+                .chain(unreadable)
+                .chain(settings.warnings)
+                .collect(),
             warnings_reported: 0,
             blocked: settings.blocked,
             lock: lock.take(),
@@ -1789,6 +1796,26 @@ fn torn_notice(report: &LoadReport) -> Option<String> {
     })
 }
 
+/// What a library whose catalog store holds records this version could not read must tell the user: they are left
+/// out of what the library shows, kept as they are in the store, and the store is not optimised meanwhile (that would
+/// delete them). The likely cause is a version of the app that wrote something this one can't read.
+fn unreadable_notice(report: &LoadReport) -> Option<String> {
+    let n = report.unreadable;
+    (n > 0).then(|| {
+        let what = if n == 1 { "1 record".to_string() } else { format!("{n} records") };
+        format!(
+            "{what} in this library's catalog could not be read, so the photos, collections or other items {} are \
+             left out of what the library shows. {} kept in the catalog as {}, and the catalog is not optimised \
+             while this lasts, because optimising would delete {}. If another version of the app opened this library \
+             recently, open it in that version; otherwise restore the catalog from a backup.",
+            if n == 1 { "it holds" } else { "they hold" },
+            if n == 1 { "It is" } else { "They are" },
+            if n == 1 { "it is" } else { "they are" },
+            if n == 1 { "it" } else { "them" },
+        )
+    })
+}
+
 fn unlocked_warning(lock: Option<&LibraryLock>) -> Option<String> {
     lock.filter(|l| !l.held()).map(|_| {
         "This library could not be locked (its catalog.lock file can't be locked where it is stored, e.g. on some network \
@@ -1843,6 +1870,17 @@ mod resolve_tests {
         let big = torn_notice(&r(6_442_450_941)).unwrap();
         assert!(big.contains("6.4 GB") && big.contains("import them"), "{big}");
         assert!(torn_notice(&r(49_000_000)).unwrap().contains("49 MB"));
+    }
+
+    /// Records the catalog store could not decode are said in plain words at open; a library read whole says nothing.
+    #[test]
+    fn unreadable_catalog_records_are_said_in_plain_words() {
+        let r = |unreadable| LoadReport { unreadable, ..Default::default() };
+        assert!(unreadable_notice(&r(0)).is_none());
+        let one = unreadable_notice(&r(1)).unwrap();
+        assert!(one.starts_with("1 record ") && one.contains("not optimised") && one.contains("backup"), "{one}");
+        let many = unreadable_notice(&r(12)).unwrap();
+        assert!(many.starts_with("12 records ") && many.contains("delete them"), "{many}");
     }
 
     /// `--library <dir>/catalog.snap` failed with the OS's "File exists" (creating a folder over

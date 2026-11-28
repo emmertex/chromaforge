@@ -400,13 +400,59 @@ fn handle_widget(c: &Circle, what: &str) -> String {
     }
 }
 
+fn label_text(c: &Circle) -> String {
+    if c.private { format!("🔒 {}", c.label) } else { c.label.clone() }
+}
+
+/// Where each circle's name goes (its top-left and its laid-out text), or `None` where it would
+/// overlap a name already placed: when zoomed out, nearby locations' names would otherwise pile up
+/// into an unreadable smear. The active circle (or the Edit Location panel's draft) places first,
+/// then the others, largest on screen first, so a town's name wins over the houses inside it.
+/// Names off the map are not placed and take no room.
+fn place_labels(
+    app: &LccApp,
+    painter: &egui::Painter,
+    r: Rect,
+    mpp: f64,
+    all: &[Circle],
+    t: &Tokens,
+) -> Vec<Option<(Pos2, std::sync::Arc<egui::Galley>)>> {
+    let rad = |c: &Circle| c.radius / mpp.max(1e-9);
+    let mut order: Vec<(usize, &Circle)> = all.iter().enumerate().collect();
+    order.sort_by(|(_, ca), (_, cb)| cb.active.cmp(&ca.active).then(rad(cb).total_cmp(&rad(ca))).then_with(|| ca.label.cmp(&cb.label)));
+    let mut out = vec![None; all.len()];
+    let mut taken: Vec<Rect> = Vec::new();
+    for (i, c) in order {
+        let col = if c.private { super::info::SAVED_PRIVATE } else { super::info::SAVED };
+        let galley = painter.layout_no_wrap(label_text(c), t.semibold(11.0), col);
+        let at = geo_to_screen(&app.map, r, c.centre);
+        let px = (rad(c) as f32).clamp(3.0, 20_000.0);
+        // the active circle's name sits clear of its radius handle
+        let centre = at + vec2(0.0, -px - if c.active { 20.0 } else { 8.0 });
+        let rect = Rect::from_center_size(centre, galley.size());
+        if !r.intersects(rect) {
+            continue;
+        }
+        if !c.active && taken.iter().any(|o| o.expand(2.0).intersects(rect)) {
+            continue;
+        }
+        taken.push(rect);
+        if let Some(slot) = out.get_mut(i) {
+            *slot = Some((rect.min, galley));
+        }
+    }
+    out
+}
+
 /// Paint the saved locations. `top = false`: every circle and the centre handles of the inactive
 /// ones (drawn before the pins, so a pin wins where they overlap); `top = true`: the active one's
 /// centre and radius handles, above the pins.
 fn locations(app: &mut LccApp, ui: &mut egui::Ui, painter: &egui::Painter, r: Rect, mpp: f64, top: bool) {
     let t = Tokens::get(ui.ctx());
     let locked = app.map.prefs.lock_markers;
-    for c in circles(app) {
+    let all = circles(app);
+    let labels = if top { Vec::new() } else { place_labels(app, painter, r, mpp, &all, &t) };
+    for (i, c) in all.into_iter().enumerate() {
         // an active circle is drawn with the others (under the pins); only its handles go on top
         if top && !c.active {
             continue;
@@ -414,12 +460,20 @@ fn locations(app: &mut LccApp, ui: &mut egui::Ui, painter: &egui::Painter, r: Re
         let at = geo_to_screen(&app.map, r, c.centre);
         let rad = (c.radius / mpp.max(1e-9)).clamp(3.0, 20_000.0) as f32;
         let col = if c.private { super::info::SAVED_PRIVATE } else { super::info::SAVED };
+        // a name left out for want of room shows when the centre handle is hovered
+        let mut hidden_label = None;
         if !top {
             let (fill, width) = if c.active { (0.22, 2.5) } else { (0.15, 1.5) };
             painter.circle(at, rad, col.gamma_multiply(fill), Stroke::new(width, col));
-            let label = if c.private { format!("🔒 {}", c.label) } else { c.label.clone() };
-            // the active circle's name sits clear of its radius handle
-            painter.text(at + vec2(0.0, -rad - if c.active { 20.0 } else { 8.0 }), Align2::CENTER_CENTER, label, t.semibold(11.0), col);
+            match labels.get(i).and_then(Option::as_ref) {
+                Some((pos, galley)) => {
+                    if let Some(n) = c.name.as_deref().filter(|_| !c.draft) {
+                        register(ui.ctx(), format!("map:location:{n}:label"), Rect::from_min_size(*pos, galley.size()));
+                    }
+                    painter.galley(*pos, galley.clone(), col);
+                }
+                None => hidden_label = Some(label_text(&c)),
+            }
             if c.active {
                 continue;
             }
@@ -433,6 +487,10 @@ fn locations(app: &mut LccApp, ui: &mut egui::Ui, painter: &egui::Painter, r: Re
         let wid = handle_widget(&c, "centre");
         let id = egui::Id::new(("map-location", wid.clone()));
         let h = ui.interact(hit, id, Sense::click_and_drag());
+        let h = match hidden_label {
+            Some(text) => h.on_hover_text(text),
+            None => h,
+        };
         crate::access::named(&h, egui::WidgetType::Button, &crate::i18n::tr_format!("Move saved location {name}", name = c.label.clone()));
         register(ui.ctx(), wid, hit);
         painter.circle(at, if h.hovered() { dot + 1.5 } else { dot }, col, Stroke::new(2.0, Color32::WHITE));

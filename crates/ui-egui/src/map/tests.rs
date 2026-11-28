@@ -915,3 +915,30 @@ fn search_finds_saved_locations_whatever_the_accents_and_lists_several() {
     // and only the list: the Map stays open (Esc is Back otherwise)
     assert_eq!(h.app.ui.module, crate::module::ModuleId::Map);
 }
+
+#[test]
+fn saved_location_names_that_would_overlap_are_left_out_until_there_is_room() {
+    let mut h = map_on_fake_tiles();
+    // about 600 m apart on one parallel: at zoom 13 the dots are ~40 px apart, the names wider
+    run(&mut h, "map.saveLocation", json!({"name": "Big place here", "lat": 40.656, "lon": -4.7050, "radius": 60}));
+    run(&mut h, "map.saveLocation", json!({"name": "Small place here", "lat": 40.656, "lon": -4.6979, "radius": 30}));
+    let shown = |h: &Headless, n: &str| widget(h, &format!("map:location:{n}:label")).is_some();
+    // zoomed out the two names would overlap: the larger location's wins
+    run(&mut h, "map.view", json!({"lat": 40.656, "lon": -4.70, "zoom": 13}));
+    h.settle(SETTLE);
+    assert!(shown(&h, "Big place here") && !shown(&h, "Small place here"));
+    // the left-out one is named in a tooltip on its centre handle
+    let dot = widget(&h, "map:location:Small place here:centre").expect("its centre handle");
+    h.request("ui.move", json!({"x": dot.center().x, "y": dot.center().y}), T);
+    let tooltip = |h: &Headless| h.view.ctx.memory(|m| m.areas().visible_layer_ids().into_iter().any(|l| l.order == egui::Order::Tooltip));
+    assert!(h.step_until(std::time::Duration::from_secs(5), tooltip), "a tooltip names the location");
+    // zoomed in there is room for both
+    run(&mut h, "map.view", json!({"lat": 40.656, "lon": -4.70, "zoom": 16}));
+    h.settle(SETTLE);
+    assert!(shown(&h, "Big place here") && shown(&h, "Small place here"));
+    // the active location always shows its name, even where another's would have won
+    h.app.map.active_location = Some("Small place here".into());
+    run(&mut h, "map.view", json!({"lat": 40.656, "lon": -4.70, "zoom": 13}));
+    h.settle(SETTLE);
+    assert!(shown(&h, "Small place here") && !shown(&h, "Big place here"));
+}
