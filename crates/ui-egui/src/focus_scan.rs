@@ -1,5 +1,6 @@
-//! Keeps the engine's focus-point reader (`focus.pump`) and shared ML indexer (`ml.pump`) going at the pace the face
-//! scan uses (nothing new while the user drags, types or scrolls). Their progress is their rows in the activity stack.
+//! Keeps the engine's focus-point reader (`focus.pump`) and shared ML indexer (`ml.pump`, which also finishes Auto
+//! Orient runs) going at the pace the face scan uses (nothing new while the user drags, types or scrolls). Their
+//! progress is their rows in the activity stack.
 
 use crate::json_ext::JsonExt as _;
 use serde_json::json;
@@ -23,9 +24,11 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
     if now >= app.caches.ml_next_pump
         && let Ok(v) = app.session.execute("ml.pump", &json!({"pace": pace}))
     {
-        let busy = v.field("active") == true && (v.field("pendingPhotos").as_u64().unwrap_or(0) > 0 || v.field("inFlight").as_u64().unwrap_or(0) > 0);
+        // (an Auto Orient run turns its photos from here when the last answer is in)
+        let busy = v.field("orientBusy") == true
+            || (v.field("active") == true && (v.field("pendingPhotos").as_u64().unwrap_or(0) > 0 || v.field("inFlight").as_u64().unwrap_or(0) > 0));
         app.caches.ml_next_pump = now + if busy { 0.05 } else { 1.0 };
-        if v.field("added").as_u64().unwrap_or(0) > 0 {
+        if v.field("added").as_u64().unwrap_or(0) > 0 || v.field("oriented").as_u64().unwrap_or(0) > 0 {
             ctx.request_repaint();
         }
         if busy {

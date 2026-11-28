@@ -2,6 +2,7 @@
 //! metadata, albums, import.
 
 use lcc_catalog::{Album, AlbumId, ColorLabel, CopyrightStatus, Filter, Flag, GroupBy, Op, PhotoId, Sort, SortKey};
+use lcc_develop::DevelopSettings;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, bool_or, cmd, has_active, has_library_selection, has_selection, ok, str_param};
@@ -559,22 +560,32 @@ fn row_step(p: &Value) -> isize {
     p.get("rows").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1 << 20) as isize
 }
 
+/// `before` (photo `id`'s settings) turned `quarter_turns` × 90° (clockwise when `cw`), with its crop and masks.
+pub(crate) fn turned(s: &Session, id: PhotoId, before: &DevelopSettings, cw: bool, quarter_turns: u8) -> DevelopSettings {
+    let mut d = before.clone();
+    for i in 0..quarter_turns % 4 {
+        d.orientation = d.orientation.rotated(cw);
+        // the crop lives in the oriented frame, so it turns with the image (else it keeps the old width and height and cuts the photo)
+        let turn = lcc_geom::Orientation::Normal.rotated(cw);
+        d.crop.geometry.rect = turn.map_norm_rect(d.crop.geometry.rect);
+        // and so do the masks: on the photo first (an old one), then turned with it
+        if i == 0 {
+            s.attach_masks(id, before, &mut d);
+        }
+        for m in &mut d.masks {
+            lcc_pipeline::mask_space::turn(m, turn);
+        }
+        d.crop.aspect = d.crop.aspect.map(|(w, h)| (h, w));
+    }
+    d
+}
+
 fn rotate(s: &mut Session, p: &Value, cw: bool) -> Result<Value> {
     let targets = s.targets(p)?;
     let mut ops = Vec::new();
     for id in targets {
         if let Some(before) = s.develop_of(id) {
-            let mut d = (*before).clone();
-            d.orientation = d.orientation.rotated(cw);
-            // the crop lives in the oriented frame, so it turns with the image (else it keeps the old width and height and cuts the photo)
-            let turn = lcc_geom::Orientation::Normal.rotated(cw);
-            d.crop.geometry.rect = turn.map_norm_rect(d.crop.geometry.rect);
-            // and so do the masks: on the photo first (an old one), then turned with it
-            s.attach_masks(id, &before, &mut d);
-            for m in &mut d.masks {
-                lcc_pipeline::mask_space::turn(m, turn);
-            }
-            d.crop.aspect = d.crop.aspect.map(|(w, h)| (h, w));
+            let d = turned(s, id, &before, cw, 1);
             ops.extend(s.develop_op(id, d, "Rotate"));
         }
     }
@@ -1639,6 +1650,15 @@ pub fn specs() -> Vec<CommandSpec> {
         // ---- orientation
         cmd!("photo.rotateLeft", "Rotate Left", ["Photo", "Rotate & Flip"], Some("Cmd+["), "{ids?}", has_selection, |s, p| rotate(s, p, false)),
         cmd!("photo.rotateRight", "Rotate Right", ["Photo", "Rotate & Flip"], Some("Cmd+]"), "{ids?}", has_selection, |s, p| rotate(s, p, true)),
+        cmd!(
+            "photo.autoOrient",
+            "Auto Orient (AI)",
+            ["Photo", "Rotate & Flip"],
+            None,
+            "{ids?, minConfidence?: 0..1 (default: the classifier's own), apply?: true, wait?: false, budgetMs?: 60000} → {done, checked, total, turnedCount, uncertain, minConfidence, photos: [{id, turn: 0 | 90 | 180 | 270, confidence, applied}], failed, skipped} (or {done: false, queued} while it runs): find the selected photos (or `ids`) that are shown the wrong way up with the active CLIP model and an orientation classifier, and turn those it is sure about, in one undoable step (as Rotate Left/Right: the file is never touched). Runs in the background with a `mlOrient` row in the activity stack (its ✕ stops it, nothing turned); `wait: true` waits for the answer; `apply: false` only reports. Needs the CLIP model (Settings ▸ AI Models)",
+            has_selection,
+            |s, p| s.photo_auto_orient(p)
+        ),
         cmd!("photo.flipHorizontal", "Flip Horizontal", ["Photo", "Rotate & Flip"], None, "{ids?}", has_selection, |s, p| flip(s, p, true)),
         cmd!("photo.flipVertical", "Flip Vertical", ["Photo", "Rotate & Flip"], None, "{ids?}", has_selection, |s, p| flip(s, p, false)),
         // ---- face / pet regions
@@ -2856,6 +2876,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     "created": lib.report.created,
                     "replayed": lib.report.replayed,
                     "tornBytes": lib.report.torn_bytes,
+                    // records in the catalog store that could not be read: left out, kept in the store (no optimise)
+                    "unreadable": lib.report.unreadable,
                     "damaged": lib.report.damaged,
                     // the catalog was in an older format: upgraded, a verified copy kept as it was
                     "upgradedFrom": lib.report.upgraded_from,

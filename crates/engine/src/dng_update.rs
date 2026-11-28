@@ -193,7 +193,8 @@ fn update_one(item: Item) -> std::result::Result<Done, String> {
     if now.len() != before.len() || now.modified().ok() != before.modified().ok() {
         return Err("the file changed while its preview was being made; try again".into());
     }
-    lcc_catalog::safe_file::write_atomic(path, &made.bytes).map_err(|e| format!("{}: {e}", item.path))?;
+    // the original is replaced only by a file that reads back as written (a raw may have no other copy)
+    lcc_catalog::safe_file::replace_verified(path, &made.bytes).map_err(|e| format!("{}: {e}", item.path))?;
     Ok(Done { bytes: made.bytes.len() as u64, preview: made.preview_size, replaced: made.replaced_previews })
 }
 

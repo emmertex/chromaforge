@@ -27,6 +27,8 @@ pub mod device;
 pub mod encoder;
 pub mod known;
 pub mod manifest;
+pub mod onnx;
+pub mod orient;
 pub mod queue;
 pub mod store;
 pub mod tokenizer;

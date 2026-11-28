@@ -1,4 +1,5 @@
-//! The shared AI backend (#491): `ml.status`, `ml.enable`, `ml.models.*`, `ml.pump`, `ml.index`, and `search.semantic`.
+//! The shared AI backend (#491): `ml.status`, `ml.enable`, `ml.models.*`, `ml.pump`, `ml.index`, `ml.orientation.*` (#490), and
+//! `search.semantic`.
 //! The queue, encoder and embedding store live in `crate::ml`.
 
 use super::{CommandSpec, cmd};
@@ -148,6 +149,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?: [PhotoId], wait?: false, budgetMs?: 30000} → {queued, indexedPhotos, unindexedPhotos, inFlight}: queue unindexed library photos (or `ids`) on the AI worker and optionally wait up to `budgetMs` for completion",
             super::always,
             |s, p| s.ml_index(p)
+        ),
+        cmd!(
+            query "ml.orientation.status",
+            "Orientation Detection Status",
+            [],
+            None,
+            "{} → {classifier: {available, origin?: fitted | builtIn, embedder?, minConfidence?, source?, report?, reason?}, running: {checked, total} | null, last: (the last finished photo.autoOrient answer) | null}: which classifier AI orientation detection uses and how its last run went",
+            super::always,
+            |s, p| s.ml_orientation_status(p)
+        ),
+        cmd!(
+            query "ml.orientation.fit",
+            "Fit Orientation Classifier",
+            [],
+            None,
+            "{ids?: [PhotoId], out?: path, steps?: 600, budgetMs?: 21600000} → {path, embedder, photos, failed, notReached, minConfidence, report: {photos, holdoutPhotos, viewAccuracy, photoAccuracy, thresholds: [{minConfidence, coverage, accuracy}]}}: fit AI orientation detection's classifier on the library's photos (or `ids`) as they are shown now, taken to be upright: each is rendered, turned four ways and embedded by the active CLIP model, then a 4-way linear classifier is fitted, measured on one photo in five held out, and saved as `<models>/orientation-<model id>.json` (or `out`), where photo.autoOrient uses it. Waits until done (up to `budgetMs`). Only the fitted numbers are kept, never the photos",
+            super::always,
+            |s, p| s.ml_orientation_fit(p)
         ),
         cmd!(
             query "search.semantic",

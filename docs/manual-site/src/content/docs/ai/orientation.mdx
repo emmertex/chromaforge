@@ -1,0 +1,38 @@
+---
+title: Auto orient
+description: Find photos shown the wrong way up and turn them upright, with the CLIP model that runs on this computer.
+sidebar:
+  order: 10
+---
+
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<NeedsImage what="Photo ▸ Rotate & Flip menu with Auto Orient (AI), and a grid of scans turned upright" />
+
+- **Where**: select photos in the Library grid or the filmstrip, then **Photo ▸ Rotate & Flip ▸ Auto Orient (AI)**.
+- **What it does**: it looks at each photo as it is shown now and turns the ones it is sure are sideways or upside down by 90°, 180° or 270°. This is for scans, photos from messaging apps, and shots taken straight down or up, whose files say nothing or the wrong thing about which way is up.
+- **Like Rotate Left / Right**: the turn is an edit in the library, never a change to the file, and the crop and masks turn with the photo. All the photos one run turns are one step: **Edit ▸ Undo** puts them all back.
+- **Only when sure**: a photo it can't decide (a flat-lay, a texture, a sky) is left as it is. A photo you turn by hand while it runs is left alone too.
+- **In the background**: an activity row "Detecting orientation · 3 of 20" shows progress; its **✕** stops the run, and then nothing is turned.
+- **Needs** the CLIP model (`clip-vit-b32-laion2b`, MIT) from Settings ▸ **AI Models** ▸ Semantic search, the same one AI search uses, and an orientation classifier for it (below). Semantic search itself may be off.
+- **Hardware**: the device chosen in Settings ▸ AI Models. On a graphics card it runs through ONNX Runtime where the app has it (desktop builds), otherwise through the app's own GPU code, and either is checked against the CPU before it is trusted.
+
+## The orientation classifier
+
+Auto orient puts a small classifier (a few thousand numbers) on top of the CLIP model. You can fit one for your own photos:
+
+1. Open a library whose photos all stand the right way up (several hundred photos or more works best).
+2. Run `ml.orientation.fit` from the command line or a script: `<cli> run --library <path> ml.orientation.fit '{}'`. Each photo is rendered, turned four ways and looked at; one photo in five is held out to measure the result and choose how sure an answer must be. Only the numbers are kept, never the photos.
+3. The classifier is saved next to the models (`orientation-clip-vit-b32-laion2b.json`) and Auto orient uses it from then on. `ml.orientation.status` shows which classifier is in use and how accurate it measured.
+
+## Limits
+
+- No classifier ships with the app yet: until one is fitted, Auto orient says so and does nothing.
+- Not run during import yet: select the photos and run it.
+- It turns, it never flips: a mirrored scan stays mirrored.
+- The web build cannot run the CLIP model, so Auto orient is not there.
+
+<Aside type="note" title="Scripts and agents">
+`photo.autoOrient {ids?, minConfidence?, apply?, wait?}` is the same command. `apply: false` only reports what it would turn; `wait: true` returns the answer, one entry per photo with its turn and confidence.
+</Aside>
