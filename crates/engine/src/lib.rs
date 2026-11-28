@@ -22,6 +22,7 @@ pub mod apple_photos;
 pub mod availability;
 mod background_merge;
 pub mod base64;
+pub(crate) mod bg_refresh;
 pub mod bounded_read;
 pub(crate) mod camera_preview;
 pub mod camera_profiles;
@@ -56,6 +57,7 @@ pub mod dust_map;
 pub mod email;
 pub mod enhance;
 mod errors;
+pub mod expand;
 pub mod export;
 pub mod export_video;
 pub mod eye_cull;
@@ -88,6 +90,7 @@ pub mod import;
 mod import_move;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instance;
+mod io_sched;
 pub mod legacy;
 pub mod lens_download;
 pub mod lens_profiles;
@@ -106,6 +109,7 @@ pub mod media;
 pub mod memory;
 pub mod merge;
 pub mod merge_layers;
+mod merge_pixel_shift;
 pub mod midi;
 /// The shared AI backend's queue and activity row (#491).
 pub mod ml;
@@ -134,6 +138,7 @@ pub mod profile_edits;
 pub mod profile_refs;
 pub mod proof;
 pub mod quality_scan;
+pub mod raw_decoder;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote;
 pub mod rename;
@@ -165,6 +170,8 @@ pub mod update;
 pub mod upright_jobs;
 pub mod video;
 mod view;
+mod view_undo;
+pub use view_undo::ViewState;
 pub mod vignetting_calibration_io;
 pub mod vignetting_calibration_library;
 pub mod vignetting_calibration_placement;
@@ -179,6 +186,8 @@ pub use errors::{AiModel, ErrorKind};
 pub use fonts::{CraftFont, craft_fonts};
 use lcc_catalog::{Catalog, Filter, Op, PhotoId, Sort};
 use lcc_develop::DevelopSettings;
+/// A measurement's status line (`_status`, ABI v1.1, #1398), for the Plug-in Filters panel.
+pub use lcc_filters::analysis_status as plugin_analysis_status;
 pub use media::{RenderJob, SourceLevel};
 use serde_json::Value;
 pub use view::{Browse, FilterChip, LibrarySource, Selection, SelectionState, filter_chips};
@@ -235,6 +244,11 @@ pub enum EngineError {
     Other(String),
 }
 
+/// The diagnostics outcome of an engine error (issue #1363): a cancel is `cancelled`, anything else `failed`.
+pub(crate) fn diag_outcome(e: &EngineError) -> lcc_diag::Outcome {
+    if matches!(e, EngineError::Cancelled(_)) { lcc_diag::Outcome::Cancelled } else { lcc_diag::Outcome::Failed }
+}
+
 pub type Result<T> = std::result::Result<T, EngineError>;
 
 /// One undo step: the inverse op and a label.
@@ -252,6 +266,9 @@ pub struct UndoEntry {
     pub(crate) retry_inverse: Vec<Op>,
     /// Sidecars still separated from their photo after a failed move or rollback.
     pub(crate) retry_sidecars: Vec<rename::SidecarMove>,
+    /// A navigation step (a new source, filter or selection): the view to put back, and the one
+    /// that undoes that. `op` is then empty: nothing in the catalog changes ([`view_undo`]).
+    pub(crate) view: Option<view_undo::ViewStep>,
 }
 
 /// The one photo an undo step changes, when it changes exactly one through its edit, rating, flag,
@@ -366,6 +383,13 @@ pub struct Session {
     pub(crate) shelved_filter: Option<Filter>,
     pub sort: Sort,
     pub selection: Selection,
+    /// Whether a change of the view is a step of the history (off while the app moves the view by
+    /// itself: an import showing its photos).
+    record_view_steps: bool,
+    /// The module on screen, as the app reports it ([`Session::module_switched`]).
+    pub module: String,
+    /// The module an Undo or Redo brought back, until the app has switched to it.
+    module_request: Option<String>,
     /// The grid order for the current source/filter/sort (cached by catalog revision).
     /// Shared, so frontends can hold it across frames without copying ([`Session::visible_shared`]).
     visible: Arc<[PhotoId]>,
@@ -585,6 +609,9 @@ pub struct Session {
     pub workflow: cmd::actions::Workflow,
     /// Ops applied since the last `drain_log` (for persistence).
     pending_log: Vec<Op>,
+    /// Ops handed to the catalog log so far (a running count): a command that saved its own changes while it ran
+    /// (an import commits in batches) still waits for them to reach the disk before it reports success (#1359).
+    logged_ops: u64,
     pub media: media::MediaCache,
     /// Current time provider (ISO 8601); injectable for tests and wasm.
     pub clock: Box<dyn Fn() -> String + Send>,
@@ -726,6 +753,8 @@ pub struct Session {
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// Generative fill: keys, consent, the running generation, the patch cache ([`genfill`]).
     pub genfill: genfill::GenfillState,
+    /// Crop ▸ Fill Edges: the running fill of a crop's area past the photo ([`expand`]).
+    pub edge_fill: expand::EdgeFillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Builds asked for while one was already running, waiting for their turn
@@ -752,6 +781,9 @@ pub struct Session {
     /// issue #723): the `profile.camera` choice photos of that camera start from when they choose
     /// none. `lc` = the app's own colour, `dcp:<id>` an imported profile, `cal:<id>` a look.
     pub camera_profile_defaults: std::collections::BTreeMap<String, String>,
+    /// The raw decoder per camera (library label → Auto / lcc-raw / LibRaw; persisted in prefs.json, absent =
+    /// Auto). Installed into [`raw_decoder`], which every raw decode asks.
+    pub raw_decoders: std::collections::BTreeMap<String, raw_decoder::Decoder>,
     /// Disk budget of the library's thumbnail cache in MB (0 = default; persisted in prefs.json).
     pub cache_mb: u32,
     /// Slideshow playback settings (`slideshow.playback`; persisted in prefs.json).
@@ -970,11 +1002,15 @@ impl Session {
             journal: Vec::new(),
             workflow: Default::default(),
             pending_log: Vec::new(),
+            logged_ops: 0,
             media: media::MediaCache::default(),
             clock: Box::new(|| "2026-09-30T12:00:00".to_string()),
             depth: 0,
             wait_for_catalog_log: true,
             active_mask: None,
+            record_view_steps: true,
+            module: "library".to_string(),
+            module_request: None,
             segmenter: segment::Segmenter::default(),
             active_spot: None,
             library: None,
@@ -1027,6 +1063,7 @@ impl Session {
             quality_scan: None,
             video: Default::default(),
             genfill: Default::default(),
+            edge_fill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
             preview_queue: Default::default(),
@@ -1039,6 +1076,7 @@ impl Session {
             sensor_job: None,
             import_defaults: import::ImportDefaults::default(),
             camera_profile_defaults: Default::default(),
+            raw_decoders: Default::default(),
             cache_mb: 0,
             slideshow: slideshow::PlaybackSettings::default(),
             slide_layout: slide::SlideSettings::default(),
@@ -1102,8 +1140,11 @@ impl Session {
 
     fn run_command(&mut self, id: &str, journal: Option<&Value>, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
         let log_start = self.pending_log.len();
+        let logged_before = self.logged_ops;
         let was_active = self.active();
         let (commits_before, silent_before) = (self.commits, self.silent_changes);
+        // where the view stood, and the history: a command that changes the view and leaves the history as it was is navigation
+        let navigating = (self.depth == 0 && self.record_view_steps).then(|| (self.view_state(), self.undo_mark(), self.redo.len()));
         self.depth += 1;
         // last-resort guard: a panic in a command is that command's error, not a crash
         let r = guard::catch(&format!("`{id}`"), || f(self)).unwrap_or_else(|e| Err(EngineError::Other(e)));
@@ -1138,6 +1179,12 @@ impl Session {
         if self.depth == 0 {
             // whatever the command changed, and however it ended: the view points at what is there
             self.reconcile_view();
+            if let Some((view, undone, redone)) = navigating
+                && self.commits == commits_before
+                && (self.undo_mark(), self.redo.len()) == (undone, redone)
+            {
+                self.view_changed(id, view);
+            }
         }
         if self.depth == 0 && self.library.is_none() && self.app_store.is_some() {
             // no library (`run --shared-settings`): the store is saved after each command
@@ -1154,7 +1201,9 @@ impl Session {
             // queued, and the next save (any later command, or the frame loop) retries it. Other
             // persistence trouble (a failed compaction, an older queued change still unwritten by
             // a command that changed nothing) doesn't fail the command; `library.info` reports it.
-            let produced = self.pending_log.len() > log_start;
+            // (ops it saved while it ran count too: an import hands its batches to the log as it goes, which left
+            // nothing queued here and skipped the wait, reporting success before the import was on disk, #1359)
+            let produced = self.pending_log.len() > log_start || self.logged_ops != logged_before;
             let mut persisted = self.persist();
             if persisted.is_ok() && produced && self.wait_for_catalog_log {
                 persisted = self.flush_catalog();
@@ -1266,6 +1315,7 @@ impl Session {
             profile: None,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         self.commits = self.commits.wrapping_add(1);
         if self.hold_stepped && !self.in_run_step {
@@ -1504,11 +1554,16 @@ impl Session {
             return;
         }
         let Some(entries) = self.undo.get(self.undo.len() - n..) else { return };
+        // Steps that only moved the view (the person navigated while a long run committed its steps) stay as they are,
+        // above the folded step; the run's own steps are the ones that fold.
+        if entries.iter().filter(|e| !e.is_navigation()).count() < 2 {
+            return;
+        }
         // Folder moves and partially applied file steps stay on their own.
         if entries.iter().any(|e| e.folder.is_some() || e.profile.is_some() || !e.retry_inverse.is_empty() || !e.retry_sidecars.is_empty()) {
             return;
         }
-        let tail = self.undo.split_off(self.undo.len() - n);
+        let (moves, tail): (Vec<_>, Vec<_>) = self.undo.split_off(self.undo.len() - n).into_iter().partition(UndoEntry::is_navigation);
         let ops = tail.into_iter().rev().map(|e| e.op).collect();
         self.undo.push(UndoEntry {
             label: label.to_string(),
@@ -1517,7 +1572,9 @@ impl Session {
             profile: None,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
+        self.undo.extend(moves);
     }
 
     /// Apply and journal (so it is saved) without an undo step: a change the app made by itself, not the user.
@@ -1541,6 +1598,9 @@ impl Session {
 
     pub(crate) fn undo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.undo.pop().ok_or_else(|| EngineError::Other("nothing to undo".into()))?;
+        if e.view.is_some() {
+            return Ok(self.take_view_step(e, true));
+        }
         // a replaced camera profile's file goes back first (nothing else changes when that fails)
         let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
             Some(Err(err)) => {
@@ -1575,6 +1635,7 @@ impl Session {
             profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
@@ -1588,6 +1649,9 @@ impl Session {
 
     pub(crate) fn redo_step_with(&mut self, fs: &dyn rename::MoveFs) -> Result<String> {
         let mut e = self.redo.pop().ok_or_else(|| EngineError::Other("nothing to redo".into()))?;
+        if e.view.is_some() {
+            return Ok(self.take_view_step(e, false));
+        }
         // a replaced camera profile's file goes back first (nothing else changes when that fails)
         let swapped = match e.profile.as_ref().map(|sw| chart_profiling::apply_swap(self, sw)) {
             Some(Err(err)) => {
@@ -1624,6 +1688,7 @@ impl Session {
             profile: swapped,
             retry_inverse: Vec::new(),
             retry_sidecars: Vec::new(),
+            view: None,
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
@@ -2864,7 +2929,11 @@ mod tests_edit_roundtrip;
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
 #[cfg(test)]
+mod tests_expand;
+#[cfg(test)]
 mod tests_export;
+#[cfg(test)]
+mod tests_export_binning;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_export_video;
@@ -3005,6 +3074,8 @@ mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]
+mod tests_reload_sha1;
+#[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
@@ -3036,6 +3107,8 @@ mod tests_upright_jobs;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
+#[cfg(test)]
+mod tests_view_undo;
 #[cfg(test)]
 mod tests_vignetting_calibration_commands;
 #[cfg(test)]

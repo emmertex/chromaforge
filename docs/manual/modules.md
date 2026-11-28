@@ -18,8 +18,8 @@ text, the shot-info strip with the pixel size included), `G` returns to the grid
   ([library-shortcuts.md](../library-shortcuts.md)).
 - **Metadata:** Info and Keywords panels, metadata presets, hierarchical keywords with import/export (File →
   Import/Export Keywords…), the Painter (`Cmd+Alt+K`), Save Metadata to File (`Cmd+S`).
-- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns (including Aperture and Shutter Speed); save it as a smart collection.
-  Library → Advanced Search… (`Cmd+Shift+F`) filters by structured fields; codec and frame rate are not supported yet.
+- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns (as many as you like, added, moved and removed from a column's header; including Aperture, Shutter Speed and Face Count); save it as a smart collection.
+  Library → Advanced Search… (`Cmd+Shift+F`) filters by structured fields, dates included; codec, frame rate, exposure program, metering mode, white balance, subject distance and colour depth are not supported yet.
 - **Clean up:** Library → Find Duplicates… groups exact and look-alike copies (raw + JPEG pairs are offered as stacks, not
   removals; [duplicates.md](../duplicates.md)); Validate DNG Files checks the DNGs' checksums; Photo → Reset Export Status
   clears the exported badge; Metadata → Update DNG Preview & Metadata refreshes a DNG's preview and XMP.
@@ -43,8 +43,13 @@ Settings) fits the camera's JPEG rendering from selected raw + JPEG pairs into a
 Copy and paste settings with `Cmd+C`/`Cmd+V` (`Cmd+Shift+C` to choose which). Photo → Photo Merge makes HDR and
 panorama DNGs. Every slider is a develop control: `<cli> controls` lists ids and ranges.
 
+Crop ▸ Extend Past the Edge lets the crop reach past the photo (up to half its size on each side); Fill Edges fills
+what it shows there, Content-Aware (from the photo, on your computer) or Generative (your generative fill service and
+key, Settings → Generative Fill).
+
 The row of tools under the histogram is Edit, Crop, Remove, Red Eye, Masking and Browse Profiles (the profile
-browser in the panels' place; a second click puts it away). Basic starts with Auto · B&W | HDR, then the profile's
+browser in the panels' place; a second click puts it away); the Compact layout adds Reset. Right-click the row to hide
+any button but Edit, or to move one left or right; Settings ▸ Develop ▸ Tool Row shows and hides them too. Basic starts with Auto · B&W | HDR, then the profile's
 Amount and white balance.
 
 ### Tool profiles
@@ -78,7 +83,8 @@ the photos in view.
   (`map.track`, `map.trackOffset`, `photo.autoTagTracklog`).
 - Saved locations with a radius; a **private** location keeps its photos' GPS out of every export. Drag a location's
   centre to move it and the handle on its edge to resize it; right-click ▸ **New Location Here…** or **Edit…** opens the
-  **Edit Location** panel (name, radius, private).
+  **Edit Location** panel (name, radius, private). In the list, a row's box is ticked when the selected photos are
+  inside the location (a dash when some are); ticking it moves them to its centre, as in Lightroom Classic.
 - Reverse geocoding is opt-in: offline from a downloaded GeoNames cities list (`map.geonamesDownload`, CC-BY 4.0) or
   online from a Nominatim-compatible server after consent. Nothing is sent without asking.
 - Tiles are cached on disk with a size limit; the app never bulk-prefetches.

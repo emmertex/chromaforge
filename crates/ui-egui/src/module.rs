@@ -203,6 +203,12 @@ pub enum PanelId {
     KeywordList,
     /// Library right: the selected photos' metadata.
     Metadata,
+    /// Develop tool row: the Browse Profiles button (the profile browser in the panels' place). Not a
+    /// panel of its own: an entry of the row, so it is shown, hidden and moved as the tools are (#1251).
+    Profiles,
+    /// Develop tool row: the Reset button the Compact layout puts last in the row (the bar under the
+    /// panels keeps its own). Shown, hidden and moved as the tools are (#1251).
+    Reset,
 }
 
 impl PanelId {
@@ -239,7 +245,9 @@ impl PanelId {
             | PanelId::QuickDevelop
             | PanelId::Keywording
             | PanelId::KeywordList
-            | PanelId::Metadata => return None,
+            | PanelId::Metadata
+            | PanelId::Profiles
+            | PanelId::Reset => return None,
         })
     }
 }
@@ -684,6 +692,8 @@ fn swap(app: &mut LccApp, to: ModuleId, full: bool) {
     app.ui.layouts.insert(from, saved);
     app.ui.previous_module = Some(from);
     app.ui.module = to;
+    // a step of the history, as in Lightroom (Edit ▸ Undo Module Change)
+    app.session.module_switched(to.key());
     if let Some(l) = app.ui.layouts.get(&to).cloned() {
         apply(app, &l, full);
     }
@@ -697,6 +707,14 @@ fn swap(app: &mut LccApp, to: ModuleId, full: bool) {
 /// Follow the view: opening an editing panel from Library enters Develop, returning to a grid
 /// enters Library. Placeholder modules stay until a view or panel changes under them.
 pub fn sync(app: &mut LccApp) {
+    // an Undo or a Redo brought another module back; any other change of module the session just follows
+    if let Some(key) = app.session.take_module_request()
+        && let Some(to) = ModuleId::parse(&key)
+        && to != app.ui.module
+    {
+        let _ = switch(app, to);
+    }
+    app.session.follow_module(app.ui.module.key());
     let now = (app.ui.view, app.ui.right);
     if app.ui.module.is_placeholder() {
         match app.ui.placeholder_from {

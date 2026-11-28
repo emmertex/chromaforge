@@ -266,9 +266,12 @@ impl CropView {
 
 /// Lay the crop tool's view out in `area`: held as `layout` says while the crop is being changed,
 /// otherwise the turned photo at `zoom` (fitted into `area` unless a percentage) and `pan`. `frame` is the uncropped frame the loupe renders.
+/// A crop that may `extend` past the photo (issue #861) is fitted with room around the photo and the crop to drag into.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn crop_view(
     frame: &Frame,
     crop: lcc_geom::CropGeometry,
+    extend: bool,
     area: Rect,
     layout: Option<CropLayout>,
     zoom: Zoom,
@@ -291,6 +294,13 @@ pub(crate) fn crop_view(
                     // scaled to the zoom asked for (or to fit the area) and placed as `pan` says
                     let unit = CanvasMap::new(&cf, Rect::from_center_size(Pos2::ZERO, vec2(nw, nh)));
                     let b = Rect::from_points(&corners.map(|c| unit.screen(c)));
+                    let b = if extend {
+                        // the crop where it reaches past the photo, and a margin to drag it further
+                        let b = b.union(Rect::from_points(&cf.crop_quad_norm().map(|c| unit.screen(c))));
+                        b.expand2(b.size() * 0.12)
+                    } else {
+                        b
+                    };
                     let k = match zoom {
                         Zoom::Percent(p) if finite(p) && finite(ppp) => p / 100.0 / ppp,
                         _ => (area.width() / b.width()).min(area.height() / b.height()),
@@ -1016,6 +1026,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let show_film = crate::module::edge_visible(app, crate::module::Edge::Bottom) && !fullscreen;
     let film_h = if show_film { app.ui.film_height() } else { 0.0 };
     let mut canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
+    // the filter bar opens above the loupe, so Develop keeps its photo while filtering (#1317)
+    if app.ui.develop_filter_shown_here() && app.ui.develop_filter_bar && !fullscreen {
+        let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(canvas).layout(egui::Layout::top_down(egui::Align::Min)));
+        super::filterbar::show(app, &mut bar);
+        canvas.min.y = bar.min_rect().bottom().clamp(canvas.min.y, canvas.max.y);
+    }
     // a video: its control bar along the bottom of the canvas (photos keep the whole canvas)
     let mut video_state = None;
     if let Some(vid) = app.session.active().filter(|id| crate::video_ui::photo_is_video(app, *id)) {
@@ -1119,7 +1135,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view = crop_tool.then(|| crop_view(&frame, shown_crop(&d, &frame), main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
+    let crop_view =
+        crop_tool.then(|| crop_view(&frame, shown_crop(&d, &frame), d.crop.extend, main_area, app.crop_layout.clone(), app.ui.zoom, ppp, app.ui.pan));
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -4228,6 +4245,11 @@ fn outside_crop_mesh(photo: &[Pos2; 4], quad: &[Pos2; 4], color: Color32) -> egu
 /// The crop the photo gets: shrunk into the warped photo's valid area as the render does it (lens
 /// corrections always, perspective with Constrain Crop).
 fn shown_crop(d: &DevelopSettings, frame: &Frame) -> lcc_geom::CropGeometry {
+    // (a crop extended past the photo keeps the canvas a lens correction shows, as the render does: issue #861)
+    if d.crop.extend {
+        let (w, h) = (frame.ow, frame.oh);
+        return d.crop.geometry.bounded_extended(w, h);
+    }
     frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop)
 }
 
@@ -6587,6 +6609,25 @@ pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
     (px.round() as usize).clamp(128, 512)
 }
 
+/// Whether the strip scrolls to centre the active photo at index `i` of `n`, its cells `cell_w` wide, with
+/// `left..right` in view: when that photo or a neighbour of it is not wholly in view. A strip too narrow to show
+/// three whole cells asks only for the photo itself.
+pub(crate) fn film_should_follow(i: usize, n: usize, cell_w: f32, left: f32, right: f32) -> bool {
+    let whole = |j: usize| {
+        let l = j as f32 * cell_w;
+        l >= left - 0.5 && l + cell_w <= right + 0.5
+    };
+    if !whole(i) {
+        return true;
+    }
+    if right - left < cell_w * 3.0 {
+        return false;
+    }
+    let before = i.checked_sub(1).is_some_and(|j| !whole(j));
+    let after = i + 1 < n && !whole(i + 1);
+    before || after
+}
+
 /// The filmstrip's scroll offset after its cells change from `old_w` to `new_w` points wide: the
 /// photo at index `at` (the active one) stays where it was on screen; with none, the first photo
 /// in view does.
@@ -6714,8 +6755,9 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             for (i, id) in ids.iter().enumerate() {
                 let cr = Rect::from_min_size(pos2(area.left() + i as f32 * cell_w, area.top()), vec2(cell_w, area.height()));
                 let local = Rect::from_min_size(pos2(i as f32 * cell_w, 0.0), cr.size());
-                // centred when it is (partly) off screen; a click on a visible thumbnail leaves the strip alone
-                if follow && Some(*id) == active && !(local.left() >= vp.left() && local.right() <= vp.right()) {
+                // centred when it, or a neighbour beside it, is (partly) off screen, as in Lightroom Classic: the
+                // last whole thumbnail in view already scrolls the strip, so the next one is never half hidden (#1319)
+                if follow && Some(*id) == active && film_should_follow(i, ids.len(), cell_w, vp.left(), vp.right()) {
                     ui.scroll_to_rect(cr, Some(egui::Align::Center));
                 }
                 if !local.intersects(vp.expand2(vec2(cell_w * 4.0, 0.0))) {
@@ -6784,7 +6826,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let bar =
                         Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
                     register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
-                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id));
+                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id), ph.meta.gps.is_some());
                 }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone
@@ -6862,6 +6904,11 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     if compare && let Err(e) = r {
                         app.toast_error(ui.ctx(), e);
                     }
+                    // as in Lightroom Classic, one click brings the map to the photo, at the zoom it has
+                    if map {
+                        let now = ui.input(|i| i.time);
+                        crate::map::centre_on_photo(app, *id, now);
+                    }
                 }
                 // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,
                 // even when the pin was already on screen
@@ -6892,7 +6939,8 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
     use crate::icons::{Icon, paint};
     use lcc_catalog::Flag;
     let edited = ph.is_edited();
-    if ph.rating == 0 && ph.flag == Flag::None && !edited {
+    let gps = ph.meta.gps.is_some();
+    if ph.rating == 0 && ph.flag == Flag::None && !edited && !gps {
         return;
     }
     let bar = Rect::from_min_max(pos2(fr.left(), fr.bottom() - 15.0), fr.right_bottom());
@@ -6905,8 +6953,14 @@ fn film_badges(p: &egui::Painter, t: &Tokens, fr: Rect, ph: &lcc_catalog::Photo)
         Flag::Reject => paint(p, Rect::from_min_size(pos2(x, y - 5.0), vec2(10.0, 10.0)), Icon::FlagReject, t.reject),
         Flag::None => {}
     }
+    let mut right = bar.right() - 3.0;
     if edited {
-        paint(p, Rect::from_min_size(pos2(bar.right() - 13.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::Sliders, t.text_label);
+        right -= 13.0;
+    }
+    // the photo has a GPS position
+    if gps {
+        paint(p, Rect::from_min_size(pos2(right - 10.0, y - 5.0), vec2(10.0, 10.0)), Icon::MapPin, t.text_label);
     }
 }
 

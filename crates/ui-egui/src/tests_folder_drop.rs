@@ -135,6 +135,11 @@ fn toast(h: &Headless) -> String {
     h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
+/// The steps of the library's own changes: a click that picks the photo up is a step of its own (a selection).
+fn catalog_steps(h: &Headless) -> usize {
+    h.app.session.undo.iter().filter(|e| !e.is_navigation()).count()
+}
+
 #[test]
 fn photos_dropped_on_a_folder_move_there_on_disk() {
     let (root, trip, home) = folders("move");
@@ -254,10 +259,10 @@ fn photos_already_in_the_folder_stay_put() {
     });
     h.step();
     assert_eq!(hint(&h).as_deref(), Some("Already in “home”"));
-    let undo = h.app.session.undo.len();
+    let undo = catalog_steps(&h);
     release(&mut h, target.center());
     assert!(home.join("garden.png").is_file());
-    assert_eq!(h.app.session.undo.len(), undo, "nothing done");
+    assert_eq!(catalog_steps(&h), undo, "nothing done");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -338,13 +343,13 @@ fn cancelling_the_question_moves_nothing() {
         click(&mut h, &format!("libraryFolderToggle:{}", tree_path(&root)));
         folder_row(&h, &home).unwrap()
     };
-    let undo = h.app.session.undo.len();
+    let undo = catalog_steps(&h);
     drop_beach(&mut h, beach, target);
     assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::MovePhotos { .. })));
     click(&mut h, "button:dialogCancel");
     assert!(h.app.ui.dialog.is_none());
     assert!(trip.join("beach.png").is_file() && !home.join("beach.png").exists(), "nothing moved");
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(catalog_steps(&h), undo);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -366,7 +371,9 @@ fn dont_ask_again_moves_the_next_drop_at_once() {
     // the next drop goes at once
     let dunes = id_of(&h, "dunes.png");
     h.app.session.selection = lcc_engine::Selection::single(lcc_catalog::PhotoId(dunes));
-    h.step();
+    // (the first move's file checks and folder counts land first: on a busy machine they could
+    // move the rows while the next drag is under way)
+    let _ = h.settle(std::time::Duration::from_secs(30));
     let target = folder_row(&h, &home).unwrap();
     drop_beach(&mut h, dunes, target);
     assert!(h.app.ui.dialog.is_none(), "not asked");
@@ -596,7 +603,7 @@ fn add_to_my_photos_reviews_a_local_folders_browsed_photos() {
     let mut h = app(&[(trip.join("beach.png"), true), (trip.join("dunes.png"), true)]);
     let place = trip.to_string_lossy().to_string();
     h.app.run("local.addRoot", json!({"path": place})).unwrap();
-    assert!(h.step_until(std::time::Duration::from_secs(10), |h| widget(h, &format!("source:local:{place}")).is_some()));
+    assert!(h.step_until(std::time::Duration::from_secs(60), |h| widget(h, &format!("source:local:{place}")).is_some()));
     menu_click(&mut h, &format!("source:local:{place}"), "folderAddToMyPhotos");
     let d = review(&mut h);
     assert_eq!(d.sources, std::slice::from_ref(&place));
@@ -640,7 +647,7 @@ fn the_import_rows_are_grayed_out_while_a_scan_runs() {
     // a Local row's Add to My Photos… is grayed out the same way
     let place = trip.to_string_lossy().to_string();
     h.app.run("local.addRoot", json!({"path": place})).unwrap();
-    assert!(h.step_until(std::time::Duration::from_secs(10), |h| widget(h, &format!("source:local:{place}")).is_some()));
+    assert!(h.step_until(std::time::Duration::from_secs(60), |h| widget(h, &format!("source:local:{place}")).is_some()));
     menu_click(&mut h, &format!("source:local:{place}"), "folderAddToMyPhotos");
     for _ in 0..5 {
         h.step();

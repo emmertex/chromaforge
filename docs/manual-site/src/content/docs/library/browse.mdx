@@ -11,17 +11,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Shot name="lib-grid" alt="Library grid with the catalog, collections and filter bar" />
 
-- **Photo Grid** and **Square Grid**: thumbnails with badges (flag, stars, edited, keywords, stack count, virtual copy). Size slider in the bottom bar, or `=` / `-`.
+- **Photo Grid** and **Square Grid**: thumbnails with badges (flag, stars, edited, GPS position, keywords, stack count, virtual copy). A click on the GPS badge (a map marker) opens the Map on that photo; the filmstrip shows the marker with its marks too. Size slider in the bottom bar, or `=` / `-`.
 - **Grid View Style** (**View** menu): compact or expanded cells, index numbers, badges, caption (file name, exposure, capture date). **Grid Info** toggles the info overlay.
-- **Loupe** (**Detail View**, `D`, or Enter on a photo): one photo with the Navigator, zoom (Fit, Fill, 1:1) and filmstrip.
+- **Loupe** (**Detail View**, `D`, or Enter on a photo): one photo with the Navigator, zoom (Fit, Fill, 100%) and filmstrip.
 - **Compare** (`Shift+C`): two photos side by side, *Select* and *Candidate*, zoom linked. **Swap** and **Make Select** in the bar.
 - **Survey** (`N`): the selection together, one cell each.
 - **Reference View** (`Shift+R`): a reference photo beside the active one (**Photo ▸ Set as Reference Photo**).
 - **People** view: faces grouped by person, see [People and faces](../people/).
 - Move with arrows, `Home` / `End`; `Shift` + arrows extend the selection; **Select Only Active Photo** narrows it.
 - The header shows "1 selected" when one photo is selected.
-- Resizing the filmstrip keeps the active photo in place.
-- **Filter** at the right of the filmstrip's header narrows the strip (and the grid) as in Lightroom Classic: flags (picked, unflagged, rejected), then the rating comparison (click it to cycle ≥, =, ≤) and stars, then the colour labels. A second click lifts a flag or star. The toolbar under the photo still rates and flags; the filmstrip only filters.
+- Resizing the filmstrip keeps the active photo in place. Moving onto the first or last whole thumbnail in view scrolls the strip to centre it, so the next photo is never half hidden.
+- **Filter** at the right of the filmstrip's header narrows the strip (and the grid) as in Lightroom Classic: flags (picked, unflagged, rejected; click several to show any of them, such as picked and unflagged), then the rating comparison (click it to cycle ≥, =, ≤) and stars, then the colour labels. A second click lifts a flag or star. The toolbar under the photo still rates and flags; the filmstrip only filters.
 - **Auto Advance** (**Photo** menu) steps forward after each rating or flag.
 - Cull with stars, flags and labels: [Ratings, flags, labels](../ratings/). **Assisted Culling** scores focus and bursts; the [Image Quality Scanner](../quality-scanner/) scores sharpness, noise, exposure and JPEG artifacts, and flags photos by score.
 - **Quick Develop** panel (right): Saved Preset, Crop Ratio, Treatment, White Balance, Auto Tone and stepped tone buttons for the selection.

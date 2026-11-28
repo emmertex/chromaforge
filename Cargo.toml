@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*", "xtask"]
 exclude = ["vendor", "sdk"]
 
 [workspace.package]
-version = "26.48.1"
+version = "26.48.2"
 edition = "2024"
 license = "MIT OR GPL-3.0-or-later"
 rust-version = "1.95"
@@ -23,8 +23,11 @@ lcc-denoise = { path = "crates/denoise", default-features = false }
 lcc-geom = { path = "crates/geom" }
 lcc-faces = { path = "crates/faces" }
 lcc-sysmem = { path = "crates/sysmem" }
+lcc-diag = { path = "crates/diag" }
+lcc-libraw = { path = "crates/libraw" }
 lcc-hdrmeta = { path = "crates/hdrmeta" }
 lcc-gpumem = { path = "crates/gpumem" }
+lcc-onnxrt = { path = "crates/onnxrt" }
 lcc-winspool = { path = "crates/winspool" }
 lcc-winmsi = { path = "crates/winmsi" }
 lcc-winjob = { path = "crates/winjob" }
@@ -103,6 +106,7 @@ getrandom = "0.3"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; CLAUDE.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+rustfft = "6"
 winapi-util = "0.1" # lcc-catalog reads a file's volume serial number and file index with it on Windows
 proptest = "1"
 bytemuck = { version = "1", features = ["derive"] }
@@ -131,6 +135,8 @@ ab_glyph = { version = "0.2", default-features = false, features = ["std"] }  # 
 png = "0.18"
 tiff = "0.11"
 image-webp = "0.2"
+# lossy WebP export (libwebp, C; AGENTS.md → "Rust first", #1482): its safe wrapper, without the `image` integration
+webp = { version = "0.3", default-features = false }
 exr = { version = "1.74", default-features = false } # BSD-3-Clause, pure Rust (no unsafe) OpenEXR; scene-linear export
 moxcms = { version = "0.9", default-features = false, features = ["lut"] }
 jxl-oxide = { version = "0.12", default-features = false }

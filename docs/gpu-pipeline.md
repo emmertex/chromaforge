@@ -450,6 +450,12 @@ and build time.
   thumbnail-level render; the full render replaces it in place.
 - Raw sources for previews (2560 px) and thumbnails are binned straight from the mosaic
   (`RawImage::develop_binned`, 2× for a 24 MP preview); only exports / 1:1 demosaic at full size.
+- A Bayer raw's full-size demosaic (AHD) runs on the GPU when there is one (`wgsl/demosaic.wgsl`,
+  `lcc_gpu::demosaic`; issue #1377): a pass-for-pass port of `lcc_raw::demosaic::ahd`, in strips of at most
+  512 rows padded by mirror reflection as the CPU pads its tiles, so seams can't show. The CPU's stays the
+  reference: `the_gpu_demosaic_matches_the_cpu` holds every Bayer phase to the CPU's picture but for rounding
+  (under 0.5 % of pixels take the other direction's candidate where rounding tips a homogeneity count). No GPU,
+  a device failure or `<PREFIX>_GPU_DEMOSAIC=0` demosaics on the CPU; X-Trans and other patterns always do.
 - The next and previous photos in filmstrip order are prepared in the background once the current
   one is rendered (decoded source kept, view render cached): stepping through photos shows the
   developed image in ~50 ms.

@@ -169,6 +169,29 @@ fn metadata_columns_narrow_the_grid_and_cascade() {
         let r = h.request("engine.execute", json!({"command": "view.filterColumns", "params": p}), T);
         assert_eq!(r["ok"], false, "{p}: {r}");
     }
+    // issue #1112: more columns than six, the Face Count column, reordering and removing from a column's header
+    ok(&mut h, "engine.execute", json!({"command": "view.filterColumns", "params": {"count": 8}}));
+    assert_eq!(h.app.ui.filter_columns.len(), 8, "no cap at six columns");
+    ok(&mut h, "engine.execute", json!({"command": "view.filterColumns", "params": {"add": "faces"}}));
+    assert_eq!(h.app.ui.filter_columns.last().map(String::as_str), Some("faces"));
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "filterValue:8:0"), "the ninth column is drawn (it scrolls into view)");
+    let first = h.app.ui.filter_columns[0].clone();
+    let second = h.app.ui.filter_columns[1].clone();
+    ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filterColumn0"}));
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterColumnEdit:0:right"}));
+    assert_eq!(h.app.ui.filter_columns[..2], [second.clone(), first.clone()], "Move Right swaps it with its neighbour");
+    ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filterColumn1"}));
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterColumnEdit:1:remove"}));
+    assert_eq!(h.app.ui.filter_columns.len(), 8);
+    assert!(!h.app.ui.filter_columns.contains(&first), "Remove takes the column out");
+    ok(&mut h, "engine.execute", json!({"command": "view.filterColumns", "params": {"move": 7, "to": 0}}));
+    assert_eq!(h.app.ui.filter_columns[0], "faces");
+    let total = crate::panels::filterbar::COLUMN_FIELDS.len();
+    ok(&mut h, "engine.execute", json!({"command": "view.filterColumns", "params": {"count": total}}));
+    for p in [json!({"add": true}), json!({"remove": total}), json!({"move": 0, "to": total}), json!({"add": "shoe"})] {
+        let r = h.request("engine.execute", json!({"command": "view.filterColumns", "params": p}), T);
+        assert_eq!(r["ok"], false, "{p}: {r}");
+    }
     // hidden again
     ok(&mut h, "ui.clickWidget", json!({"id": "button:filterColumns"}));
     assert!(h.app.ui.filter_columns.is_empty());

@@ -63,6 +63,9 @@ appended (so their content hashes differ), then driven headless with the CLI:
 | `grid` | `tests_grid::scale_*` in `lcc-ui-egui`: Library grid at 100k photos, filter bar at 68k |
 | `tiff` | `tiff_zip::bench` in `lcc-codecs`: 24 MP 16-bit TIFF, none / ZIP / LZW |
 | `keywords` | `probe_keyword_tree_cost` in `lcc-catalog`: keyword tree at 58k photos, 2,000 keywords |
+| `startup` | `startup_bench` in `lcc-ui-egui`: start-up to a usable library at 100k photos |
+| `wheel` | `tests_viewperf::wheel_scroll_100k_frame` in `lcc-ui-egui`: grid wheel-scroll frame at 100k |
+| `export45` | `export45_bench` in `lcc-engine`: 45 MP raws to 2048 px and full-size JPEGs, CPU and GPU (see *Export, 45 MP*) |
 
 It prints each budget in `BUDGETS` (draft slider ≤ 16 ms, loupe ≤ 60 ms at 2.5 MP, grid frame ≤ 16 ms, TIFF ZIP ≤ 3 s,
 kept keyword tree ≤ 16 ms, …) with the measured wall time, then compares with this machine's baseline
@@ -148,6 +151,52 @@ demosaic AHD:             193.5 ms wall,  4844.3 ms cpu
 load_bytes(2560):          93.0 ms wall,  1855.4 ms cpu
 load_bytes(full):         425.3 ms wall, 10448.3 ms cpu
 ```
+
+## Export, 45 MP (`cargo xtask bench`, `export45_bench`; #1377)
+
+`cargo run --release -p lcc-engine --example export45_bench -- [--photos N] [--lanes N] [--sizes 2048,full]
+[--cpu-only] [--dir DIR | FILES…]` exports a batch of 45 MP raws as the Export dialog does (JPEG quality 90, sRGB,
+photos side by side, the app's lane count unless `--lanes`), at a 2048 px long edge and at full size, on the CPU and
+on the GPU when there is an adapter. Each scenario runs in its own process after one untimed photo (GPU start-up,
+kernel compiles). Per photo it prints:
+
+- wall time and process CPU time (`getrusage`, user + system);
+- peak memory: the scenario process's peak resident set (macOS, Linux; not reported on Windows);
+- GPU busy: the share of the wall time with a submission in flight (`lcc_gpu::busy`, counted from `queue.submit` to
+  wgpu's work-done callback). An upper bound on the device's own busy time, not a hardware counter: compare it with
+  the OS's GPU utilisation (Activity Monitor, `nvidia-smi`, `intel_gpu_top`) when it matters;
+- each stage's time (`lcc_pipeline::meter`), summed over the lanes and divided by the photos: `export decode` (the
+  whole source load) split into `file read`, `raw decode`, `raw defects` (Fix Hot and Dead Pixels), `raw hot pixels`
+  (Remove Hot Pixels, when on), `raw starting colour`, `raw binning` or `raw demosaic`, `raw finish` and
+  `memory release`; then `export waiting for the GPU`, `export render`, `export encode`. Stages of photos side by
+  side add up, so they can sum to more than the wall time.
+
+Without files it writes six synthetic 45 MP (8256 × 5504) lossless-JPEG Bayer DNGs to `target/bench/export45/` (kept
+between runs). Those decode much faster than a Nikon HE\* NEF, which has a JPEG XS entropy decode: give real raws with
+`cargo xtask bench --only export45 --export-dir DIR` (or `--dir` on the example) to measure a camera's decode. The
+`cpu`/`wall` columns join the regression comparison like every probe's; `MB peak` and `% busy` are recorded in
+`target/bench/history.jsonl` but not compared.
+
+First reading, 2026-11-27, a 4-core Linux cloud container with no GPU, 3 synthetic photos, 2 lanes (one run, so read
+it as a rough guide): to 2048 px, 1.24 s wall and 3.9 CPU-s per photo, 677 MB peak; the source load is 1.1 s of
+stage time per photo (raw decode 0.56 s, Remove Hot Pixels 0.13 s, Fix Hot and Dead Pixels 0.09 s, binning 0.05 s,
+colour finish 0.21 s) and the render 0.73 s. Full size: 9.7 s wall and 33 CPU-s per photo, 5.1 GB peak, of which the
+CPU render is 10.0 s of stage time and the demosaic 1.6 s.
+
+Step 2 of #1377, same machine, 3 synthetic photos, two interleaved before/after runs: an export reads a raw binned
+two by two when that leaves 1.15 times the source pixels the output needs (`EXPORT_BIN_MARGIN`), kept at that size
+for one Lanczos step. To 3000 px: 3.61 s → 1.95 s wall, 12.0 → 6.2 CPU-s, 1.86 → 1.06 GB peak per photo. To 2048 px:
+unchanged (1.26 → 1.29 s wall, 3.97 → 3.97 CPU-s; the colour finish is 0.21 → 0.09 s, the render 0.72 → 0.91 s on the
+larger source), but sharper. The `bin_sharpness` example (`cargo run --release -p lcc-engine --example
+bin_sharpness`) is the visual check: SSIM against a full AHD demosaic ≥ 0.998 on the demo scenes from 1024 to 3840
+px; on a zone plate 0.96–0.998 binned by 2, against 0.64–0.80 for the old box fit to 2560 px. Crops are written to
+`target/bench/bin-sharpness/`.
+
+Step 3 of #1377: a Bayer raw's full-size AHD runs on the GPU (`lcc_gpu::demosaic`, `docs/gpu-pipeline.md`). On this
+container's software Vulkan (lavapipe, `<PREFIX>_GPU_SOFTWARE=1`) it is bit-identical to the CPU's in every Bayer phase
+and across strip seams, and the export path takes it (`gpu` column 17 % busy, 2 photos at full size). That machine's
+"GPU" is the same 4 cores, so the time there (demosaic stage 2.84 s against 1.65 s on the CPU) says nothing about a
+real card; `<PREFIX>_GPU_DEMOSAIC=0` against the default on a machine with one is the comparison to make.
 
 ## Start-up (`cargo xtask bench`, `startup_bench`; plan item 4.1, #979)
 

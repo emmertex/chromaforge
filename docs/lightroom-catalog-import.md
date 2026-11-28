@@ -126,33 +126,59 @@ verbatim develop settings, history, snapshots and collection content to compress
 `Interop/lightroom-import-N.lca` recovery archives in the app's library. Archiving is
 best-effort: a size limit or write failure produces a warning and does not prevent photo import.
 Unchanged source data reuses its existing archive. History-step and snapshot settings that Lightroom
-Classic 13 and later store compressed are decoded into it; one that can't be decoded, or past 32 MiB
-of them in one table, is left out with a warning (a row past that limit is marked
-`_overDecodeBudget`). Other opaque SQL BLOBs are skipped. Each archive is capped at 32 MiB
-(uncompressed and on disk); one past that with its history-step and snapshot settings is saved
-without them, with a warning, and skipped only when still too big. At most eight archives and
-128 MiB total are retained. Oldest managed archives are retired; legacy `.json` archives remain
+Classic 13 and later store compressed are decoded into it. Each table may decode up to a budget derived
+from the catalog and the computer: 32 times the catalog's size on disk, no more than a quarter of the
+computer's memory or half of what is free, and never less than 32 MiB. A table past that budget is
+spent on every photo's newest steps first, then every photo's second newest and so on, so each photo
+keeps its latest history instead of the first photos in the table taking all of it; the rest are
+left out with one warning (marked `_overDecodeBudget`). A value that can't be decoded is left out
+with a warning naming the photo. Other opaque SQL BLOBs are skipped. Each archive may take up to a
+quarter of the free space on the library's drive (at least 32 MiB; its JSON up to 64 times that);
+one past that with its history-step and snapshot settings is saved without them, with a warning,
+and skipped only when still too big. At most eight archives and 128 MiB total are retained, and the
+newest is kept even when it alone is bigger. Oldest managed archives are retired; legacy `.json` archives remain
 untouched. When an archive is saved but cleanup afterwards fails (a temporary file or an old archive that
 can't be removed), the report still names the archive and a separate warning names what was left
 behind; the folder is synced once the archive is saved.
 `Interop/lightroom-index.json` records imported identities (read and written up to 1 GiB, about 45 bytes a photo, so a re-import of a large catalog finds what it made before). Source catalogs and originals are
 never overwritten.
 
+Photos whose originals have an XMP sidecar get their metadata status from comparing it with the
+catalog once the catalog's values are applied: a sidecar that Read Metadata from File would change
+nothing from (keyword order aside) starts in step; one that says something else (a keyword, rating,
+copyright or edit the catalog doesn't have) starts as a conflict, so the badge and the Metadata
+Status filter show it, automatic reading leaves it alone, and the result counts them
+(`sidecarsDisagree`, with a warning). The catalog's values are what is imported either way; Read
+Metadata from File takes the sidecar's, Save Metadata to File writes the catalog's (issue #1312).
+Before, every imported photo read "changed in the catalog".
+
 Native import reads MAIN database pages on demand; no whole-file size cutoff or MAIN-file read
 allocation is used. Committed WAL validation is streamed into a compact page index; WAL remains
 capped at 1 GiB and 4,000,000 frames. MAIN is structurally bounded to 16,777,216 pages (up to
 1 TiB logical size with 64 KiB pages); each table B-tree walk is bounded to 4,000,000 visited
-pages. A record is capped at 64 MiB and XMP packets at 16 MiB. A record past the cap, or one that
+pages. A record is capped at 64 MiB and XMP packets at 16 MiB, except in `Adobe_AdditionalMetadata`:
+a record there past the cap is read a page at a time, and a packet past 16 MiB (compressed or not)
+is inflated as a stream with its `crs:Table_<digest>` attributes (a camera profile's table data,
+up to about 120 MB each) left out, so the photo keeps its creator, copyright and other fields; only
+a packet still over 16 MiB without them is dropped. Any other record past the cap, or one that
 is malformed, is left out on its own and counted in a warning naming the table ("N records could not
 be read and were left out"); the rest of the table imports. Text that is not valid UTF-8 is read with
 replacement characters and counted in a warning. The in-tree, read-only Rust SQLite
 B-tree reader follows SQLite’s public file-format specification; it introduces no dependency or C
 runtime. Tables are streamed to the importer one row at a time, so memory follows what the
 importer keeps (mapped columns, never BLOBs), not the table's size: the large develop settings,
-history, snapshot, metadata and keyword-assignment tables have no row or payload cap. Tables the
-importer keeps whole (folders, files, images, keywords, collections, stacks) are capped at 1,000,000 rows and 256 MiB of
-payload each. These bounds limit work and decoded data: a catalog within the page-count cap may
-still exceed a per-table or record limit. Inspection and import can be cancelled between pages.
+history, snapshot, metadata and keyword-assignment tables have no row or payload cap. No table has a
+row count limit (#1361): what the read keeps (the image rows, each original's folder and file name,
+develop settings, XMP packets, keyword paths, history and snapshot rows, collections, stacks) is
+charged as it is kept against one memory budget for the whole read, three quarters of the memory
+free when the import starts (half the computer's memory when that can't be told, never less than
+1 GiB). A catalog that needs more stops with an error saying how much was read and what the limit
+was, and nothing is imported; it is never skipped table by table, so no photo comes in without what
+a table holds. `<PREFIX>_LIGHTROOM_IMPORT_MEMORY=<GiB>` sets the budget instead (more on a computer
+whose other apps can wait, less to keep room for them). Of each `AgLibraryFile` row only its folder
+and file name are kept, and of `Adobe_AdditionalMetadata` only the XMP packet, which each photo then
+takes over rather than copies. The import is committed and saved 20,000 changes at a time and the parts fold into one undo step, so the session never holds a second copy of the whole import waiting to be saved; a failure takes every part back. If the app stops partway (a crash, power loss), the parts already saved stay in the library and importing the catalog again adds the rest, though virtual copies saved before the stop may come in twice, because the import index is written when the import ends. These bounds limit work and decoded data: a catalog within the
+page-count cap may still exceed a record limit. Inspection and import can be cancelled between pages.
 The open file and source path are checked again after all tables are read. Close Lightroom before
 importing: metadata checks detect ordinary concurrent changes, but are not SQLite snapshot isolation.
 Develop settings that can't be read fail the import with a clear error (otherwise every photo

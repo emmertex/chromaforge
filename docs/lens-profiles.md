@@ -113,6 +113,11 @@ under their pixels, as a full-frame photo of the same lens has it at those senso
 ## Limits
 
 - Only raws: rendered images (JPEG, HEIF, TIFF) are often already corrected in camera.
+- A raw's camera JPEG can be framed tighter than its raw render. Cameras that correct distortion in camera write the
+  correction into the JPEG they embed in the raw. Without a profile, or with corrections off as when culling, the
+  render shows the uncorrected frame. So when a built preview replaces the camera JPEG, the picture widens and its
+  lines bend slightly. Example: a Canon EOS R5 C CR3 with the RF24-105mm F2.8 L IS USM Z at 77 mm, whose camera JPEG
+  is about 4.5 % tighter. lensfun has no profile for that lens, and Canon in-file corrections are not read.
 - The focus distance is not read from maker notes yet: vignetting uses the farthest calibrated distance.
 - No manual make / model picker yet; matching is automatic.
 - Not yet validated against real photos and another renderer; the tests use synthetic profiles and grids.

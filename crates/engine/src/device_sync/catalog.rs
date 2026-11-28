@@ -78,8 +78,11 @@ fn reindex(s: &Session, lib: &mut Lib, id: PhotoId) {
     if let Some(k) = key
         && !lib.keys.contains_key(&k)
     {
-        // its original's SHA-1 became known: what the replica holds under the old key moves
-        if let Some(o) = old.as_deref().filter(|o| !o.starts_with(record::SHA1_KEY)) {
+        // its original's SHA-1 became known: what the replica holds under the old key moves; so it does
+        // back when the SHA-1 is gone again (an undone Relink or Vignetting Calibration), or the replica's
+        // entry and album memberships would stay under a key no photo here has
+        let lost_sha1 = p.is_some_and(|p| p.sha1.is_none()) && !k.starts_with(record::SHA1_KEY);
+        if let Some(o) = old.as_deref().filter(|o| !o.starts_with(record::SHA1_KEY) || lost_sha1) {
             lib.replica.rekey(o, &k);
             lib.alias.insert(o.to_string(), k.clone());
         }
@@ -207,7 +210,7 @@ fn scan_photo(s: &Session, lib: &mut Lib, key: &str, now: u64) -> bool {
         return false;
     }
     // a photo imported here holds its original (a link-only one, Immich's preview)
-    let link_only = p.preview_only.as_deref() == Some(crate::remote::LINK_ONLY);
+    let link_only = crate::remote::is_link_only(p);
     let have = if link_only { Depth::Preview } else { known.map_or(Depth::Full, |e| e.have) };
     lib.replica.local_photo(key, &record::digests(p, &s.catalog), have, now)
 }
@@ -542,8 +545,7 @@ fn adopt(s: &mut Session, lib: &mut Lib, key: &str) {
             lib.keys.insert(key.to_string(), id);
             lib.ids.insert(id, key.to_string());
             // a connected Immich server that has the same original links it (no upload, no second asset)
-            #[cfg(not(target_arch = "wasm32"))]
-            s.remote.link_queue.push(id);
+            crate::cmd::convert::queue_link_check(s, &[id]);
             (id, Depth::None)
         }
     };
@@ -691,7 +693,7 @@ pub(super) fn wants(s: &Session, lib: &mut Lib, peer: &str) -> Vec<Want> {
         let Source::File { path } = &p.source else { continue };
         match lib.replica.depth_from_peers(key) {
             // (a link-only photo's original comes from Immich, and its file here is the preview)
-            Depth::Full if !path.is_empty() && p.preview_only.as_deref() != Some(crate::remote::LINK_ONLY) => {
+            Depth::Full if !path.is_empty() && !crate::remote::is_link_only(p) => {
                 out.push(Want { key: key.clone(), depth: Depth::Full, dest: PathBuf::from(path) })
             }
             Depth::Preview => {

@@ -691,6 +691,16 @@ pub fn preview_stamp(preview_only: &Option<String>) -> String {
     if preview_only.is_some() { APP_VERSION.to_string() } else { String::new() }
 }
 
+/// Whether `s` is a SHA-1 as [`Photo::sha1`] holds it: exactly 40 hex digits (either case, nothing
+/// around them). [`crate::Op::SetSha1`] refuses anything else, so a caller filtering a probed value
+/// before building the op asks this, not its own copy of the rule. It is the catalog's storage
+/// rule; reading a stored value back (device sync's keys) goes through `lcc_hash::Sha1Digest`,
+/// whose parser is looser (it trims, and also takes base64), so whatever this accepts parses there
+/// to the same digest — the engine's `tests_reload_sha1` pins that.
+pub fn is_sha1_hex(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 impl Photo {
     /// Keep the newest [`HISTORY_LIMIT`](crate::HISTORY_LIMIT) History steps; the cursor moves with
     /// its step, or to the oldest step kept when its own is dropped. Returns how many were dropped.
@@ -1289,6 +1299,27 @@ pub struct MergeSources {
     /// Merged pixels per sensor pixel (per side).
     pub scale: u16,
     pub frames: Vec<MergeSource>,
+    /// How the image was merged (registered or plain, and why plain). `None` for a merge made before registration
+    /// existed, whose file says nothing either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<MergeRegistration>,
+}
+
+/// How a pixel-shift merge was made (the DNG's own XMP says the same, with the per-frame models besides).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeRegistration {
+    /// The positions of the frames were measured and the image reconstructed from them (false: the camera's own pattern).
+    pub registered: bool,
+    /// The hold-out test of the measured positions against the camera's own pattern: `better`, `equal` or `worse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Why the plain merge was used, as a short code (`noTexture`, `measuredWorse`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Per-frame brightness gains were applied.
+    #[serde(default)]
+    pub gains: bool,
 }
 
 /// One frame of a merge.
@@ -1337,7 +1368,7 @@ mod merged_colour_tests {
         let camera = "NIKON CORPORATION NIKON Z 0";
         let nef = raw("NEF", camera);
         let mut merged = raw("DNG", camera);
-        merged.merge_sources = Some(Box::new(MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: vec![] }));
+        merged.merge_sources = Some(Box::new(MergeSources { engine: 1, shot_count: 16, reference: 1, scale: 2, frames: vec![], registration: None }));
         let dng = raw("DNG", camera);
         assert!(nef.fitted_look() && nef.relative_wb(), "the camera's NEF");
         assert!(!dng.fitted_look() && !dng.relative_wb(), "a DNG of any other origin");

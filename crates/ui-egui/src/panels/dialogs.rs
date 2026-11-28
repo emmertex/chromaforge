@@ -490,8 +490,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::Watermark { .. }
                     | Dialog::SlideshowExport { .. }
             );
+            let search_choices =
+                if matches!(dlg, Dialog::AdvancedSearch { .. }) { crate::advanced_search::choices(app) } else { Default::default() };
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
-                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
+                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app, &search_choices),
                 Dialog::AutoStack { gap, top } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
@@ -1829,7 +1831,23 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             crate::widgets::named(ui.add(egui::TextEdit::multiline(&mut wm.text).desired_rows(2).hint_text(crate::i18n::tr("© Your Name")).desired_width(f32::INFINITY)), crate::i18n::tr("Text"))
                         });
                     }
-                    choices(ui, "Position", "watermarkDialogAnchor", &WM_POSITIONS, &mut wm.anchor);
+                    // a 3 × 3 grid laid out like the corners, edges and centre it picks (ids as before:
+                    // `button:watermarkDialogAnchor-{0..8}`; adapted from upstream #4720)
+                    field(ui, "Position", |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                            for (r, row) in WM_POSITIONS.chunks(3).enumerate() {
+                                ui.horizontal(|ui| {
+                                    for (c, (v, l)) in row.iter().enumerate() {
+                                        let i = r * 3 + c;
+                                        if crate::widgets::text_button(ui, &format!("watermarkDialogAnchor-{i}"), l, wm.anchor == *v).clicked() {
+                                            wm.anchor = *v;
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    });
                     choices(ui, "Rotate", "watermarkDialogRotation", &[(0u16, "0°"), (90, "90°"), (180, "180°"), (270, "270°")], &mut wm.rotation);
                     let mut size = wm.size as f64 * 100.0;
                     if !graphic && num(ui, &WM_SIZE, &mut size) {
@@ -3849,7 +3867,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
     const SPACES: [(C, &str); 5] =
         [(C::Srgb, "sRGB"), (C::DisplayP3, "P3"), (C::AdobeRgb, "Adobe RGB"), (C::ProPhoto, "ProPhoto"), (C::Rec2020, "Rec.2020")];
     let mut summary = label_of(&FORMATS, opts.format);
-    if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) {
+    if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy()) {
         summary = format!("{summary} ({}%)", opts.quality);
     }
     if rendered {
@@ -4021,7 +4039,26 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             let tip = "Mathematically lossless: every pixel is kept exactly (larger files)";
             crate::dialog_frame::checkbox(ui, &mut opts.jxl_lossless, crate::i18n::tr("Lossless")).on_hover_text(crate::i18n::tr(tip));
         }
-        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) {
+        if opts.format == F::Webp {
+            // lossy WebP needs libwebp, which the web and Android builds don't carry (#1482)
+            let tip = if lcc_engine::export::WEBP_LOSSY {
+                "Every pixel kept exactly (larger files); off: smaller files at the Quality below"
+            } else {
+                "This version writes lossless WebP only: lossy WebP is in the desktop app"
+            };
+            let mut on = opts.webp_lossless || !lcc_engine::export::WEBP_LOSSY;
+            ui.add_enabled_ui(lcc_engine::export::WEBP_LOSSY, |ui| {
+                if crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr("Lossless"))
+                    .on_hover_text(crate::i18n::tr(tip))
+                    .on_disabled_hover_text(crate::i18n::tr(tip))
+                    .changed()
+                {
+                    opts.webp_lossless = on;
+                }
+            });
+        }
+        if matches!(opts.format, F::Jpeg | F::Avif) || (opts.format == F::Jxl && !opts.jxl_lossless) || (opts.format == F::Webp && opts.webp_lossy())
+        {
             let mut q = opts.quality as f64;
             if num(ui, &QUALITY, &mut q) {
                 opts.quality = q as u8;

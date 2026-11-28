@@ -8,6 +8,7 @@ use lcc_catalog::{MediaKind, Op, Source};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_active, has_selection};
+use crate::io_sched::job::{ByteKind, Side};
 use crate::{Result, Session};
 
 /// `<stem>.dng`, then `<stem>-2.dng`, `<stem>-3.dng`… next to `path`.
@@ -29,30 +30,62 @@ pub(crate) fn write_dng_for(s: &Session, path: &str, packet: String) -> std::res
     write_dng_with(s.media.file_bytes.as_ref(), path, packet)
 }
 
-/// [`write_dng_for`] without the session (imports convert on a worker thread).
+/// [`write_dng_with`] without the session (imports convert on a worker thread).
+///
+/// The raw is read as any media file (a regular file of at most
+/// [`crate::bounded_read::MAX_MEDIA_BYTES`]). Run as an I/O scheduler job (Copy as DNG, where the
+/// raw is the copy just made), its reads and writes count as progress on the destination, the
+/// decode, encode and check between them as computing, and the DNG's flush as flushing (§5.2 of
+/// the I/O spec).
 pub(crate) fn write_dng_with(file_bytes: Option<&crate::merge::ByteReader>, path: &str, packet: String) -> std::result::Result<String, String> {
     let bytes = match file_bytes {
         Some(r) => r(path)?,
-        None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
+        None => crate::bounded_read::read_bounded_as(Path::new(path), crate::bounded_read::MAX_MEDIA_BYTES, ByteKind::ReadBack)
+            .map_err(|e| format!("{path}: {e}"))?,
     };
-    let mut raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    crate::camera_preview::with_starting_colour(&mut raw, &bytes);
-    drop(bytes);
-    let dng = lcc_raw::write_dng(&raw, &lcc_raw::DngWriteOptions { xmp: (!packet.is_empty()).then_some(packet), ..Default::default() })
-        .map_err(|e| e.to_string())?;
-    let back = lcc_raw::decode(&dng).map_err(|e| format!("{path}: the DNG written for it doesn't decode ({e}); the raw is kept"))?;
-    let same = match (&back.data, &raw.data) {
-        (lcc_raw::RawData::U16(a), lcc_raw::RawData::U16(b)) => a == b,
-        (lcc_raw::RawData::F32(a), lcc_raw::RawData::F32(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
-        _ => false,
+    let dng = {
+        // pure CPU, between the read of the raw and the write of the DNG
+        let _computing = crate::memory::computing();
+        let mut raw = crate::raw_decoder::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        crate::camera_preview::with_starting_colour(&mut raw, &bytes);
+        drop(bytes);
+        let dng = lcc_raw::write_dng(&raw, &lcc_raw::DngWriteOptions { xmp: (!packet.is_empty()).then_some(packet), ..Default::default() })
+            .map_err(|e| e.to_string())?;
+        let back = lcc_raw::decode(&dng).map_err(|e| format!("{path}: the DNG written for it doesn't decode ({e}); the raw is kept"))?;
+        let same = match (&back.data, &raw.data) {
+            (lcc_raw::RawData::U16(a), lcc_raw::RawData::U16(b)) => a == b,
+            (lcc_raw::RawData::F32(a), lcc_raw::RawData::F32(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            _ => false,
+        };
+        if (back.width, back.height, back.cpp) != (raw.width, raw.height, raw.cpp) || !same {
+            return Err(format!("{path}: the DNG written for it doesn't hold the same raw data; the raw is kept"));
+        }
+        dng
     };
-    if (back.width, back.height, back.cpp) != (raw.width, raw.height, raw.cpp) || !same {
-        return Err(format!("{path}: the DNG written for it doesn't hold the same raw data; the raw is kept"));
-    }
-    drop((raw, back));
-    let out = lcc_catalog::safe_file::write_new_unique(&mut dng_names(path), &dng)
+    crate::bounded_read::on(Side::Dest);
+    let out = lcc_catalog::safe_file::write_new_unique_progress(&mut dng_names(path), &dng, &JobWrites)
         .map_err(|e| format!("{path}: could not write its DNG ({e}); the raw is kept"))?;
     Ok(out.to_string_lossy().to_string())
+}
+
+/// The DNG's write as the thread's I/O job sees it: bytes written and read back on the
+/// destination, and the temp file's flush as [`crate::memory::while_flushing`], as a copy's own
+/// flush is (a large DNG flushed to a slow drive or a share is not a stall).
+struct JobWrites;
+
+impl lcc_catalog::safe_file::WriteProgress for JobWrites {
+    fn wrote(&self, n: usize) {
+        crate::bounded_read::count_bytes(ByteKind::Written, u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    fn read_back(&self, n: usize) {
+        crate::bounded_read::count_bytes(ByteKind::ReadBack, u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    fn flushing(&self, flush: &mut dyn FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+        crate::bounded_read::on(Side::Dest);
+        crate::memory::while_flushing(flush)
+    }
 }
 
 fn convert(s: &mut Session, p: &Value) -> Result<Value> {
@@ -285,7 +318,7 @@ pub(crate) fn content_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info
     })
 }
 
-/// Ops that fill a photo's empty camera fields (camera, lens, exposure, GPS, capture time) from a fresh probe.
+/// Ops that fill a photo's empty camera fields (camera, serial, lens, exposure, GPS, capture time) from a fresh probe.
 pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     let (mut m, src) = (ph.meta.clone(), &info.meta);
     let before = m.clone();
@@ -309,6 +342,12 @@ pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Phot
     if m.lens_make.is_empty() {
         m.lens_make = src.lens_make.clone();
     }
+    // the body's serial keys its sensor maps and the camera body; a Lightroom catalog import has
+    // none of these (its catalog gives make, model and lens only)
+    if m.camera_serial.is_empty() {
+        m.camera_serial = src.camera_serial.clone();
+    }
+    m.lens_range = m.lens_range.or(src.lens_range);
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
         m.exposure_time = src.exposure_time;
@@ -405,17 +444,63 @@ pub(crate) fn as_shot_wb_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, i
     (ph.develops_raw() && !ph.relative_wb() && ph.as_shot_wb != Some(read)).then_some(Op::SetAsShotWb { id, wb: Some(read) })
 }
 
+/// Which photos a probe's results reach ([`reload_ops`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// The photo and the rest of its same-file family: a reload of a virtual copy refreshes its
+    /// master and the other copies on that file too, and gives the master the SHA-1 (copies
+    /// themselves never take one, [`takes_sha1`]).
+    Family,
+    /// Only the photo itself: a relink, probed before its [`Op::Relink`] applies. Its family still
+    /// names the old file, so none of the new file's facts (content hash, size, dimensions, lens,
+    /// white balance, SHA-1) are theirs.
+    Target,
+}
+
+/// Whether `p` takes a SHA-1 computed from its file: it has none yet, is no virtual copy, is in the
+/// library (not in Recently Deleted, not only browsed in a folder: [`lcc_catalog::Photo::in_library`]),
+/// and its file is its original (not an Immich link-only photo's preview). The SHA-1 back-fill
+/// ([`crate::remote::sha1_pending`]), the Immich back-fill's result and a vignetting calibration's
+/// reference ask this too.
+pub(crate) fn takes_sha1(p: &lcc_catalog::Photo) -> bool {
+    p.sha1.is_none() && p.copy_of.is_none() && p.in_library() && !super::recheck::link_only(p) && matches!(p.source, Source::File { .. })
+}
+
+/// The op that records a probe's SHA-1 for `ph`, when it [`takes_sha1`] and the probe's value is one
+/// ([`lcc_catalog::is_sha1_hex`]; [`Op::SetSha1`] refuses anything else, and one refused op fails its
+/// whole batch).
+fn sha1_op(ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Option<Op> {
+    let h = info.sha1.as_deref().filter(|h| lcc_catalog::is_sha1_hex(h))?;
+    takes_sha1(ph).then(|| Op::SetSha1 { id: ph.id, sha1: Some(h.to_string()) })
+}
+
 /// The ops that bring photo `id` and its virtual copies up to date with what their file is now
-/// (`info`, a fresh probe), appended to `ops`; the photos they change are appended to `changed`.
-/// Reload and the preview-only recheck (`library.recheckPreviewOnly`) share it.
+/// (`info`, a fresh probe), appended to `ops`; the photos whose file facts change are appended to
+/// `changed`. `reach` says whether the photo's same-file family takes them too ([`Reach`]). Photos
+/// given the probe's SHA-1 are appended to `hashed` instead (the caller queues them for the Immich
+/// checksum lookup, [`queue_link_check`], once the ops are committed); one given only a SHA-1 is not
+/// in `changed`. Read Originals, Reload, the preview-only recheck (`library.recheckPreviewOnly`) and
+/// relinking share it.
 pub(crate) fn reload_ops(
     cat: &lcc_catalog::Catalog,
     id: lcc_catalog::PhotoId,
     info: &crate::media::ProbeInfo,
+    reach: Reach,
     ops: &mut Vec<Op>,
     changed: &mut Vec<lcc_catalog::PhotoId>,
+    hashed: &mut Vec<lcc_catalog::PhotoId>,
 ) {
     let Some(ph) = cat.photo(id) else { return };
+    let mut give_sha1 = |p: &lcc_catalog::Photo, ops: &mut Vec<Op>| {
+        // (two photos of one family in the same run would otherwise give it twice)
+        if !hashed.contains(&p.id)
+            && let Some(op) = sha1_op(p, info)
+        {
+            ops.push(op);
+            hashed.push(p.id);
+        }
+    };
+    give_sha1(ph, ops);
     // camera fields the catalog lacks (e.g. a raw imported before its format was read) are filled in;
     // nothing already set is overwritten
     let meta_ops = fill_missing_meta(id, ph, info);
@@ -425,9 +510,13 @@ pub(crate) fn reload_ops(
         ops.append(&mut mine);
         changed.push(id);
     }
-    // A selected copy refreshes its same-file family too, but only the explicit target gets missing descriptive
-    // metadata above. Relinked copies keep their own file facts.
+    // A selected copy refreshes its same-file family too, but only the explicit target gets missing camera fields
+    // above. Relinked copies keep their own file facts, and a relink reaches no one but its target.
+    if reach == Reach::Target {
+        return;
+    }
     for c in cat.photos().filter(|c| c.id != id && shares_reload_source(c, ph)) {
+        give_sha1(c, ops);
         // Copies may have independently edited metadata: repair only a recognisable legacy shutter value, not every
         // missing field on the copy (upstream #1692).
         let mut meta = c.meta.clone();
@@ -445,6 +534,16 @@ pub(crate) fn reload_ops(
     }
 }
 
+/// Queue photos that just got their SHA-1 ([`reload_ops`]' `hashed`) for the Immich checksum lookup,
+/// as the SHA-1 back-fill and import do: `remote.pump` asks each connected server whether it has them.
+/// Call it once their ops are committed.
+pub(crate) fn queue_link_check(s: &mut Session, hashed: &[lcc_catalog::PhotoId]) {
+    #[cfg(not(target_arch = "wasm32"))]
+    s.remote.link_queue.extend_from_slice(hashed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = (s, hashed);
+}
+
 /// Copies share probe results only while both the family and the actual file agree.
 pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Photo) -> bool {
     a.copy_of.unwrap_or(a.id) == b.copy_of.unwrap_or(b.id)
@@ -452,15 +551,15 @@ pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Phot
 }
 
 /// Re-read photos whose files changed on disk (an external editor saved them): new size,
-/// dimensions and content hash, cached sources dropped. The app runs the same steps
+/// dimensions and content hash (and the SHA-1 when none is known yet), cached sources dropped. The app runs the same steps
 /// ([`crate::cmd::reload`]) with the files read on a worker thread. → {reloaded: [ids]}
 fn reload(s: &mut Session, p: &Value) -> Result<Value> {
     use crate::cmd::reload as r;
     let items = r::plan(s, p)?;
     let probe = r::file_probe(s);
-    let results = r::probe(probe.as_ref(), &items, &std::sync::atomic::AtomicBool::new(false), &|_| {});
-    let reloaded = r::apply(s, items, results)?;
-    Ok(r::to_json(&reloaded))
+    let results = r::probe(probe.as_ref(), &items, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), &|_| {});
+    let applied = r::apply(s, items, results)?;
+    Ok(r::to_json(&applied))
 }
 
 /// Duplicate: copy the file next to itself (`<name>-copy`, never overwriting) and add it with the
@@ -549,7 +648,7 @@ fn decode_photo(s: &Session, id: lcc_catalog::PhotoId) -> std::result::Result<(S
         Some(r) => r(path)?,
         None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
     };
-    let raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let raw = crate::raw_decoder::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
     Ok((path.clone(), raw, bytes))
 }
 
@@ -640,7 +739,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Reload from Disk",
             ["Photo", "File"],
             None,
-            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
+            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded, failed: [{id, error}] (files that couldn't be read, left unchanged)}",
             has_selection,
             reload
         ),
@@ -1025,8 +1124,8 @@ mod tests {
         info.meta.shutter = "0.4".into();
         info.meta.exposure_time = Some(0.4);
         info.meta.title = "File title".into();
-        let (mut ops, mut changed) = (Vec::new(), Vec::new());
-        reload_ops(&cat, source.id, &info, &mut ops, &mut changed);
+        let (mut ops, mut changed, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
+        reload_ops(&cat, source.id, &info, Reach::Family, &mut ops, &mut changed, &mut hashed);
         for op in ops {
             cat.apply(op).unwrap();
         }
@@ -1041,5 +1140,58 @@ mod tests {
         for id in [2, 3, 4, 5] {
             assert_eq!(cat.photo(PhotoId(id)).unwrap().meta.title, "My copy", "{id}");
         }
+    }
+
+    /// A job state for the thread, on a fake clock.
+    fn job() -> std::sync::Arc<crate::io_sched::JobState> {
+        let clock: std::sync::Arc<dyn crate::io_sched::clock::Clock> = std::sync::Arc::new(crate::io_sched::clock::FakeClock::default());
+        let key = lcc_catalog::folders::volume_key("/a", &lcc_catalog::folders::Mounts::none());
+        std::sync::Arc::new(crate::io_sched::JobState::new(1, key, clock, std::sync::Weak::new()))
+    }
+
+    /// Copy as DNG's write, as its job sees it: the DNG's bytes written and read back count as such
+    /// (on the destination), and its temp file's flush runs as flushing, so the stall clock pauses
+    /// for it as for a copy's flush (the computing span is open during the flush, closed after).
+    #[test]
+    fn a_dngs_write_counts_its_bytes_and_flushes_as_flushing() {
+        use lcc_catalog::safe_file::WriteProgress;
+        let job = job();
+        let spans = crate::memory::with_job(Some(job.clone()), || {
+            JobWrites.wrote(10);
+            JobWrites.read_back(4);
+            let mut during = None;
+            JobWrites
+                .flushing(&mut || {
+                    during = Some(job.computing_for(job.now()).is_some());
+                    Ok(())
+                })
+                .unwrap();
+            (during, job.computing_for(job.now()).is_some())
+        });
+        assert_eq!(spans, (Some(true), false), "computing during the flush only");
+        let m = job.moved();
+        assert_eq!((m.read, m.written, m.read_back), (0, 10, 4));
+        assert_eq!(job.on(), Some(Side::Dest));
+    }
+
+    /// The raw is read as a media file: a FIFO in its place (which `std::fs::read` would open and
+    /// wait on for a writer forever) is refused at once, and nothing is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_the_raw_is_refused_without_waiting() {
+        let dir = std::env::temp_dir().join(format!("lcc-dng-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("a.nef");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.to_string_lossy().to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(write_dng_with(None, &path, String::new()));
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a FIFO must not be opened and waited on");
+        assert!(got.as_ref().is_err_and(|e| e.contains("not a regular file")), "{got:?}");
+        assert!(!dir.join("a.dng").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1223,6 +1223,13 @@ Each filter gets its resolved parameters plus `encoding`, `_analysis` (below) an
 | `nativeCanvasWidth`, `nativeCanvasHeight` | present alongside `draftScale`: the unscaled canvas size before draft downsampling |
 | `source` | present when known, on both `pc_filter` and `pc_analyze`: `{origin, bitsPerSample, float?}` (`origin`: `"untagged"`, `"container"`, `"iccMatrixTrc"`, `"iccCms"`, `"iccUnsupported"`, `"naive"`, `"raw"`, or `"demo"`; `bitsPerSample`: `8`, `12`, `14`, `16`, or `32`; `float`: `true` when the source file held floating-point samples, omitted when `false`) |
 
+**A mask (host only, no ABI change).** `develop.pluginFilter.set {uid, mask: {id, invert?}}` limits a Display
+entry to one of the photo's masks (`mask: null` for the whole frame again): the module runs as before, on the whole
+band, and the host blends its output with its input by the mask's coverage on the render's own grid (`invert`: where
+the mask is not). `pc_analyze` still measures the whole frame. A Source entry can't take one (it runs before the masks
+exist); an entry whose mask is gone (deleted, or a copy pasted onto a photo without it) runs on the whole frame with a
+warning. Sidecars store it as `lcpx:mask` (JSON text).
+
 Source results are cached: dragging other sliders doesn't re-run the filter; a draft while a filter's own
 parameter changes runs it on a reduced copy (at most 0.5 MP), the full render after it is exact.
 Renders with plug-in filters use the CPU pipeline. A filter that isn't installed or fails is
@@ -1231,8 +1238,12 @@ skipped: the render goes on and reports a warning (logged as `render: …`).
 **Whole-image measurement (ABI v1.1 proposal).** A module may export
 `pc_analyze(buf, len, w, h, channels, format, params, params_len) -> i64` returning
 `len << 32 | ptr` of a JSON object (0 = nothing). `develop.pluginFilter.analyze {uid}` runs it
-once on the whole uncropped photo (long edge 1024, linear sRGB primaries) and stores the result
-with the photo (`setAnalysis`). It runs in the background as an activity row (kind
+once on the whole uncropped photo (long edge 1024) and stores the result with the photo (`setAnalysis`).
+What it measures follows the entry's stage: a `source` entry the source as that stage sees it (linear, sRGB
+primaries, `"encoding": "linear"`), a `display` entry the photo developed as it will filter it (the plug-in
+filters before it applied, it and the Display filters after it off; sRGB-encoded, `"encoding": "srgb"`). A
+Display measurement is of the develop settings at the time: after changing White Balance or Exposure, say,
+measure again. It runs in the background as an activity row (kind
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
@@ -1242,7 +1253,20 @@ the others, and a photo without one first gets a copy of the active entry (param
 on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
 {uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
 false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
-the selection, and *Apply to N Selected* the copy.
+the selection, and *Apply to N Selected* the copy. Copy / Paste, Sync and presets of the Plug-in
+Filters group carry each entry without its measurement (the targets read "Not measured yet"; use
+Measure N Selected), except a roll's (`_roll`), which is shared by design.
+
+**Measuring on its own, and a status line (ABI v1.1 proposal).** A manifest with `pc_analyze` may say
+`"analyze": "auto"` (default `"manual"`): each enabled entry of it on the open photo that has no measurement is
+then measured in the background without a click (added, pasted, synced or applied to other photos alike), once
+per entry until something drops its measurement; a failed run is reported in the panel and not retried by itself.
+`"analyzeParams": ["name", …]` names parameters whose change makes the stored measurement stale
+(a region, a sample point): changing one through `develop.pluginFilter.set` drops it, so an `auto` filter measures
+again and a `manual` one shows *Not measured*. Names that aren't the filter's own parameters are ignored. A
+measurement may carry `"_status"`: one line (at most 120 characters, printable, no line breaks) the panel shows
+beside *Measured*, "Base 0.82 / 0.61 / 0.44", say; anything else there is not shown. Hosts without these fields
+ignore them and measure only when asked.
 
 **A roll (ABI v1.1 proposal).** A module may also export
 `pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of

@@ -13,13 +13,20 @@ use serde::{Deserialize, Serialize};
 
 /// Under `<PREFIX>_PROFILE`: print how long the step since the last lap took (`t` restarts),
 /// with the thread and the time since the first lap (photos side by side overlap or queue).
+/// The stage meter ([`lcc_pipeline::meter`]) records each lap as stage `export <what>`.
 fn lap(what: &str, t: &mut Option<std::time::Instant>) {
     static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     if let Some(t) = t {
         let now = std::time::Instant::now();
-        let at = now.duration_since(*EPOCH.get_or_init(|| *t)).as_secs_f64();
-        let thread = std::thread::current();
-        eprintln!("  export {what}: {:.1} ms [{} at {at:.1} s]", t.elapsed().as_secs_f64() * 1e3, thread.name().unwrap_or("main"));
+        let took = now.saturating_duration_since(*t);
+        if lcc_pipeline::meter::on() {
+            lcc_pipeline::meter::add(&format!("export {what}"), took);
+        }
+        if lcc_pipeline::profiling() {
+            let at = now.duration_since(*EPOCH.get_or_init(|| *t)).as_secs_f64();
+            let thread = std::thread::current();
+            eprintln!("  export {what}: {:.1} ms [{} at {at:.1} s]", took.as_secs_f64() * 1e3, thread.name().unwrap_or("main"));
+        }
         *t = now;
     }
 }
@@ -27,9 +34,9 @@ fn lap(what: &str, t: &mut Option<std::time::Instant>) {
 /// The error of a photo whose export was cancelled before it was done ([`PreparedExport::run_until`]).
 pub const CANCELLED: &str = "export cancelled";
 
-/// A clock for [`lap`] when profiling (never read otherwise: `Instant::now` panics on wasm32).
+/// A clock for [`lap`] when profiling or metering (never read otherwise: `Instant::now` panics on wasm32).
 fn lap_clock() -> Option<std::time::Instant> {
-    lcc_pipeline::profiling().then(std::time::Instant::now)
+    (lcc_pipeline::profiling() || lcc_pipeline::meter::on()).then(std::time::Instant::now)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -878,6 +885,9 @@ pub struct ExportOptions {
     pub hdr_transfer: HdrCurve,
     /// JPEG XL: mathematically lossless instead of lossy (`quality` is then unused).
     pub jxl_lossless: bool,
+    /// WebP: lossless instead of lossy at `quality` (#1482). Builds without lossy WebP ([`lcc_codecs::WEBP_LOSSY`]:
+    /// the web, Android) always write lossless.
+    pub webp_lossless: bool,
     /// JPEG XL: encoder effort (time spent for a smaller file).
     pub jxl_effort: JxlEffort,
     /// JPEG XL: progressive file (a coarse image first, refined as it loads).
@@ -925,6 +935,7 @@ impl Default for ExportOptions {
             hdr_mode: HdrMode::SingleLayer,
             hdr_transfer: HdrCurve::Pq,
             jxl_lossless: false,
+            webp_lossless: false,
             jxl_effort: JxlEffort::Normal,
             jxl_progressive: false,
             add_to_photos: false,
@@ -976,6 +987,7 @@ pub const OPTION_PARAMS: &[&str] = &[
     "hdrMode",
     "hdrTransfer",
     "jxlLossless",
+    "webpLossless",
     "jxlEffort",
     "jxlProgressive",
     "addToPhotos",
@@ -1050,7 +1062,16 @@ fn watermark_from_json(v: &serde_json::Value) -> serde_json::Result<Watermark> {
     serde_json::from_value(v)
 }
 
+/// Whether this build can write lossy WebP ([`lcc_codecs::WEBP_LOSSY`]; never the web or Android build), for the UI,
+/// which doesn't link the codecs on every target.
+pub const WEBP_LOSSY: bool = lcc_codecs::WEBP_LOSSY;
+
 impl ExportOptions {
+    /// Whether a WebP export is lossy: asked for, and this build has the encoder ([`lcc_codecs::WEBP_LOSSY`]).
+    pub fn webp_lossy(&self) -> bool {
+        !self.webp_lossless && lcc_codecs::WEBP_LOSSY
+    }
+
     /// Stored export settings (a saved preset, `prefs.json ▸ lastExport`) with the keys an older or
     /// newer version may have written and this one doesn't know dropped, also inside `watermark`.
     /// [`ExportOptions::validate`] is strict about what a caller types; settings saved on disk are
@@ -1197,7 +1218,7 @@ impl ExportOptions {
                     }
                     serde_json::from_value::<Resize>(v.clone()).map_err(|e| bad(format!("`{k}`: {e}")))?;
                 }
-                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "jxlProgressive" => {
+                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "webpLossless" | "jxlProgressive" => {
                     boolean(k, v)?;
                 }
                 "addToPhotos" => {
@@ -1421,6 +1442,7 @@ impl ExportOptions {
             hdr_mode: s("hdrMode").and_then(HdrMode::parse).unwrap_or(d.hdr_mode),
             hdr_transfer: s("hdrTransfer").and_then(HdrCurve::parse).unwrap_or(d.hdr_transfer),
             jxl_lossless: p.get("jxlLossless").and_then(Value::as_bool).unwrap_or(d.jxl_lossless),
+            webp_lossless: p.get("webpLossless").and_then(Value::as_bool).unwrap_or(d.webp_lossless),
             jxl_effort: s("jxlEffort").and_then(JxlEffort::parse).unwrap_or(d.jxl_effort),
             jxl_progressive: p.get("jxlProgressive").and_then(Value::as_bool).unwrap_or(d.jxl_progressive),
             add_to_photos: p.get("addToPhotos").and_then(Value::as_bool).unwrap_or(d.add_to_photos),
@@ -1793,6 +1815,7 @@ fn encode_8bit(img: &Rgba8, o: &ExportOptions, meta: Option<&Metadata>) -> Resul
         ExportFormat::Png => encode::encode_png(&e, &meta),
         ExportFormat::Tiff => encode::encode_tiff_associated(&e, o.tiff_compression, &meta),
         ExportFormat::Psd => encode::encode_psd(&e, &meta),
+        ExportFormat::Webp if o.webp_lossy() => encode::encode_webp_lossy(&e, o.quality, &meta),
         ExportFormat::Webp => encode::encode_webp_lossless(&e, &meta),
         ExportFormat::Avif => encode::encode_avif(&e, o.quality, 8, &meta),
         ExportFormat::Jxl => lcc_codecs::encode_jxl(&e, &o.jxl(space, false), &meta),
@@ -3580,6 +3603,18 @@ fn run_batch_with(
     lanes: usize,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    // the lanes keep the memory each photo frees for the next one and give it back once at the end (#1416)
+    crate::memory::holding_freed_memory(|| run_batch_holding(items, placer, progress, lanes, cancel))
+}
+
+/// [`run_batch_with`] with this thread holding its freed memory.
+fn run_batch_holding(
+    items: Vec<PreparedExport>,
+    placer: &mut Placer<'_>,
+    progress: &mut dyn FnMut(usize, &str) -> bool,
+    lanes: usize,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Vec<serde_json::Value>, String> {
     placer.single = items.len() == 1;
     let cancelled = || cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     if cfg!(target_arch = "wasm32") || (cancel.is_none() && (lanes <= 1 || items.len() <= 1)) {
@@ -3598,12 +3633,22 @@ fn run_batch_with(
     }
     let heads: Vec<_> = items.iter().map(|i| (i.photo, i.file_name.clone(), i.guard.clone(), i.source_dir.clone())).collect();
     let lanes = lanes.max(1);
+    // lanes chosen by hand are kept as they are; the automatic ones follow the GPU's share of the work (#1377)
+    let adaptive = export_lanes_override().is_none() && lanes > MIN_ADAPTIVE_LANES;
     let queue = std::sync::Arc::new(Queue {
-        lane: std::sync::Mutex::new(Lane { items: items.into_iter().map(Some).collect(), next: 0, placed: 0, stop: false, done: Default::default() }),
+        lane: std::sync::Mutex::new(Lane {
+            items: items.into_iter().map(Some).collect(),
+            next: 0,
+            placed: 0,
+            running: 0,
+            stop: false,
+            done: Default::default(),
+        }),
         cv: std::sync::Condvar::new(),
         ahead: lanes,
         cancel: cancel.clone(),
         lanes: std::sync::atomic::AtomicUsize::new(0),
+        split: adaptive.then(|| std::sync::Mutex::new(Split::new(lanes))),
     });
     // stops the lanes however this thread leaves: an error, a cancel, a panic in `progress` or the
     // placer (lanes still in flight then stop at their next step on their own)
@@ -3613,7 +3658,7 @@ fn run_batch_with(
     for k in 0..threads {
         let q = queue.clone();
         // a lane that can't start leaves its photos to the others (and to this thread)
-        if std::thread::Builder::new().name(format!("export-{}", k + 1)).spawn(move || q.work()).is_err() {
+        if std::thread::Builder::new().name(format!("export-{}", k + 1)).spawn(move || crate::memory::holding_freed_memory(|| q.work())).is_err() {
             break;
         }
         queue.lanes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3663,6 +3708,9 @@ struct Queue {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Lane threads started.
     lanes: std::sync::atomic::AtomicUsize,
+    /// How many photos run at once, from the GPU's measured share of the work; `None`: every lane runs (lanes set
+    /// by hand, or too few to adapt).
+    split: Option<std::sync::Mutex<Split>>,
 }
 
 struct Lane {
@@ -3671,6 +3719,8 @@ struct Lane {
     next: usize,
     /// Photos handed to the placer so far.
     placed: usize,
+    /// Photos started and not finished.
+    running: usize,
     stop: bool,
     done: std::collections::HashMap<usize, Result<Exported, String>>,
 }
@@ -3680,8 +3730,75 @@ impl Lane {
         let i = self.next;
         let item = self.items.get_mut(i)?.take()?;
         self.next += 1;
+        self.running += 1;
         Some((i, item))
     }
+}
+
+/// The fewest photos an adaptive batch runs at once: one decoding and encoding on the processor while another
+/// renders on the GPU.
+const MIN_ADAPTIVE_LANES: usize = 2;
+/// The GPU's share of a stretch of the batch at or above which it is the bottleneck: photos beyond those it keeps
+/// busy only wait for it, holding their decoded originals in memory.
+const GPU_SATURATED: f64 = 0.9;
+/// The share below which it waits for the processor: a photo more keeps it fed (up to the automatic lanes).
+const GPU_STARVED: f64 = 0.7;
+
+/// The split between the processor's and the GPU's work in an export batch, measured as it runs (#1377): the time
+/// the GPU had work, against the time that passed, over each stretch of photos. The batch runs as many photos at
+/// once as keep the GPU fed without photos queueing for it: fewer when it is saturated (each waiting photo holds a
+/// decoded 45 MP original), more again when it waits, never more than the automatic lanes nor fewer than
+/// [`MIN_ADAPTIVE_LANES`]. Without a GPU (its share 0) every lane runs, as before.
+struct Split {
+    /// Photos that may run at once now.
+    limit: usize,
+    max: usize,
+    /// The stretch being measured: when it started, the GPU's busy time then, photos finished in it.
+    since: web_time::Instant,
+    busy: std::time::Duration,
+    finished: usize,
+    _meter: lcc_gpu::BusyHold,
+}
+
+impl Split {
+    fn new(lanes: usize) -> Split {
+        let meter = lcc_gpu::hold_busy_meter();
+        Split { limit: lanes, max: lanes, since: web_time::Instant::now(), busy: lcc_gpu::busy_time(), finished: 0, _meter: meter }
+    }
+
+    /// A photo finished: at the end of a stretch (twice the photos running, so the first photos' decodes and the
+    /// last ones' encodes don't decide it), size the lanes from the GPU's share of it.
+    fn finished(&mut self) {
+        self.finished += 1;
+        if self.finished < self.limit.saturating_mul(2).max(4) {
+            return;
+        }
+        let (now, busy) = (web_time::Instant::now(), lcc_gpu::busy_time());
+        let wall = now.saturating_duration_since(self.since).as_secs_f64();
+        let share = if wall > 0.0 { busy.saturating_sub(self.busy).as_secs_f64() / wall } else { 0.0 };
+        let next = next_lane_limit(self.limit, self.max, share);
+        if next != self.limit && lcc_pipeline::profiling() {
+            eprintln!("[profile] export: GPU busy {:.0} % of the last {} photos: {} photos at once", share * 100.0, self.finished, next);
+        }
+        *self = Split { limit: next, max: self.max, since: now, busy, finished: 0, _meter: lcc_gpu::hold_busy_meter() };
+    }
+}
+
+/// Photos at once after a stretch in which the GPU had work `share` of the time (0 to 1), running `limit` of at most
+/// `max`: one fewer when it was saturated, one more when it waited, else the same.
+fn next_lane_limit(limit: usize, max: usize, share: f64) -> usize {
+    let lo = MIN_ADAPTIVE_LANES.min(max);
+    if !share.is_finite() {
+        return limit.clamp(lo, max.max(lo));
+    }
+    let next = if share >= GPU_SATURATED {
+        limit.saturating_sub(1)
+    } else if share < GPU_STARVED {
+        limit.saturating_add(1)
+    } else {
+        limit
+    };
+    next.clamp(lo, max.max(lo))
 }
 
 /// How often the placer looks at the cancel flag while it waits for a photo.
@@ -3705,8 +3822,17 @@ impl Queue {
         self.cancelled() || self.lock().stop
     }
 
+    /// Photos that may run at once now ([`Split`]).
+    fn limit(&self) -> usize {
+        self.split.as_ref().map_or(usize::MAX, |s| s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).limit)
+    }
+
     fn finish(&self, i: usize, r: Result<Exported, String>) {
+        if let Some(s) = &self.split {
+            s.lock().unwrap_or_else(std::sync::PoisonError::into_inner).finished();
+        }
         let mut l = self.lock();
+        l.running = l.running.saturating_sub(1);
         // (a cancelled or ended batch keeps no results nobody will collect)
         if !l.stop && !self.cancelled() {
             l.done.insert(i, r);
@@ -3723,7 +3849,7 @@ impl Queue {
                 if l.stop || self.cancelled() || l.next >= l.items.len() {
                     return;
                 }
-                if l.next < l.placed.saturating_add(self.ahead) {
+                if l.next < l.placed.saturating_add(self.ahead) && l.running < self.limit() {
                     match l.take_next() {
                         Some(t) => break t,
                         None => return,
@@ -3948,6 +4074,30 @@ mod tests_two_cards {
         assert_eq!(saved, ExportCards::Second);
     }
 
+    /// #1377: the automatic lanes follow the GPU's measured share: one fewer while it is saturated, one more while it
+    /// waits, never past the automatic count nor under two; without a GPU (share 0) every lane runs.
+    #[test]
+    fn lanes_follow_the_gpus_share_of_the_work() {
+        // saturated: down one step at a time, to two
+        let mut l = 8;
+        for _ in 0..10 {
+            l = super::next_lane_limit(l, 8, 0.97);
+        }
+        assert_eq!(l, 2);
+        // waiting for the processor: back up, to the automatic lanes
+        for _ in 0..10 {
+            l = super::next_lane_limit(l, 8, 0.4);
+        }
+        assert_eq!(l, 8);
+        // in between: kept
+        assert_eq!(super::next_lane_limit(5, 8, 0.8), 5);
+        // no GPU: every lane
+        assert_eq!(super::next_lane_limit(8, 8, 0.0), 8);
+        // a reading that isn't a number changes nothing; one lane stays one
+        assert_eq!(super::next_lane_limit(5, 8, f64::NAN), 5);
+        assert_eq!(super::next_lane_limit(1, 1, 0.99), 1);
+    }
+
     #[test]
     fn a_second_card_gets_lanes_of_its_own() {
         assert_eq!(super::auto_lanes(16, 0), 8);
@@ -4084,7 +4234,7 @@ mod tests {
         let metadata = Metadata { copyright: Some("Synthetic export test".into()), ..Default::default() };
         for format in [ExportFormat::Png, ExportFormat::Tiff, ExportFormat::Webp] {
             for compression in [TiffCompression::None, TiffCompression::Lzw, TiffCompression::Deflate, TiffCompression::PackBits] {
-                let options = ExportOptions { format, tiff_compression: compression, ..Default::default() };
+                let options = ExportOptions { format, tiff_compression: compression, webp_lossless: true, ..Default::default() };
                 let bytes = encode_with_metadata(&img, &options, Some(&metadata)).unwrap();
                 let decoded = lcc_codecs::decode(&bytes, Default::default()).unwrap();
                 assert!(!decoded.has_alpha, "{format:?}/{compression:?} must be RGB");
@@ -4107,11 +4257,36 @@ mod tests {
         let mut img = test_image();
         img.data[0][3] = 128;
         for format in [ExportFormat::Png, ExportFormat::Tiff, ExportFormat::Webp] {
-            let bytes = encode_image(&img, &ExportOptions { format, ..Default::default() }).unwrap();
+            let bytes = encode_image(&img, &ExportOptions { format, webp_lossless: true, ..Default::default() }).unwrap();
             let decoded = lcc_codecs::decode(&bytes, Default::default()).unwrap();
             assert!(decoded.has_alpha, "{format:?} must retain real alpha");
             assert_eq!(decoded.to_srgb8().data, img.data, "{format:?} samples");
         }
+    }
+
+    /// WebP is lossy at the export quality unless Lossless is on (#1482): smaller than the lossless file, close to
+    /// the picture, with its profile and transparency; a build without the encoder writes lossless.
+    #[test]
+    fn webp_exports_lossy_at_the_quality_or_lossless() {
+        let mut img = test_image();
+        let lossless = encode_image(&img, &ExportOptions { format: ExportFormat::Webp, webp_lossless: true, ..Default::default() }).unwrap();
+        let o = ExportOptions { format: ExportFormat::Webp, quality: 80, ..Default::default() };
+        assert_eq!(o.webp_lossy(), lcc_codecs::WEBP_LOSSY);
+        let lossy = encode_image(&img, &o).unwrap();
+        let d = lcc_codecs::decode(&lossy, Default::default()).unwrap();
+        assert_eq!((d.width, d.height), (96, 64));
+        assert_eq!(d.icc.as_deref(), Some(icc::write_named(NamedSpace::Srgb).as_slice()));
+        if lcc_codecs::WEBP_LOSSY {
+            assert!(lossy.len() < lossless.len(), "{} vs {}", lossy.len(), lossless.len());
+            let got = d.to_srgb8();
+            let err = got.data.iter().zip(&img.data).map(|(a, b)| (a[0] as i32 - b[0] as i32).abs()).sum::<i32>() as f64 / got.data.len() as f64;
+            assert!(err < 8.0, "mean error {err}");
+        } else {
+            assert_eq!(d.to_srgb8().data, img.data, "lossless without the encoder");
+        }
+        img.data[0][3] = 128;
+        let d = lcc_codecs::decode(&encode_image(&img, &o).unwrap(), Default::default()).unwrap();
+        assert!(d.has_alpha, "transparency kept");
     }
 
     /// Issue #2976: on a transparent area of an export that keeps alpha, the watermark composites

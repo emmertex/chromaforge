@@ -46,8 +46,21 @@ fn run(s: &mut Session, cmd: &str, params: Value) -> Value {
     s.execute(cmd, &params).unwrap()
 }
 
+/// Run `cmd`, then take the navigation step it made off the history again: what these tests look at is
+/// what Undo of the library's changes does to a view that names them (the steps of navigation itself
+/// are in `tests_view_undo`), so the history keeps only the library's own.
+fn quietly(s: &mut Session, cmd: &str, params: Value) -> Value {
+    let redo = s.redo.clone();
+    let r = run(s, cmd, params);
+    while s.undo.last().is_some_and(|e| e.view.is_some()) {
+        s.undo.pop();
+    }
+    s.redo = redo;
+    r
+}
+
 fn show(s: &mut Session, id: u64) {
-    run(s, "library.source", json!({"kind": "album", "id": id}));
+    quietly(s, "library.source", json!({"kind": "album", "id": id}));
     assert_eq!(s.source, LibrarySource::Album(AlbumId(id)));
 }
 
@@ -116,8 +129,8 @@ fn an_album_that_comes_back_is_not_shown_again_by_itself() {
     photos(&mut s, 3);
     let id = run(&mut s, "album.create", json!({"name": "First"}))["id"].as_u64().unwrap();
     show(&mut s, id);
-    run(&mut s, "library.filter", json!({"album": id}));
-    // the filter is no undo step: this undoes the album
+    quietly(&mut s, "library.filter", json!({"album": id}));
+    // (the filter's step was taken off): this undoes the album
     run(&mut s, "edit.undo", json!({}));
     assert!(s.catalog.album(AlbumId(id)).is_none(), "the album's creation was undone");
     assert_eq!((s.source, s.filter.album), (LibrarySource::All, None));
@@ -162,7 +175,7 @@ fn a_filter_lets_go_of_an_album_that_went_away() {
     photos(&mut s, 3);
     let id = run(&mut s, "album.create", json!({"name": "Named"}))["id"].as_u64().unwrap();
     let other = run(&mut s, "album.create", json!({"name": "Other"}))["id"].as_u64().unwrap();
-    run(&mut s, "library.filter", json!({"album": id, "rating": 0}));
+    quietly(&mut s, "library.filter", json!({"album": id, "rating": 0}));
     assert_eq!(s.filter.album, Some(AlbumId(id)));
     // another album going away changes nothing
     run(&mut s, "album.delete", json!({"id": other}));
@@ -172,7 +185,7 @@ fn a_filter_lets_go_of_an_album_that_went_away() {
     assert_eq!(s.visible_cloned().len(), 3, "the filter hides nothing behind an album that is gone");
     // the step functions themselves check, not only the commands round them
     s.undo_step().unwrap();
-    run(&mut s, "library.filter", json!({"album": id}));
+    s.filter.album = Some(AlbumId(id));
     s.redo_step().unwrap();
     assert_eq!(s.filter.album, None);
 }

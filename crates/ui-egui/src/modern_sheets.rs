@@ -150,6 +150,8 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) -> bool {
         crate::settings_screen::show(app, ctx);
         return true;
     }
+    // (closed by any route: what the search read of the pages goes with it)
+    crate::settings_search::forget(ctx);
     // Export: a full-window screen in every layout
     if matches!(app.ui.dialog, Some(Dialog::Export { .. })) {
         crate::panels::dialogs::export_screen(app, ctx);

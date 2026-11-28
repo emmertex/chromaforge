@@ -26,6 +26,11 @@ use crate::geometry::Frame;
 pub trait PatchSource: Send + Sync {
     /// Variation `variant` of generation `id`; `None` when its file is missing or unreadable.
     fn patch(&self, id: &str, variant: u32) -> Option<Arc<PatchLayer>>;
+    /// Variation `variant` of the fill `id` of a crop's area past the photo ([`edge_fill`]); the library keeps these
+    /// apart from the spots' generations. By default where [`Self::patch`] finds them.
+    fn edge_patch(&self, id: &str, variant: u32) -> Option<Arc<PatchLayer>> {
+        self.patch(id, variant)
+    }
 }
 
 /// A photo's patches, for [`crate::SourceInfo::generated`].
@@ -62,16 +67,23 @@ pub fn transformed_to_source(frame: &Frame, p: Point) -> Point {
     Point::new(x, y)
 }
 
+/// The fill of the crop's area past the photo that a render of `s` shows ([`lcc_develop::DevelopSettings::edge_fill`],
+/// issue #861): `None` when there is none, the crop no longer extends, or its file is missing.
+pub fn edge_fill(s: &lcc_develop::DevelopSettings, store: Option<&GenStore>) -> Option<Arc<PatchLayer>> {
+    let e = s.shown_edge_fill()?;
+    store?.0.edge_patch(&e.fill.id, e.fill.variant)
+}
+
 /// Output pixel `(x, y)` of a `w × h` render of `frame` in the source (normalized), or `None` on
-/// blank canvas.
-fn mapper(frame: &Frame, w: usize, h: usize) -> impl Fn(usize, usize) -> Option<SourcePos> + '_ {
+/// blank canvas (unless `past_edge`: a fill of that canvas is placed there too).
+fn mapper(frame: &Frame, w: usize, h: usize, past_edge: bool) -> impl Fn(usize, usize) -> Option<SourcePos> + '_ {
     let o2t = frame.out_to_oriented(w, h);
     let inv = frame.orient.inverse();
     let (sw, sh) = (frame.src_w.max(1) as f64, frame.src_h.max(1) as f64);
     move |x, y| {
         let (g, gain) = match &frame.warp {
             Some(wp) => {
-                let (_, g) = wp.frame(&o2t, x, y)?;
+                let (_, g) = if past_edge { wp.frame_past_edge(&o2t, x, y)? } else { wp.frame(&o2t, x, y)? };
                 (g, if wp.has_gain() { wp.gain(g) } else { 1.0 })
             }
             None => (o2t.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5)), 1.0),
@@ -88,11 +100,20 @@ const BLOCK: usize = 8;
 /// Composite `layer` into `img` (a `w × h` render of `frame`), then give it matching noise.
 /// `seed` makes the noise of one generation its own.
 pub fn apply_layer(img: &mut Rgb32f, layer: &PatchLayer, frame: &Frame, seed: u64) {
+    apply(img, layer, frame, seed, false);
+}
+
+/// [`apply_layer`] for the fill of a crop's area past the photo ([`edge_fill`]): placed on the blank canvas too.
+pub fn apply_edge_fill(img: &mut Rgb32f, layer: &PatchLayer, frame: &Frame, seed: u64) {
+    apply(img, layer, frame, seed, true);
+}
+
+fn apply(img: &mut Rgb32f, layer: &PatchLayer, frame: &Frame, seed: u64, past_edge: bool) {
     let (w, h) = (img.width, img.height);
     if w == 0 || h == 0 {
         return;
     }
-    let map = mapper(frame, w, h);
+    let map = mapper(frame, w, h, past_edge);
     // source px per output px (the crop and window scale; the warp changes it only locally)
     let o2t = frame.out_to_oriented(w, h);
     let m = o2t.0;
