@@ -313,7 +313,10 @@ pub fn commit_measured(s: &mut Session, id: PhotoId, m: Measured, force: bool, r
     let entry = s.vignetting_calibration_dir().map(|d| lib::save(&d, &m.map)).transpose().map_err(|e| bad(C, e))?;
     let now = (s.clock)();
     let mut ops = Vec::new();
-    if photo.sha1.is_none() {
+    // the reference's file was hashed to measure it: the photo keeps that SHA-1 where the back-fill would
+    // give it one ([`crate::cmd::convert::takes_sha1`]: not a virtual copy, a deleted or link-only photo)
+    let hashed = crate::cmd::convert::takes_sha1(&photo) && lcc_catalog::is_sha1_hex(&m.sha1);
+    if hashed {
         ops.push(Op::SetSha1 { id, sha1: Some(m.sha1.clone()) });
     }
     // the reference it replaces: withdrawn in this step (one only in the library joins the catalog first, in use, so
@@ -335,6 +338,9 @@ pub fn commit_measured(s: &mut Session, id: PhotoId, m: Measured, force: bool, r
     d.optics.vignetting_calibration_amount = lcc_develop::DEFAULT_VIGNETTING_CALIBRATION_PERCENT;
     ops.extend(s.develop_op(id, d, "Vignetting Calibration"));
     s.commit("Vignetting Calibration", Op::Batch { ops })?;
+    if hashed {
+        crate::cmd::convert::queue_link_check(s, &[id]);
+    }
     Ok(json!({
         "map": map_json(&map_id, &m.map),
         "key": entry.map(|e| e.key),

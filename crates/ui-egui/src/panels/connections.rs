@@ -488,7 +488,7 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
         && (app.ui.right.is_edit_tool() || (crate::modern::on(app) && app.ui.module != crate::module::ModuleId::Library));
     if developing
         && let Some(id) = app.session.active()
-        && app.session.catalog.photo(id).is_some_and(|p| p.preview_only.as_deref() == Some(lcc_engine::remote::LINK_ONLY))
+        && app.session.catalog.photo(id).is_some_and(|p| lcc_engine::remote::is_link_only(p))
         && app.immich.fetch_tried.insert(id.0)
     {
         let failed = match app.session.execute("immich.fetchOriginal", &json!({"id": id.0})) {

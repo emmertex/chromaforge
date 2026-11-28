@@ -65,7 +65,7 @@ pub(crate) fn key_of(p: &Photo, cat: &Catalog) -> Option<String> {
     if p.copy_of.is_some() {
         return None;
     }
-    if p.preview_only.as_deref() == Some(crate::remote::LINK_ONLY) {
+    if crate::remote::is_link_only(p) {
         // the file here is Immich's preview: only the checksum of the original names it
         return cat.remote_of(p.id).filter(|r| r.service == lcc_immich::link::SERVICE).find_map(|r| r.remote_checksum.as_deref().and_then(sha1_key));
     }
@@ -78,7 +78,7 @@ pub(crate) fn key_of(p: &Photo, cat: &Catalog) -> Option<String> {
 /// The photo's content-hash key, which another device may still use for it (`None` for a
 /// link-only photo: its content hash is the preview's).
 pub(crate) fn content_key(p: &Photo) -> Option<&str> {
-    if p.copy_of.is_some() || p.preview_only.as_deref() == Some(crate::remote::LINK_ONLY) {
+    if p.copy_of.is_some() || crate::remote::is_link_only(p) {
         return None;
     }
     p.content_hash.as_deref().filter(|h| ok_content_key(h))
@@ -184,7 +184,7 @@ pub(super) fn info(p: &Photo) -> Value {
     q.rating = 0;
     q.flag = lcc_catalog::Flag::None;
     q.label = None;
-    if q.preview_only.as_deref() == Some(crate::remote::LINK_ONLY) {
+    if crate::remote::is_link_only(&q) {
         // what is here is Immich's preview: its hash, size and SHA-1 aren't the original's
         q.content_hash = None;
         q.sha1 = None;
