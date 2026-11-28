@@ -8,8 +8,6 @@ on:
   push:
     branches: [main, release]
     paths: [".github/workflows/**", "packaging/**", "assets/app-icon/**", "brand.toml"]
-  pull_request:
-    paths: [".github/workflows/**", "packaging/**", "assets/app-icon/**", "brand.toml"]
   workflow_dispatch:
 
 permissions:

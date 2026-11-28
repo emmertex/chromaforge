@@ -319,6 +319,13 @@ pub fn main() -> ExitCode {
 
 /// Run the command-line tool on `args` (without the program name) and return its exit status.
 pub fn main_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    let code = run_with(args_os);
+    // diagnostics (issue #1363): an orderly end, marked and written (no-op when off)
+    lcc_diag::finish();
+    code
+}
+
+fn run_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
     // `--features dhat-heap`: count allocations; the profile is written when `_heap` drops
     // (<PREFIX>_DHAT_FILE, default dhat-heap.json).
     #[cfg(feature = "dhat-heap")]
@@ -354,6 +361,11 @@ pub fn main_with(args_os: impl IntoIterator<Item = std::ffi::OsString>) -> ExitC
                 return ExitCode::FAILURE;
             }
         }
+    }
+    // the diagnostics recorder (off unless <PREFIX>_DIAG is set), after the settings migration; not for a question
+    // about the tool itself
+    if !matches!(args.first().map(String::as_str), None | Some("--version" | "-V" | "version" | "--help" | "-h" | "help")) {
+        lcc_engine::logging::start_diagnostics(!lcc_brand::env_is_set("NO_PREFS"));
     }
     let r = match args.first().map(String::as_str) {
         Some("run") => run(args.get(1..).unwrap_or_default()),
