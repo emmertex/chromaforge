@@ -1,3 +1,0 @@
-## Library
-
-- **Map search and saved locations:** the search box matches saved locations ignoring accents as well as case, however the name stores them ("avila" and "Ávila" now find names with a decomposed Á, as some imported catalogs have). When several match, they are listed under the box to pick from instead of the map jumping to the first; a name typed in full still goes straight there. With online lookups on, the list ends with **Search online for “…”**, so a place named like a saved location can still be looked up (`map.search {online: true}` does the same). `map.search` returns `{found: "savedLocations", names}` for several.
