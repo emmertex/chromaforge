@@ -83,6 +83,250 @@ fn camera_tone_and_relative_wb() {
     check("camera chroma curve edited", &src, &info, &s, &RenderRequest::fit(320, 240));
 }
 
+// The base curve library is process-wide: the tests that install curves take turns.
+fn curve_library_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+// A selected base curve (a synthetic one): the GPU takes the same tone table as the CPU, SDR and HDR, neutral and
+// edited, over a camera look it replaces.
+#[test]
+fn base_curve_matches() {
+    let _lib = curve_library_lock();
+    if !gpu() {
+        return;
+    }
+    let doc = br#"{
+        "format": "base-curve", "version": 1,
+        "input": { "encoding": "linear", "gain": 1.0, "white": 1.0 },
+        "curves": { "a": { "interpolation": "monotone-cubic", "points": [[0, 0], [0.04, 0.1], [0.2, 0.45], [0.5, 0.82], [0.8, 0.96], [1, 1]] } },
+        "apply": [ { "op": "curve", "curve": "a", "on": "luminance" } ]
+    }"#;
+    let curve = lcc_develop::base_curve::parse(doc).expect("a valid synthetic curve");
+    lcc_develop::base_curve::install_library(vec![("base:Synthetic".into(), curve, lcc_develop::base_curve::hash_bytes(doc))]);
+    let src = scene(2, 320, 240);
+    let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
+    let info = SourceInfo { raw: true, camera_tone: Some(tone), white_scale: Some(1.2), ..Default::default() };
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:Synthetic".into();
+    check("base curve neutral", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.exposure = 1.0;
+    s.light.contrast = 40.0;
+    s.light.whites = 20.0;
+    s.light.blacks = -15.0;
+    check("base curve edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("base curve hdr", &src, &info, &s, 320, 240);
+    lcc_develop::base_curve::install_library(vec![]);
+}
+
+// A base curve with a `channel_share` (a synthetic one): the blend of the luminance and the per-channel Rec.709 results on the GPU
+// matches the CPU, SDR and HDR, neutral and edited, with a green probe and a white balance that is not the as-shot one,
+// with the RGB Contrast mode on, and on colours far outside Rec.709.
+#[test]
+fn base_curve_channel_share_matches() {
+    let _lib = curve_library_lock();
+    if !gpu() {
+        return;
+    }
+    let doc = br#"{
+        "format": "base-curve", "version": 2, "channel_share": 0.5,
+        "input": { "encoding": "linear", "gain": 1.0, "white": 1.0 },
+        "curves": { "a": { "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.04, 0.1], [0.2, 0.45], [0.5, 0.82], [0.8, 0.96], [1, 1]] } },
+        "apply": [ { "op": "curve", "curve": "a", "on": "luminance" } ]
+    }"#;
+    let curve = lcc_develop::base_curve::parse(doc).expect("a valid synthetic curve");
+    lcc_develop::base_curve::install_library(vec![("base:SyntheticShare".into(), curve, lcc_develop::base_curve::hash_bytes(doc))]);
+    let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
+    let info = SourceInfo {
+        raw: true,
+        camera_tone: Some(tone),
+        white_scale: Some(1.2),
+        green_probe: Some([0.3, 0.9, 0.1]),
+        as_shot_temp: 5200.0,
+        as_shot_tint: 4.0,
+        ..Default::default()
+    };
+    let src = scene(2, 320, 240);
+    {
+        let zero = String::from_utf8_lossy(doc).replace("\"channel_share\": 0.5", "\"channel_share\": 0").into_bytes();
+        let c0 = lcc_develop::base_curve::parse(&zero).unwrap();
+        lcc_develop::base_curve::install_library(vec![("base:SyntheticZero".into(), c0, lcc_develop::base_curve::hash_bytes(&zero))]);
+        let mut z = DevelopSettings::default();
+        z.profile.base_curve = "base:SyntheticZero".into();
+        check("channel share zero", &src, &info, &z, &RenderRequest::fit(320, 240));
+        let c = lcc_develop::base_curve::parse(doc).unwrap();
+        lcc_develop::base_curve::install_library(vec![("base:SyntheticShare".into(), c, lcc_develop::base_curve::hash_bytes(doc))]);
+    }
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    check("channel share neutral", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.exposure = 1.0;
+    s.light.contrast = 40.0;
+    s.light.whites = 20.0;
+    s.light.blacks = -15.0;
+    check("channel share edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("channel share hdr", &src, &info, &s, 320, 240);
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    s.wb.mode = WbMode::Custom;
+    s.wb.temp = 4300.0;
+    s.wb.tint = 10.0;
+    s.wb.scale = lcc_develop::WbScale::Kelvin;
+    check("channel share, other white", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.contrast_mode = lcc_develop::ContrastMode::Rgb;
+    s.light.contrast = 35.0;
+    s.light.blacks = -10.0;
+    check("channel share, RGB contrast", &src, &info, &s, &RenderRequest::fit(320, 240));
+    // saturated colours, most of them outside Rec.709: the primaries of the working space and mixes, over a brightness ramp
+    let (w, h) = (96usize, 64usize);
+    let base =
+        [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.3, 0.0], [0.0, 0.8, 0.3], [0.5, 0.0, 0.8], [1.0, 1.0, 0.0], [0.7, 0.7, 0.7]];
+    let mut data = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let k = 0.002 * 1.08f32.powi((y * 100 / h) as i32);
+            data.push(base[x * base.len() / w].map(|v| v * k));
+        }
+    }
+    let gamut = Arc::new(Rgb32f { width: w, height: h, data });
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:SyntheticShare".into();
+    check("channel share out of gamut", &gamut, &info, &s, &RenderRequest::fit(w, h));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("channel share out of gamut hdr", &gamut, &info, &s, w, h);
+    lcc_develop::base_curve::install_library(vec![]);
+}
+
+// A base curve with a post-tone colour map (a synthetic one, with structure in every direction): the GPU's map matches the CPU's, SDR
+// and HDR, neutral and edited, with a green probe and a white balance that is not the as-shot one, with the RGB Contrast mode on, and on
+// strongly saturated colours (a saturated green among them) and colours outside Rec.709 and Rec.2020; a map that changes nothing renders
+// exactly as no map.
+#[test]
+fn base_curve_colour_map_matches() {
+    let _lib = curve_library_lock();
+    if !gpu() {
+        return;
+    }
+    let (hues, lightness, chroma) = (12usize, [0.0f64, 0.3, 0.5, 0.65, 0.8, 1.0], [0.05f64, 0.12, 0.22]);
+    let (mut gain, mut shift) = (vec![], vec![]);
+    for c in 0..chroma.len() {
+        for l in 0..lightness.len() {
+            for h in 0..hues {
+                let (hf, lf, cf) = (h as f64, l as f64, c as f64);
+                gain.push(1.0 + 0.12 * (hf * 0.9 + lf).sin() * (0.5 + 0.5 * cf) - 0.04 * (lf * 1.3 - cf).cos());
+                shift.push(8.0 * (hf * 0.5 - lf * 0.7 + cf).cos());
+            }
+        }
+    }
+    let arr = |v: &[f64]| format!("[{}]", v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", "));
+    let doc = |map: Option<String>| {
+        let tail = map.map_or(String::new(), |m| format!(", \"colour_map\": {m}"));
+        format!(
+            r#"{{ "format": "base-curve", "version": 2, "channel_share": 0.5,
+            "input": {{ "encoding": "linear", "gain": 1.0, "white": 1.0 }},
+            "curves": {{ "a": {{ "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.04, 0.1], [0.2, 0.45], [0.5, 0.82], [0.8, 0.96], [1, 1]] }} }},
+            "apply": [ {{ "op": "curve", "curve": "a", "on": "luminance" }} ]{tail} }}"#
+        )
+        .into_bytes()
+    };
+    let mapped = doc(Some(format!(
+        r#"{{ "hues": {hues}, "lightness": {}, "chroma": {}, "gain": {}, "hue_shift": {} }}"#,
+        arr(&lightness),
+        arr(&chroma),
+        arr(&gain),
+        arr(&shift)
+    )));
+    let identity = doc(Some(format!(
+        r#"{{ "hues": 4, "lightness": [0.0, 1.0], "chroma": [0.1], "gain": {}, "hue_shift": {} }}"#,
+        arr(&[1.0; 8]),
+        arr(&[0.0; 8])
+    )));
+    let plain = doc(None);
+    let lib = [("base:Mapped", &mapped), ("base:Identity", &identity), ("base:Plain", &plain)]
+        .into_iter()
+        .map(|(id, b)| (id.to_string(), lcc_develop::base_curve::parse(b).expect("a valid synthetic curve"), lcc_develop::base_curve::hash_bytes(b)))
+        .collect();
+    lcc_develop::base_curve::install_library(lib);
+    let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
+    let info = SourceInfo {
+        raw: true,
+        camera_tone: Some(tone),
+        white_scale: Some(1.2),
+        green_probe: Some([0.3, 0.9, 0.1]),
+        as_shot_temp: 5200.0,
+        as_shot_tint: 4.0,
+        ..Default::default()
+    };
+    let src = scene(2, 320, 240);
+    let settings = |id: &str| {
+        let mut s = DevelopSettings::default();
+        s.profile.base_curve = id.into();
+        s
+    };
+    // a map that changes nothing is no map: the same bytes on the CPU
+    let req = RenderRequest::fit(320, 240);
+    let (a, b) = (render(&src, &info, &settings("base:Identity"), &req).image, render(&src, &info, &settings("base:Plain"), &req).image);
+    assert!(a.data == b.data, "an identity map renders as no map");
+    let mut s = settings("base:Mapped");
+    let unmapped = render(&src, &info, &settings("base:Plain"), &req).image;
+    let with = render(&src, &info, &s, &req).image;
+    assert!(diff(&unmapped, &with).0 > 0.3, "the map is visible on this scene");
+    check("colour map neutral", &src, &info, &s, &req);
+    s.light.exposure = 1.0;
+    s.light.contrast = 40.0;
+    s.light.whites = 20.0;
+    s.light.blacks = -15.0;
+    check("colour map edited", &src, &info, &s, &req);
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("colour map hdr", &src, &info, &s, 320, 240);
+    let mut s = settings("base:Mapped");
+    s.wb.mode = WbMode::Custom;
+    s.wb.temp = 4300.0;
+    s.wb.tint = 10.0;
+    s.wb.scale = lcc_develop::WbScale::Kelvin;
+    check("colour map, other white", &src, &info, &s, &req);
+    s.light.contrast_mode = lcc_develop::ContrastMode::Rgb;
+    s.light.contrast = 35.0;
+    s.light.blacks = -10.0;
+    check("colour map, RGB contrast", &src, &info, &s, &req);
+    // strongly saturated colours: the working-space primaries and mixes (a saturated green and colours outside Rec.709 and Rec.2020
+    // among them) over a brightness ramp
+    let (w, h) = (96usize, 64usize);
+    let base = [
+        [0.0f32, 1.0, 0.0],
+        [0.05, 0.8, 0.02],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.9, 0.3, 0.0],
+        [0.0, 0.8, 0.3],
+        [0.5, 0.0, 0.8],
+        [1.0, 1.0, 0.0],
+        [-0.1, 0.9, 0.1],
+        [0.6, 0.6, 0.6],
+    ];
+    let mut data = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let k = 0.002 * 1.08f32.powi((y * 100 / h) as i32);
+            data.push(base[x * base.len() / w].map(|v| v * k));
+        }
+    }
+    let gamut = Arc::new(Rgb32f { width: w, height: h, data });
+    let mut s = settings("base:Mapped");
+    check("colour map saturated colours", &gamut, &info, &s, &RenderRequest::fit(w, h));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("colour map saturated colours hdr", &gamut, &info, &s, w, h);
+    lcc_develop::base_curve::install_library(vec![]);
+}
+
 fn scene(i: usize, w: usize, h: usize) -> Arc<Rgb32f> {
     Arc::new(lcc_scenes::demo_library()[i].render(w, h))
 }

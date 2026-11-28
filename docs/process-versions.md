@@ -50,6 +50,8 @@ Existing AI masks become 1–2 px tighter at a subject's edges, on every process
 outside and edges without contrast in the photo are unchanged. It landed in place as a bug fix: the
 outline is output that is neither in the photo nor in the edit, not a look anyone chose.
 
+**Base curves** (optional `profile.base_curve`, a curve file the user keeps in the `base-curves` folder) are not a process: the setting is empty by default and left out of the JSON while empty, so no existing setting renders differently, on any process. A photo that selects one replaces the base tone `base_tone` picks, whatever the process.
+
 ## Adding a process
 
 Before a retune, regenerate the render-fidelity references on `main` (`cargo xtask fidelity --regen`,

@@ -2681,5 +2681,6 @@
   "Import to This Folder…": "匯入到此資料夾…",
   "Copies the photos of a folder you choose into this folder; the review lets you change that": "將所選資料夾中的照片複製到此資料夾；可在審閱中更改",
   "Add to My Photos…": "加入我的照片…",
-  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "審閱此資料夾中的照片，然後就地加入目錄；不會更動任何檔案"
+  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "審閱此資料夾中的照片，然後就地加入目錄；不會更動任何檔案",
+  "Base curve": "基礎曲線"
 }

@@ -3953,5 +3953,6 @@
   "Import to This Folder…": "In diesen Ordner importieren…",
   "Copies the photos of a folder you choose into this folder; the review lets you change that": "Kopiert die Fotos eines gewählten Ordners in diesen Ordner; in der Überprüfung kannst du das ändern",
   "Add to My Photos…": "Zu „Meine Fotos“ hinzufügen…",
-  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Zeigt die Fotos dieses Ordners zur Überprüfung und fügt sie dann dem Katalog hinzu, wo sie liegen; keine Datei wird angefasst"
+  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Zeigt die Fotos dieses Ordners zur Überprüfung und fügt sie dann dem Katalog hinzu, wo sie liegen; keine Datei wird angefasst",
+  "Base curve": "Basiskurve"
 }

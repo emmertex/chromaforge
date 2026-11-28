@@ -2874,5 +2874,6 @@
   "Import to This Folder…": "Імпортувати в цю теку…",
   "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копіює фото з обраної теки в цю теку; у перевірці це можна змінити",
   "Add to My Photos…": "Додати до моїх фото…",
-  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Показує фото цієї теки для перевірки, потім додає їх до каталогу на місці; жоден файл не змінюється"
+  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Показує фото цієї теки для перевірки, потім додає їх до каталогу на місці; жоден файл не змінюється",
+  "Base curve": "Базова крива"
 }

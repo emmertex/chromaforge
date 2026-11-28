@@ -583,6 +583,35 @@ pub fn load_bytes_with(bytes: &[u8], max_edge: usize, options: LoadOptions) -> R
     rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, options, false).map(|(img, _, info, _)| (img, info)))
 }
 
+/// `SourceInfo::white_scale` of the raw file at `path` developed with `options`: what a base curve divides the scene
+/// value by (see `lcc_pipeline::tone::ToneMap::film`). A full decode sets it itself; this is for a source that was
+/// loaded without it (a smart preview keeps the developed pixels, not the colour model), so the preview and the full
+/// render of one photo read the same value. It decodes the file once at a small size (the colour model is chosen the
+/// way every decode chooses it) and remembers the answer for the file as it was (path, size, modification time) and
+/// the options that change the colour model. `None`: the file is not readable or is not a raw.
+pub fn white_scale_of(path: &str, options: LoadOptions) -> Option<f32> {
+    film_inputs_of(path, options).and_then(|(w, _)| w)
+}
+
+/// [`white_scale_of`] and `SourceInfo::green_probe` of the file (one decode, remembered together).
+pub fn film_inputs_of(path: &str, options: LoadOptions) -> Option<(Option<f32>, Option<[f32; 3]>)> {
+    type Known = (Option<f32>, Option<[f32; 3]>);
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<Known>>>> = std::sync::OnceLock::new();
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs())))?;
+    let key = format!("{path}\u{1}{stamp:?}\u{1}{}\u{1}{}\u{1}{:?}", options.camera, options.camera_look, options.colour);
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(v) = known.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
+        return *v;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let options = LoadOptions { path: Some(path.to_string()), ..options };
+    let scale = load_bytes_with(&bytes, 96, options).ok().filter(|(_, info)| info.raw).map(|(_, info)| (info.white_scale, info.green_probe));
+    known.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, scale);
+    scale
+}
+
 /// [`load_bytes`] taking the file's bytes: a raw file's bytes are freed as soon as it is decoded
 /// (less memory held while it is developed).
 pub fn load_vec(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
@@ -893,6 +922,21 @@ fn load_bytes_now(
             tables: tables.as_ref(),
             hue_sat: hue_sat.as_ref(),
         };
+        // What a white-balanced neutral pixel at the sensor's white (1, 1, 1 after the multipliers) reads as luminance
+        // once the colour model has run (the matrix's neutral row sums, its fitted look's gain, the baseline exposure):
+        // the scale a base curve divides the scene value by, so the curve sees sensor white as 1 (`SourceInfo::white_scale`).
+        let white_scale = {
+            let m = colour.matrix.to_f32();
+            let neutral = [m[0].iter().sum::<f32>(), m[1].iter().sum::<f32>(), m[2].iter().sum::<f32>()];
+            let y = lcc_color::luminance_2020(neutral) * colour.gain;
+            if y.is_finite() && y > 0.0 { y } else { 1.0 }
+        };
+        // the raw green a developed pixel stands for: the green row of the inverse of gain · matrix · multipliers
+        // (`SourceInfo::green_probe`)
+        let green_probe = {
+            let dev = colour.matrix.mul(&lcc_color::Mat3::diag(f64::from(colour.wb[0]), f64::from(colour.wb[1]), f64::from(colour.wb[2])));
+            dev.inverse().map(|i| i.0[1].map(|v| v as f32 / colour.gain)).filter(|p| p.iter().all(|v| v.is_finite()))
+        };
         // camera RGB → what the pipeline takes: clipped highlights rebuilt, white balance and the colour model applied,
         // fitted to `max_edge` and upright (the same for the plain and the denoised picture)
         let finish = |mut img: Rgb32f| {
@@ -961,6 +1005,8 @@ fn load_bytes_now(
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
                 camera_tone,
+                white_scale: Some(white_scale),
+                green_probe,
                 mattes,
                 local_tone,
                 filters: None,
@@ -1750,6 +1796,8 @@ impl crate::Session {
     pub fn with_fs(mut self) -> Self {
         // installed `.dcp` camera profiles, before anything asks which camera has a colour model
         crate::camera_profiles::install_dcps();
+        // the base curve files a user keeps in the settings folder (nothing is bundled)
+        crate::base_curves::install_once();
         let (l, p) = fs_hooks();
         self.media.file_loader = Some(l);
         self.media.reduced_loader = Some(fs_reduced_loader());

@@ -22,6 +22,7 @@ pub mod apple_photos;
 pub mod availability;
 mod background_merge;
 pub mod base64;
+pub mod base_curves;
 pub(crate) mod bg_refresh;
 pub mod bounded_read;
 pub(crate) mod camera_preview;

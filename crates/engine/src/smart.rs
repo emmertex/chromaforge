@@ -632,6 +632,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A smart preview keeps the developed pixels and the decoder facts as before: the white scale a base curve reads is
+    /// not stored (it is worked out from the original when needed), so a photo's proxy is the same bytes whether or not
+    /// anything knows about base curves.
+    #[test]
+    fn the_proxy_does_not_carry_the_base_curves_white_scale() {
+        let img = lcc_scenes::demo_library()[0].render(64, 40);
+        let plain = lcc_pipeline::SourceInfo { raw: true, ..Default::default() };
+        let scaled = lcc_pipeline::SourceInfo { raw: true, white_scale: Some(1.7), ..Default::default() };
+        assert_eq!(encode(&img, Some(&plain)).unwrap(), encode(&img, Some(&scaled)).unwrap());
+        assert_eq!(decode(&encode(&img, Some(&scaled)).unwrap()).unwrap().2.map(|i| i.white_scale), Some(None));
+    }
+
     #[test]
     fn camera_tone_travels_with_the_proxy() {
         let tone = CameraTone::new(std::array::from_fn(|i| {

@@ -561,6 +561,22 @@ pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     base_tone_with_contrast_blacks(s, info, peak, s.light.contrast, s.light.blacks)
 }
 
+/// Why the base curve a raw photo selected (`profile.base_curve`) is not used, for the panel and an export's
+/// warnings: its file is not installed (the photo keeps the id and renders with the default base tone until it is back),
+/// or this build cannot render it. `None`: no curve selected, not a raw (a base curve only replaces a raw's base tone),
+/// or the curve is in use.
+pub fn base_curve_problem(s: &DevelopSettings, raw: bool) -> Option<String> {
+    let id = &s.profile.base_curve;
+    if id.is_empty() || !raw {
+        return None;
+    }
+    let shown = id.strip_prefix(lcc_develop::base_curve::ID_PREFIX).unwrap_or(id);
+    match lcc_develop::base_curve::get(id) {
+        None => Some(format!("The base curve \"{shown}\" was not found; the default base tone is used.")),
+        Some(e) => e.curve.unsupported().map(|why| format!("The base curve \"{shown}\" is not used: {why}; the default base tone is used.")),
+    }
+}
+
 pub fn base_tone_with_contrast_blacks(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast: f64, blacks: f64) -> ToneMap {
     // the SDR rendition of an HDR edit: the HDR curve, its highlights rolled off into SDR white
     // (issue #69); SDR edits never get here (their rolloff peak is 1)
@@ -578,6 +594,13 @@ fn base_tone_at_with(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast
     let raw = info.raw
         && !(crate::plugin_filters::any_active(s)
             && crate::plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Source).neutral_base_tone());
+    // A raw photo that selects a base curve (`profile.base_curve`) takes its base tone from that curve file instead of
+    // the camera look or the generic curve: it replaces them, nothing of `info.camera_tone` is applied. A curve that is
+    // not installed (its file is missing) or that this build cannot render falls through to the default base tone
+    // below, and `base_curve_problem` tells the panel and the export why.
+    if raw && let Some(e) = lcc_develop::base_curve::get(&s.profile.base_curve).filter(|e| e.curve.unsupported().is_none()) {
+        return ToneMap::film(&e.curve, crate::local::film_white_scale(info, s), contrast, l.whites, blacks, peak);
+    }
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
         // ([`hue_clip`]), V6 Denoise, V7 grain: not the tone map
@@ -987,8 +1010,7 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
 
             // --- tone map on luminance, highlight desaturation
             let yl = luminance_2020(c);
-            let mut o = tone.apply(yl);
-            let mut d = if yl > 1e-9 { c.map(|v| v * o / yl) } else { [0.0; 3] };
+            let (mut o, mut d) = tone.colour(c, yl);
             let k = tone.chroma_scale(o);
             if k != 1.0 {
                 d = d.map(|v| o + (v - o) * k);
@@ -1002,6 +1024,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 let t = ((mx - peak) / (mx - o).max(1e-6)).clamp(0.0, 1.0);
                 let grey = d.map(|v| v + (o - v) * t);
                 d = if fp.hue_clip { keep_hue(d, grey, o, peak) } else { grey };
+            }
+
+            // --- a base curve's post-tone colour map (OkLab chroma gain and hue shift; the same in finish.wgsl)
+            if let Some(cm) = tone.colour_map() {
+                d = cm.apply(d);
             }
 
             // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)

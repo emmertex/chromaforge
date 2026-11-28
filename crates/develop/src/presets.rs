@@ -225,6 +225,7 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
     // carries it, so that applying it turns a Colorimetric photo back to Auto
     if let Some(Value::Object(profile)) = out.get_mut("profile") {
         profile.entry("camera_colour").or_insert_with(|| serde_json::to_value(s.profile.camera_colour).unwrap_or(Value::Null));
+        profile.entry("base_curve").or_insert_with(|| Value::String(s.profile.base_curve.clone()));
     }
     Value::Object(out)
 }

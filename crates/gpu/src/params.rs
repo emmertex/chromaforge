@@ -49,6 +49,14 @@ const FIELDS: &[(&str, usize)] = &[
     ("SHARPEN_V4", 1),
     // process V5: over-range colours keep hue and saturation (`lcc_pipeline::finish::hue_clip`)
     ("HUE_CLIP", 1),
+    // a base curve file's channel share (`lcc_pipeline::tone::ToneMap::channel_share`)
+    ("TONE_SHARE", 1),
+    // a base curve's post-tone colour map (`lcc_pipeline::colour_map`): flag, table offset in `aux`, knot counts (hues, lightness, chroma)
+    ("COLOUR_MAP", 1),
+    ("CM_OFF", 1),
+    ("CM_NH", 1),
+    ("CM_NL", 1),
+    ("CM_NC", 1),
     // process V8: 8-bit output is ordered-dithered (`lcc_pipeline::finish::bayer_dither_offset`)
     ("DITHER", 1),
     ("SHARPEN", 1),
@@ -319,6 +327,10 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         }
         aux.extend_from_slice(rc.lut());
     }
+    let colour_map_off = aux.len();
+    if let Some(cm) = fp.tone.colour_map() {
+        aux.extend(cm.table());
+    }
     // local Color Mixer and Point Color: one record per mask (each list used only when it lines up
     // with the masks, as on the CPU)
     let points_ok = fp.local_points.len() == masks.len();
@@ -386,6 +398,7 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.b("DEHAZE_V3", fp.dehaze_v3);
     p.b("SHARPEN_V4", fp.sharpen_v4);
     p.b("HUE_CLIP", fp.hue_clip);
+    p.f("TONE_SHARE", fp.tone.channel_share());
     p.b("DITHER", fp.dither);
     p.f("SHARPEN", fp.sharpen);
     p.f("SHARPEN_MASK", fp.sharpen_mask);
@@ -508,6 +521,13 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.b("RGB_CONTRAST", true);
         p.u("RGB_CONTRAST_OFF", rgb_contrast_off as u32);
         p.f("RGB_CONTRAST_ZERO", rc.zero());
+    }
+    if let Some(cm) = fp.tone.colour_map() {
+        p.b("COLOUR_MAP", true);
+        p.u("CM_OFF", colour_map_off as u32);
+        p.u("CM_NH", cm.hues() as u32);
+        p.u("CM_NL", cm.lightness_knots() as u32);
+        p.u("CM_NC", cm.chroma_knots() as u32);
     }
     if let Some(b) = &fp.brightness {
         p.b("BRIGHTNESS", true);

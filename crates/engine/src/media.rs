@@ -1542,13 +1542,20 @@ impl RenderJob {
         // a render a newer request replaced stops its plug-in filters; what it made then isn't the
         // picture asked for, and goes back as superseded (the decode it did is still handed on)
         let cancel = self.superseded.clone();
+        // a selected base curve that is not used (its file is missing, or this version cannot render it): the render
+        // carries the reason like any other render warning, so an export reports it too
+        let base_curve = lcc_pipeline::finish::base_curve_problem(&self.settings, self.info.raw);
         let run = || {
             let (r, cut) = lcc_pipeline::with_cancel(cancel, || {
                 crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed })
             });
             if cut { RenderResult { rendered: Err(SUPERSEDED.into()), ..r } } else { r }
         };
-        if thumb { lcc_gpu::prefer_helper(run) } else { run() }
+        let mut result = if thumb { lcc_gpu::prefer_helper(run) } else { run() };
+        if let (Some(why), Ok(r)) = (base_curve, &mut result.rendered) {
+            r.warnings.push(why);
+        }
+        result
     }
 
     /// This job's result when it fails with `e`.
@@ -1685,7 +1692,19 @@ impl RenderJob {
                 let src = &source.image_for(self.settings.denoise_amount());
                 // (the result if the transparency can't follow the render, made before `self.info` moves)
                 let alpha_failed = self.request.alpha.then(|| self.failed("the transparency did not follow the render".into()));
-                let info = source.info_or(self.info);
+                let mut info = source.info_or(self.info);
+                // A base curve reads the white scale of the photo's colour model. A full decode sets it; a source loaded
+                // without it (a smart preview) gets it worked out from the original, as the decode would, so the preview
+                // and the full render of the photo agree. Photos without a base curve never take this branch.
+                if info.raw
+                    && info.white_scale.is_none()
+                    && !self.settings.profile.base_curve.is_empty()
+                    && let lcc_catalog::Source::File { path } = &self.origin
+                {
+                    let (w, p) = crate::files::film_inputs_of(path, LoadOptions::of(&self.settings)).unwrap_or((None, None));
+                    info.white_scale = w;
+                    info.green_probe = p;
+                }
                 // an export that keeps transparency develops the colour without the white the pixels
                 // were flattened onto, and carries the alpha through the same geometry (issue #2976)
                 let straight =

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod base_curve;
 pub mod brush_model;
 pub mod controls;
 pub mod levels_curve;
@@ -106,6 +107,9 @@ impl DevelopSettings {
     /// is clipped to the photo first; a turned crop may reach past 0..1 and is bounded where the photo's size is known
     /// (`CropGeometry::bounded`, applied by the pipeline).
     fn keep_in_range(&mut self, before: &DevelopSettings) {
+        if !self.profile.base_curve.is_empty() && !base_curve::is_valid_id(&self.profile.base_curve) {
+            self.profile.base_curve.clear();
+        }
         for c in controls::CONTROLS {
             if let Some(v) = controls::get(self, c.id) {
                 controls::set(self, c.id, v);
@@ -143,6 +147,14 @@ impl DevelopSettings {
         for b in s.as_bytes() {
             h ^= *b as u64;
             h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        // a selected base curve: its file's content too (a replaced file refreshes previews); a missing one counts as 0
+        if !self.profile.base_curve.is_empty() {
+            let content = base_curve::content_hash(&self.profile.base_curve).unwrap_or(0);
+            for b in content.to_le_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
         }
         h
     }
@@ -301,6 +313,8 @@ impl DevelopSettings {
     }
 }
 
+#[cfg(test)]
+mod tests_base_curve;
 #[cfg(test)]
 mod tests_brightness;
 #[cfg(test)]

@@ -1092,6 +1092,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (yl > 1e-9) {
         d = c * o / yl;
     }
+    // a base curve with a channel share: the table also on each channel in linear Rec.709, blended in
+    // (`ToneMap::colour`; keep the matrices in step with `lcc_pipeline::tone::TO_709` and `FROM_709`)
+    let share = pf(F_TONE_SHARE);
+    if (share > 0.0) {
+        let p709 = vec3<f32>(
+            dot(vec3<f32>(1.660491, -0.587641, -0.072850), c),
+            dot(vec3<f32>(-0.124550, 1.132900, -0.008349), c),
+            dot(vec3<f32>(-0.018151, -0.100579, 1.118730), c),
+        );
+        let t709 = vec3<f32>(tone_apply(max(p709.x, 0.0)), tone_apply(max(p709.y, 0.0)), tone_apply(max(p709.z, 0.0)));
+        let q = vec3<f32>(
+            dot(vec3<f32>(0.627404, 0.329283, 0.043313), t709),
+            dot(vec3<f32>(0.069097, 0.919540, 0.011362), t709),
+            dot(vec3<f32>(0.016391, 0.088013, 0.895595), t709),
+        );
+        d = d + (q - d) * share;
+        o = max(lum2020(d), 0.0);
+    }
     let k = chroma_scale(o);
     if (k != 1.0) {
         d = vec3<f32>(o) + (d - vec3<f32>(o)) * k;
@@ -1119,6 +1137,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             d = grey;
         }
+    }
+
+    // --- a base curve's post-tone colour map (OkLab chroma gain and hue shift; the same as in finish.rs)
+    if (pu(F_COLOUR_MAP) != 0u) {
+        d = colour_map_apply(d);
     }
 
     // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)
@@ -1381,6 +1404,74 @@ fn lut_apply(c: vec3<f32>) -> vec3<f32> {
 
 // `finish::hue_clip` (process V5): the brightest channel limited to `peak`, the darkest kept (all three `peak` when it
 // is above too), the middle one in its place between them
+// A base curve's post-tone colour map (`lcc_pipeline::colour_map::ColourMapK::apply`; keep them in step): the tables are in `aux`
+// from `CM_OFF`: the lightness knots, the chroma knots, the gains and then the shifts (radians), chroma x lightness x hues.
+fn colour_map_apply(d: vec3<f32>) -> vec3<f32> {
+    let lab = oklab(d);
+    let c = length(lab.yz);
+    let t = clamp((c - 0.008) / (0.035 - 0.008), 0.0, 1.0);
+    let fade = t * t * (3.0 - 2.0 * t);
+    if (!(fade > 0.0)) {
+        return d;
+    }
+    let nh = pu(F_CM_NH);
+    let nl = pu(F_CM_NL);
+    let nc = pu(F_CM_NC);
+    let off = pu(F_CM_OFF);
+    let nhf = f32(nh);
+    var u = atan2(lab.z, lab.y) / 6.28318530718 * nhf;
+    if (u < 0.0) {
+        u = u + nhf;
+    }
+    let fu = floor(u);
+    let h0 = u32(fu) % nh;
+    let fh = u - fu;
+    let h1 = (h0 + 1u) % nh;
+    var l0 = 0u;
+    var fl = 0.0;
+    if (nl >= 2u) {
+        while (l0 + 2u < nl && lab.x >= aux[off + l0 + 1u]) {
+            l0 = l0 + 1u;
+        }
+        fl = clamp((lab.x - aux[off + l0]) / (aux[off + l0 + 1u] - aux[off + l0]), 0.0, 1.0);
+    }
+    let coff = off + nl;
+    var c0 = 0u;
+    var fc = 0.0;
+    if (nc >= 2u) {
+        while (c0 + 2u < nc && c >= aux[coff + c0 + 1u]) {
+            c0 = c0 + 1u;
+        }
+        fc = clamp((c - aux[coff + c0]) / (aux[coff + c0 + 1u] - aux[coff + c0]), 0.0, 1.0);
+    }
+    let l1 = min(l0 + 1u, nl - 1u);
+    let c1 = min(c0 + 1u, nc - 1u);
+    let goff = coff + nc;
+    let soff = goff + nc * nl * nh;
+    var g = 0.0;
+    var s = 0.0;
+    for (var ci = 0u; ci < 2u; ci = ci + 1u) {
+        let cc = select(c0, c1, ci == 1u);
+        let wc = select(1.0 - fc, fc, ci == 1u);
+        for (var li = 0u; li < 2u; li = li + 1u) {
+            let ll = select(l0, l1, li == 1u);
+            let wl = select(1.0 - fl, fl, li == 1u);
+            for (var hi = 0u; hi < 2u; hi = hi + 1u) {
+                let hh = select(h0, h1, hi == 1u);
+                let wh = select(1.0 - fh, fh, hi == 1u);
+                let w = wc * wl * wh;
+                let i = (cc * nl + ll) * nh + hh;
+                g = g + w * aux[goff + i];
+                s = s + w * aux[soff + i];
+            }
+        }
+    }
+    let ge = 1.0 + (g - 1.0) * fade;
+    let sn = sin(s * fade);
+    let cs = cos(s * fade);
+    return oklab_inv(vec3<f32>(lab.x, ge * (lab.y * cs - lab.z * sn), ge * (lab.y * sn + lab.z * cs)));
+}
+
 fn hue_clip(c: vec3<f32>, peak: f32) -> vec3<f32> {
     // Rust's `f32::max` / `min` skip a NaN operand; WGSL's are undefined for it, so do it by hand
     let hi = nan_max(c.x, nan_max(c.y, c.z));
