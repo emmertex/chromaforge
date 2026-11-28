@@ -295,6 +295,7 @@ impl Journal {
         let (catalog, seq, bad) = db.load()?;
         log::info!("catalog: loaded {} photos from {} in {:.0} ms", catalog.len(), db_path.display(), t.elapsed().as_secs_f64() * 1e3);
         report.failed += bad;
+        report.unreadable = bad;
         let log = store.read(LOG).map_err(ioe)?;
         // An older build wrote the store: mark it with this build's format before anything is
         // appended to the log, as the JSON snapshot is upgraded, so the older build refuses the
@@ -805,7 +806,12 @@ impl Journal {
             }
         }
         let out = self.backup(catalog, &s.backup_root(&dir), s.keep_backups)?;
-        if s.optimize {
+        // (not over records the load could not read: the optimise would delete them, and the backup
+        // is made; the user was told when the library opened)
+        let unreadable = self.db.as_ref().map_or(0, CatalogDb::unreadable);
+        if s.optimize && unreadable > 0 {
+            log::warn!("catalog: optimise after the backup left out: {unreadable} records in the store could not be read");
+        } else if s.optimize {
             self.optimize(catalog)?;
         }
         Ok(Some(out))

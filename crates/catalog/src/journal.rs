@@ -125,8 +125,14 @@ pub struct LoadReport {
     pub replayed: usize,
     /// Records skipped because the snapshot already contained them.
     pub stale: usize,
-    /// Records whose op failed to apply (should never happen; reported, not fatal).
+    /// Records whose op failed to apply (should never happen; reported, not fatal), and the
+    /// [`Self::unreadable`] ones.
     pub failed: usize,
+    /// Records in the v4 store (`catalog.redb`) that could not be decoded: left out of the
+    /// catalog and left as they are in the store. While there are any, nothing that rewrites the
+    /// store from the catalog in memory runs (Optimise; the whole rewrite after another writer
+    /// changed the store): it would delete them.
+    pub unreadable: usize,
     /// Bytes of a torn final record that were dropped.
     pub torn_bytes: u64,
     /// Partial records left mid-log by a failed append that was retried (written by builds that

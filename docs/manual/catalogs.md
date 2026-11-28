@@ -39,7 +39,9 @@ backup folder, how many backups to keep, and whether to test integrity and optim
 
 - File → Libraries → Back Up Catalog: copy the catalog now and test the copy (`catalog.backup`).
 - File → Libraries → Test Catalog Integrity (`catalog.checkIntegrity`) and Optimize Catalog (`library.compact`);
-  Catalog Settings… → Optimise (`catalog.optimize`) rewrites the store and rebuilds its indexes.
+  Catalog Settings… → Optimise (`catalog.optimize`) rewrites the store and rebuilds its indexes. While the catalog
+  holds records that couldn't be read when the library opened (a notice says how many; `library.info` →
+  `load.unreadable`), Optimise is refused and a scheduled backup skips its optimise: they would delete those records.
 - In the browser version, File → Libraries → Back Up Catalog… / Restore Catalog from Backup… download and restore
   the whole catalog.
 

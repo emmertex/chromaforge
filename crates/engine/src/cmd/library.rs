@@ -2856,6 +2856,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     "created": lib.report.created,
                     "replayed": lib.report.replayed,
                     "tornBytes": lib.report.torn_bytes,
+                    // records in the catalog store that could not be read: left out, kept in the store (no optimise)
+                    "unreadable": lib.report.unreadable,
                     "damaged": lib.report.damaged,
                     // the catalog was in an older format: upgraded, a verified copy kept as it was
                     "upgradedFrom": lib.report.upgraded_from,
