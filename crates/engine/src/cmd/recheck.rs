@@ -75,7 +75,7 @@ pub fn probe(probe: &FileProbe, stale: Vec<Stale>) -> Vec<(Stale, std::result::R
 pub fn probe_cancellable_with_progress(
     probe: &FileProbe,
     stale: Vec<Stale>,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     progress: &dyn Fn(usize),
 ) -> Vec<(Stale, std::result::Result<ProbeInfo, String>)> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -196,7 +196,7 @@ mod cancellation_tests {
             });
             let stale =
                 vec![Stale { id: PhotoId(1), path: "photo.raw".into(), preview_only: Some("preview".into()), preview_checked: "0.5.0".into() }];
-            let cancel = AtomicBool::new(true);
+            let cancel = std::sync::Arc::new(AtomicBool::new(true));
             let progress = Mutex::new(Vec::new());
 
             let results = probe_cancellable_with_progress(&probe, stale, &cancel, &|done| {
@@ -227,7 +227,7 @@ mod cancellation_tests {
                     preview_checked: "0.5.0".into(),
                 })
                 .collect();
-            let cancel = AtomicBool::new(false);
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
             let progress = Mutex::new(Vec::new());
 
             let results = probe_cancellable_with_progress(&probe, stale, &cancel, &|done| {

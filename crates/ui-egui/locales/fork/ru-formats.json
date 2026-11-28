@@ -4,6 +4,7 @@
   " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · незавершённые копии: {n} (файлы ещё могут появиться в папках назначения, вне библиотеки)",
   " · {n} not added to the library: {e}": " · не добавлено в библиотеку: {n} ({e})",
   " · {n} not imported: a drive stopped responding": " · не импортировано: {n} (диск перестал отвечать)",
+  " · {n} not imported: the app's file reader stopped; import them again": " · не импортировано: {n} (модуль чтения файлов приложения остановился; импортируйте их снова)",
   " · {queued} waiting": " · в очереди: {queued}",
   "+ Create “{new}”": "+ Создать «{new}»",
   ", ": ", ",

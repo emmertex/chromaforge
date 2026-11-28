@@ -4,6 +4,7 @@
   " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · salinan belum selesai: {n} (file mungkin masih muncul di folder tujuannya, di luar pustaka)",
   " · {n} not added to the library: {e}": " · {n} tidak ditambahkan ke pustaka: {e}",
   " · {n} not imported: a drive stopped responding": " · {n} tidak diimpor: sebuah drive berhenti merespons",
+  " · {n} not imported: the app's file reader stopped; import them again": " · {n} tidak diimpor: pembaca berkas aplikasi berhenti; impor lagi",
   "+ Create “{new}”": "+ Buat “{new}”",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} diterima, {pending} untuk ditinjau, {rejected} ditolak",
