@@ -48,6 +48,7 @@ thread_local! {
     static SYNCS: Cell<u64> = const { Cell::new(0) };
     static NO_FULL_SYNC: Cell<bool> = const { Cell::new(false) };
     static PLAIN_FSYNCS: Cell<u64> = const { Cell::new(0) };
+    static SPOIL: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How many file and folder syncs this module made **on the calling thread** (for tests: a
@@ -145,6 +146,40 @@ impl Drop for FaultGuard {
     }
 }
 
+/// Fault injection for tests (in any crate): while the returned guard lives, every file this
+/// module writes **on the calling thread** reads back with its first byte changed after it was
+/// written and synced, as from a failing drive or a flaky network volume.
+#[doc(hidden)]
+pub fn spoil_written_files() -> SpoilGuard {
+    SPOIL.with(|c| c.set(true));
+    SpoilGuard(())
+}
+
+/// Ends a [`spoil_written_files`] when dropped.
+#[doc(hidden)]
+pub struct SpoilGuard(());
+
+impl Drop for SpoilGuard {
+    fn drop(&mut self) {
+        SPOIL.with(|c| c.set(false));
+    }
+}
+
+/// Under [`spoil_written_files`]: change the first byte of the file at `path`.
+fn spoil(path: &Path) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    if !SPOIL.with(Cell::get) {
+        return Ok(());
+    }
+    let mut f = OpenOptions::new().read(true).write(true).open(path)?;
+    let mut b = [0u8; 1];
+    if f.read(&mut b)? == 1 {
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&[!b[0]])?;
+    }
+    Ok(())
+}
+
 /// Counts what is written; fails past an injected limit.
 struct Limited<W> {
     inner: W,
@@ -218,6 +253,8 @@ fn write_temp(path: &Path, sync: Option<&dyn WriteProgress>, fill: &mut dyn FnMu
         if let Some(p) = sync {
             p.flushing(&mut || counted_sync(&f))?;
         }
+        drop(f);
+        spoil(&tmp)?;
         Ok(n)
     })();
     match r {
@@ -261,6 +298,31 @@ fn replace_with(path: &Path, sync: bool, fill: &mut dyn FnMut(&mut dyn Write) ->
         sync_dir(parent_of(path));
     }
     Ok(n)
+}
+
+/// Replace `path`, an original the user may have no other copy of (Update DNG rewrites a raw in
+/// place), with `data`: as [`write_atomic`], but the synced temp file is read back and must hold
+/// exactly `data` before it is renamed over `path`. When it reads back different (a failing drive,
+/// a flaky network volume) the temp file is removed and `path` is left as it was. The same check
+/// as [`write_new`]'s (issue #134 point 4), for a file that replaces rather than adds one.
+pub fn replace_verified(path: &Path, data: &[u8]) -> io::Result<()> {
+    let real = replace_target(path)?;
+    let path = real.as_path();
+    let (tmp, _) = write_temp(path, Some(&NoProgress), &mut |w| w.write_all(data))?;
+    let checked = match same_content(&tmp, data, &NoProgress) {
+        Ok(true) => fs::rename(&tmp, path),
+        Ok(false) => Err(io::Error::other(
+            "the new file read back different from what was written (a failing drive or connection?), so it did not replace the \
+             original, which was left as it was",
+        )),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = checked {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    sync_dir(parent_of(path));
+    Ok(())
 }
 
 /// The file a replacement of `path` must land on. A symbolic link is written **through**: the
@@ -982,5 +1044,76 @@ mod tests {
         assert!(!same_file_id((7, 42), (8, 42)));
         assert!(!same_file_id((7, 0), (7, 0)), "two files on a volume that reports index 0 are not the same file");
         assert!(!same_file_id((0, 0), (0, 0)));
+    }
+}
+
+/// A file that replaces an original ([`replace_verified`]) or adds one ([`write_new`]) must read back as written
+/// before it takes the name; [`write_atomic`] (catalog files, sidecars) has no such check.
+#[cfg(test)]
+mod read_back_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> lcc_testkit::TempDir {
+        lcc_testkit::TempDir::new(&format!("safe-file-read-back-{tag}"))
+    }
+
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn an_original_is_replaced_by_a_file_that_reads_back_as_written() {
+        let d = scratch("ok");
+        let p = d.path().join("IMG_1.dng");
+        fs::write(&p, b"the original").unwrap();
+        replace_verified(&p, b"the new file").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"the new file");
+        assert_eq!(names(d.path()), ["IMG_1.dng"], "no temp file left");
+    }
+
+    #[test]
+    fn an_original_is_left_as_it_was_when_its_replacement_reads_back_different() {
+        let d = scratch("spoiled");
+        let p = d.path().join("IMG_1.dng");
+        fs::write(&p, b"the original").unwrap();
+        let e = {
+            let _spoil = spoil_written_files();
+            replace_verified(&p, b"the new file").expect_err("refused")
+        };
+        assert!(e.to_string().contains("read back different") && e.to_string().contains("left as it was"), "{e}");
+        assert_eq!(fs::read(&p).unwrap(), b"the original");
+        assert_eq!(names(d.path()), ["IMG_1.dng"], "the temp file is removed");
+    }
+
+    /// Issue #134 point 4: a new file that replaces a raw (Convert / Copy as DNG) is read back too.
+    #[test]
+    fn a_new_file_that_reads_back_different_is_not_published() {
+        let d = scratch("new");
+        let p = d.path().join("IMG_1.dng");
+        let e = {
+            let _spoil = spoil_written_files();
+            write_new(&p, b"converted").expect_err("refused")
+        };
+        assert!(e.to_string().contains("reads back different"), "{e}");
+        assert!(names(d.path()).is_empty(), "neither the file nor its temp file is left");
+    }
+
+    #[test]
+    fn a_folder_or_a_dangling_link_is_never_replaced() {
+        let d = scratch("targets");
+        let folder = d.path().join("dir.dng");
+        fs::create_dir(&folder).unwrap();
+        assert!(replace_verified(&folder, b"x").is_err());
+        assert!(folder.is_dir());
+        #[cfg(unix)]
+        {
+            let link = d.path().join("gone.dng");
+            std::os::unix::fs::symlink(d.path().join("nowhere"), &link).unwrap();
+            assert!(replace_verified(&link, b"x").is_err());
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is kept");
+        }
     }
 }
