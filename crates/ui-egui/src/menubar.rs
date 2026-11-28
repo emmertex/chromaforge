@@ -176,7 +176,11 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "photo.deleteFromDisk",
         ],
     ),
-    ("Photo", "Rotate & Flip", &["photo.rotateLeft", "photo.rotateRight", "---", "photo.flipHorizontal", "photo.flipVertical"]),
+    (
+        "Photo",
+        "Rotate & Flip",
+        &["photo.rotateLeft", "photo.rotateRight", "---", "photo.flipHorizontal", "photo.flipVertical", "---", "photo.autoOrient"],
+    ),
     (
         "File",
         "Libraries",

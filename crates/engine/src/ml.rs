@@ -27,6 +27,10 @@ use crate::Session;
 use crate::activity::{Activity, Cancel, TaskGuard, TaskHandle, Unit};
 use crate::cmd::bad;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "ml_orient.rs"]
+pub(crate) mod orient;
+
 /// What a job hands back; its owner (known by the job's key) downcasts it.
 pub(crate) type Output = Box<dyn Any + Send>;
 
@@ -226,6 +230,9 @@ impl Drop for Downloads {
 pub(crate) struct State {
     /// Made on the first job (no thread, no GPU probe before).
     queue: Option<Queue<Output>>,
+    /// Orientation detection runs (`photo.autoOrient`, `ml.orientation.fit`).
+    #[cfg(not(target_arch = "wasm32"))]
+    orient: orient::State,
     /// Dedicated interactive queue for text queries (`rows: None`) so a search query never waits behind
     /// a running background photo embedding job on `queue` or flickers the `mlIndex` activity row.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -289,6 +296,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             queue: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            orient: orient::State::default(),
             query_queue: None,
             preference: None,
             device_choice: Arc::new(Mutex::new(None)),
@@ -526,6 +535,14 @@ pub(crate) fn clip_accelerator_for(device_choice: Arc<Mutex<Option<String>>>) ->
         let target = device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone();
         match w {
             lcc_ml::TowerWeights::Vision(vw) => {
+                // ONNX Runtime first where the build and the machine have it (WebGPU, Core ML or CUDA), else our wgpu
+                // kernels; either is checked against the CPU encoder before it is used
+                if lcc_onnxrt::compiled_in() && !target.as_deref().is_some_and(|t| t.eq_ignore_ascii_case("cpu")) {
+                    match lcc_ml::onnx::OrtVision::new(vw) {
+                        Ok(r) => return Ok(Arc::new(r) as Arc<dyn lcc_ml::Accelerator>),
+                        Err(why) => log::info!("clip: the vision tower is not on ONNX Runtime: {why}"),
+                    }
+                }
                 let blocks = clip_block_refs(&vw.blocks);
                 let spec = lcc_gpu::clip::VisionTowerSpec {
                     hidden: vw.hidden,
@@ -1506,6 +1523,13 @@ impl Session {
         let mut failed = 0usize;
         let mut last_failure = None;
         for f in finished {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(rest) = f.key.strip_prefix(orient::KEY)
+                && let Ok(raw_id) = rest.parse::<u64>()
+            {
+                self.orient_finished(PhotoId(raw_id), f.outcome);
+                continue;
+            }
             if let Some(rest) = f.key.strip_prefix("embed:")
                 && let Ok(raw_id) = rest.parse::<u64>()
             {
@@ -1546,6 +1570,8 @@ impl Session {
                 }
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.orient_check_cancel();
         if self.ml.fail_streak >= FAIL_STREAK_PAUSE && !self.ml.paused {
             log::warn!(
                 "ml: {} photos in a row could not be indexed; background indexing pauses until it is resumed (last: {})",
@@ -1735,7 +1761,11 @@ impl Session {
             None => (0, None, 0, 0),
         };
         let active = ready && self.ml.enabled && !self.ml.paused_by_user && !self.ml.paused;
+        let oriented = std::mem::take(&mut self.ml.orient.turned_unseen);
+        let orient_busy = self.ml.orient.busy();
         Ok(json!({
+            "oriented": oriented,
+            "orientBusy": orient_busy,
             "active": active,
             "ready": ready,
             "enabled": self.ml.enabled,
@@ -2042,6 +2072,8 @@ impl Session {
     }
     pub(crate) fn ml_pump(&mut self, _p: &Value) -> crate::Result<Value> {
         Ok(json!({
+            "oriented": 0,
+            "orientBusy": false,
             "active": false,
             "ready": false,
             "enabled": self.ml_enabled(),
@@ -2064,5 +2096,19 @@ impl Session {
 
     pub(crate) fn search_semantic(&mut self, _p: &Value) -> crate::Result<Value> {
         Err(bad("search.semantic", "semantic search is not available in the web build"))
+    }
+
+    pub(crate) fn photo_auto_orient(&mut self, _p: &Value) -> crate::Result<Value> {
+        Err(bad("photo.autoOrient", "AI orientation detection is not available in the web build"))
+    }
+
+    pub(crate) fn ml_orientation_fit(&mut self, _p: &Value) -> crate::Result<Value> {
+        Err(bad("ml.orientation.fit", "AI orientation detection is not available in the web build"))
+    }
+
+    pub(crate) fn ml_orientation_status(&mut self, _p: &Value) -> crate::Result<Value> {
+        Ok(
+            json!({"classifier": {"available": false, "reason": "AI orientation detection is not available in the web build"}, "running": null, "last": null}),
+        )
     }
 }

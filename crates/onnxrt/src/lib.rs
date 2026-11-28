@@ -24,6 +24,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod graph;
+
 use std::path::{Path, PathBuf};
 
 #[cfg(all(feature = "ort", not(any(target_arch = "wasm32", target_os = "android"))))]
