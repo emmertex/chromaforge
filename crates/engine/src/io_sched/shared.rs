@@ -321,12 +321,13 @@ impl Shared {
         }
     }
 
-    /// Register `job` as abandoned at `now`, before the scheduler claims it (so its thread, if it
-    /// returns at once, finds the entry to remove).
-    pub(crate) fn add_entry(&self, job: &Arc<JobState>, kind: AbandonKind, now: u64) {
+    /// Register `job` as abandoned on `volume` (the one that stalled, or on which cancel left it;
+    /// a copy touches two) at `now`, before the scheduler claims it (so its thread, if it returns
+    /// at once, finds the entry to remove).
+    pub(crate) fn add_entry(&self, job: &Arc<JobState>, volume: &VolumeKey, kind: AbandonKind, now: u64) {
         let mut st = self.lock();
-        let stall_time = stall_time_of(st.volumes.get(&job.volume));
-        st.entries.insert(job.id, Entry { volume: job.volume.clone(), kind, abandoned_at: now, stall_time, job: job.clone() });
+        let stall_time = stall_time_of(st.volumes.get(volume));
+        st.entries.insert(job.id, Entry { volume: volume.clone(), kind, abandoned_at: now, stall_time, job: job.clone() });
         self.count_entries(&st);
     }
 
@@ -344,12 +345,17 @@ impl Shared {
         Self::stop_running(h, now);
     }
 
-    /// An abandoned job's thread returned: its entry goes, and its recovery slot if it held one.
+    /// An abandoned job's thread returned: its entry goes, and the recovery slot it held on any
+    /// volume (a copy may have been the recovery job of its destination).
     pub(crate) fn job_returned(&self, job: &JobState) {
         let mut st = self.lock();
         let _ = st.entries.remove(&job.id);
         self.count_entries(&st);
-        Self::end_recovery_locked(&mut st, &job.volume, job.id);
+        for h in st.volumes.values_mut() {
+            if h.recovery.as_ref().is_some_and(|r| r.job_id == job.id) {
+                h.recovery = None;
+            }
+        }
     }
 
     /// Entries outstanding (tests).

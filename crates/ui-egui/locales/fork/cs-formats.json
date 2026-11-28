@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": " ({n} nelze načíst)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · nedokončené kopie: {n} (soubor se může ještě objevit v {folder}, mimo knihovnu)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · nedokončené kopie: {n} (soubory se mohou ještě objevit v cílových složkách, mimo knihovnu)",
+  " · {n} not added to the library: {e}": " · nepřidáno do knihovny: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · neimportováno: {n} (jednotka přestala odpovídat)",
   "+ Create “{new}”": "+ Vytvořit „{new}“",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} přijato, {pending} k prohlédnutí, {rejected} odmítnuto",

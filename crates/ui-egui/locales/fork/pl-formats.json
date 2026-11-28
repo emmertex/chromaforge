@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": " ({n} nie można odczytać)",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · niedokończone kopie: {n} (plik może jeszcze pojawić się w {folder}, poza biblioteką)",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · niedokończone kopie: {n} (pliki mogą jeszcze pojawić się w folderach docelowych, poza biblioteką)",
+  " · {n} not added to the library: {e}": " · nie dodano do biblioteki: {n} ({e})",
+  " · {n} not imported: a drive stopped responding": " · nie zaimportowano: {n} (dysk przestał odpowiadać)",
   "+ Create “{new}”": "+ Utwórz „{new}”",
   ", ": ", ",
   ": {accepted} accepted, {pending} to review, {rejected} rejected": ": {accepted} zaakceptowanych, {pending} do przejrzenia, {rejected} odrzuconych",
