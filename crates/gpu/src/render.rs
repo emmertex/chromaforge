@@ -1005,7 +1005,9 @@ pub fn render(
         );
     }
     if let Some(slot) = display.filter(|_| can_display(gpu, plan, req)) {
-        let coverage = plan.frame.coverage(src.width, src.height, w, h).map(Arc::new);
+        // (the canvas a fill covers past the photo's edge counts as the photo, as on the CPU)
+        let filled_past_edge = lcc_pipeline::genpatch::edge_fill(s, info.generated.as_ref()).is_some();
+        let coverage = plan.frame.coverage(src.width, src.height, w, h).filter(|_| !filled_past_edge).map(Arc::new);
         let (frame, histogram) = to_texture(&mut cx, &out, w, h, coverage.as_deref())?;
         lap("finish + present", &mut t, &mut cx);
         *slot = Some(frame);
@@ -1054,8 +1056,10 @@ pub fn render(
     } else {
         None
     };
-    // the blank border past the photo's edge is shown but isn't part of the photo (issue #211)
-    let coverage = plan.frame.coverage(src.width, src.height, w, h).map(|c| match plan.keep {
+    // the blank border past the photo's edge is shown but isn't part of the photo (issue #211);
+    // the canvas a fill covers past the photo's edge counts as the photo, as on the CPU (issue #861)
+    let filled_past_edge = lcc_pipeline::genpatch::edge_fill(s, info.generated.as_ref()).is_some();
+    let coverage = plan.frame.coverage(src.width, src.height, w, h).filter(|_| !filled_past_edge).map(|c| match plan.keep {
         Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
         None => Arc::new(c),
     });
