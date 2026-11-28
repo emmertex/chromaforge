@@ -51,10 +51,26 @@ impl CropGeometry {
     /// a full-size output of billions of pixels. A rect with nothing left (reversed, or not finite)
     /// is the whole frame.
     pub fn bounded(&self, w: f64, h: f64) -> CropGeometry {
+        self.bounded_in(w, h, 0.0)
+    }
+
+    /// [`Self::bounded`] for a crop that may extend past the photo (Crop ▸ Extend Past the Edge, issue #861): the rect
+    /// is clipped to [`Self::extended_bounds`] instead of the turned photo's bounding box.
+    pub fn bounded_extended(&self, w: f64, h: f64) -> CropGeometry {
+        self.bounded_in(w, h, MAX_EXTEND)
+    }
+
+    /// The box (pixels of the straightened frame) a crop that may extend past the photo stays in: the bounding box of
+    /// the photo turned by this crop's angle, grown by [`MAX_EXTEND`] of its size on each side. A crop in it always
+    /// keeps some of the photo.
+    pub fn extended_bounds(&self, w: f64, h: f64) -> Rect {
         let angle = if self.angle.is_finite() { self.angle.clamp(-45.0, 45.0) } else { 0.0 };
-        let (sin, cos) = angle.to_radians().sin_cos();
-        let (bw, bh) = (w * cos.abs() + h * sin.abs(), w * sin.abs() + h * cos.abs());
-        let bbox = Rect::from_center(Point::new(w / 2.0, h / 2.0), bw, bh);
+        turned_bbox(w, h, angle, MAX_EXTEND)
+    }
+
+    fn bounded_in(&self, w: f64, h: f64, grow: f64) -> CropGeometry {
+        let angle = if self.angle.is_finite() { self.angle.clamp(-45.0, 45.0) } else { 0.0 };
+        let bbox = turned_bbox(w, h, angle, grow);
         let r = self.rect_px(w, h);
         let finite = [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
         let inside = r.x0 >= bbox.x0 && r.y0 >= bbox.y0 && r.x1 <= bbox.x1 && r.y1 <= bbox.y1;
@@ -173,6 +189,18 @@ impl CropGeometry {
         }
         Some(s).filter(|s| s.is_finite() && *s > 0.0)
     }
+}
+
+/// How far past each side of the photo's (turned) bounding box a crop may reach when it may extend past the photo
+/// (issue #861), as a fraction of that box's width or height.
+pub const MAX_EXTEND: f64 = 0.5;
+
+/// The bounding box (pixels of the straightened frame) of a `w × h` photo turned by `angle` degrees about its centre,
+/// grown by `grow` of its size on each side.
+fn turned_bbox(w: f64, h: f64, angle: f64, grow: f64) -> Rect {
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let (bw, bh) = (w * cos.abs() + h * sin.abs(), w * sin.abs() + h * cos.abs());
+    Rect::from_center(Point::new(w / 2.0, h / 2.0), bw * (1.0 + 2.0 * grow), bh * (1.0 + 2.0 * grow))
 }
 
 /// Largest scale `s` such that a centred `cw·s × ch·s` rectangle fits inside a `w × h` image rotated

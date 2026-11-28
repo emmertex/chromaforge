@@ -57,6 +57,7 @@ pub mod dust_map;
 pub mod email;
 pub mod enhance;
 mod errors;
+pub mod expand;
 pub mod export;
 pub mod export_video;
 pub mod eye_cull;
@@ -752,6 +753,8 @@ pub struct Session {
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// Generative fill: keys, consent, the running generation, the patch cache ([`genfill`]).
     pub genfill: genfill::GenfillState,
+    /// Crop ▸ Fill Edges: the running fill of a crop's area past the photo ([`expand`]).
+    pub edge_fill: expand::EdgeFillState,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Builds asked for while one was already running, waiting for their turn
@@ -1060,6 +1063,7 @@ impl Session {
             quality_scan: None,
             video: Default::default(),
             genfill: Default::default(),
+            edge_fill: Default::default(),
             upright_jobs: Default::default(),
             preview_build: None,
             preview_queue: Default::default(),
@@ -2924,6 +2928,8 @@ mod tests_edit_roundtrip;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_enhance;
+#[cfg(test)]
+mod tests_expand;
 #[cfg(test)]
 mod tests_export;
 #[cfg(test)]

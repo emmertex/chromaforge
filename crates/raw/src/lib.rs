@@ -930,6 +930,31 @@ impl RawImage {
         Ok(self.finish_demosaiced(rgb))
     }
 
+    /// [`Self::develop`] with [`Method::Ahd`], the Bayer demosaic handed to `accel` first (a GPU: issue #1377). It gets
+    /// the normalised mosaic's width, height, samples and the colour of each `(y & 1) * 2 + (x & 1)` (0 red, 1 green,
+    /// 2 blue), and returns the camera RGB at that size, or `None` to have the CPU do it (as do other patterns,
+    /// three-sample data and a result of the wrong size).
+    pub fn develop_ahd_with(&self, accel: impl FnOnce(usize, usize, &[f32], [u8; 4]) -> Option<Rgb32f>) -> Result<Rgb32f> {
+        if let Some(rgb) = self.develop_three_samples()? {
+            return Ok(self.finish_demosaiced(rgb));
+        }
+        let n = self.normalized()?;
+        drop(lcc_raster::Rgb32f::try_new(n.width, n.height).map_err(|_| RawError::Limit("not enough memory to develop this raw"))?);
+        let accelerated = match &n.cfa {
+            Some(cfa) if n.cpp == 1 && cfa.is_bayer() && n.width >= 4 && n.height >= 4 => {
+                let pattern = [cfa.color_at(0, 0), cfa.color_at(1, 0), cfa.color_at(0, 1), cfa.color_at(1, 1)];
+                accel(n.width, n.height, &n.data, pattern).filter(|rgb| rgb.width == n.width && rgb.height == n.height)
+            }
+            _ => None,
+        };
+        let rgb = match accelerated {
+            Some(rgb) => rgb,
+            None => demosaic::demosaic_with(&n, Method::Ahd, demosaic::Options { balance: self.wb_multipliers }),
+        };
+        drop(n);
+        Ok(self.finish_demosaiced(rgb))
+    }
+
     /// [`Self::normalized`] and the pass-through "demosaic" of three-sample data in one step: the camera RGB of the
     /// active area, written straight from the samples. The result is the same numbers, but the normalised copy
     /// (as large as the picture: 2.2 GB for a 181 MP merge) never exists next to it. `None` for data with opcode
@@ -1038,6 +1063,49 @@ mod tests {
                 assert_eq!(raw.develop(Method::Bilinear).unwrap(), by_hand, "the method doesn't matter without a mosaic");
             }
         }
+    }
+
+    /// Issue #1377: a demosaic handed elsewhere (the GPU) gets the active area's mosaic and its colours, and its
+    /// picture is finished as `develop`'s; declining, or a picture of the wrong size, leaves it to the CPU.
+    #[test]
+    fn an_accelerated_ahd_is_finished_like_develop_and_falls_back_to_the_cpu() {
+        let (w, h) = (12usize, 10usize);
+        let raw = RawImage {
+            format: RawFormat::Dng,
+            width: w,
+            height: h,
+            cpp: 1,
+            data: RawData::U16((0..w * h).map(|i| (100 + (i * 37) % 900) as u16).collect()),
+            cfa: Cfa::bayer("RGGB"),
+            bits: 12,
+            black: BlackLevel::uniform(64.0),
+            white: vec![1023.0],
+            // an odd origin: the active area starts on a green
+            active_area: Rect::new(1, 2, 9, 7),
+            crop: Rect::new(1, 1, 6, 5),
+            orientation: Orientation::Normal,
+            color: ColorData::default(),
+            wb_multipliers: None,
+            linearized: false,
+            pixel_aspect: 1.0,
+            opcodes: OpcodeLists::default(),
+            metadata: Metadata::default(),
+            lens_metadata: Default::default(),
+        };
+        let cpu = raw.develop(Method::Ahd).unwrap();
+        assert_eq!(raw.develop_ahd_with(|_, _, _, _| None).unwrap(), cpu);
+        assert_eq!(raw.develop_ahd_with(|_, _, _, _| Some(Rgb32f::new(3, 3))).unwrap(), cpu);
+        let mut seen = None;
+        let grey = raw
+            .develop_ahd_with(|w, h, data, pattern| {
+                seen = Some((w, h, data.len(), pattern));
+                Some(Rgb32f::from_fn(w, h, |_, _| [0.5; 3]))
+            })
+            .unwrap();
+        // (RGGB moved by one column: G R / B G)
+        assert_eq!(seen, Some((9, 7, 63, [1, 0, 2, 1])));
+        assert_eq!((grey.width, grey.height), (cpu.width, cpu.height));
+        assert!(grey.data.iter().all(|p| *p == [0.5; 3]));
     }
 
     #[test]

@@ -1933,6 +1933,8 @@ mod tests_index;
 #[cfg(test)]
 mod tests_journal;
 #[cfg(test)]
+mod tests_large_batch;
+#[cfg(test)]
 mod tests_local;
 #[cfg(test)]
 mod tests_lock;

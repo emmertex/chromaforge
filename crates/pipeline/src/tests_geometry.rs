@@ -628,3 +628,51 @@ fn upright_analysis_clips_negative_channels_first() {
     let b = crate::upright::analysis_luminance(&clipped, &SourceInfo::default(), &s, 200);
     assert!(a.data == b.data, "negative channels changed the analysis plane");
 }
+
+/// Issue #861: a crop extended past the photo shows blank canvas there (never the edge pixels drawn out), reports
+/// it as not the photo, and a fill of it placed past the photo's edge covers it.
+#[test]
+fn an_extended_crop_shows_blank_canvas_and_its_fill() {
+    use std::sync::Arc;
+    let (w, h) = (200usize, 100usize);
+    let src = Rgb32f::from_fn(w, h, |x, _| [0.1 + 0.6 * x as f32 / w as f32, 0.3, 0.2]);
+    let mut s = DevelopSettings::default();
+    s.crop.extend = true;
+    s.crop.geometry.rect = lcc_geom::Rect::new(-0.25, 0.0, 1.0, 1.0);
+    let frame = crate::geometry::Frame::new(w, h, &s, true);
+    let out = frame.sample(&src, 250, 100);
+    assert_eq!(out.data[50 * 250 + 10], crate::geometry::BLANK, "blank past the photo");
+    assert_ne!(out.data[50 * 250 + 200], crate::geometry::BLANK, "the photo on it");
+    let cov = frame.coverage(w, h, 250, 100).expect("some pixels are not the photo");
+    assert!(!cov.covers(10, 50) && cov.covers(200, 50));
+    // without Extend the same rect stays on the photo
+    let mut off = s.clone();
+    off.crop.extend = false;
+    assert!(crate::geometry::Frame::new(w, h, &off, true).crop.rect.x0 >= 0.0);
+    // a fill past the left edge (normalized source x −0.25..0) covers the canvas, in the render as in its coverage
+    struct One(Arc<lcc_genfill::PatchLayer>);
+    impl crate::genpatch::PatchSource for One {
+        fn patch(&self, _: &str, _: u32) -> Option<Arc<lcc_genfill::PatchLayer>> {
+            Some(self.0.clone())
+        }
+    }
+    let (pw, ph) = (75usize, 30usize);
+    let rgb = Rgb32f::from_fn(pw, ph, |_, _| [0.05, 0.05, 0.6]);
+    let alpha = lcc_raster::Plane::from_fn(pw, ph, |x, _| if x < 50 { 1.0 } else { 0.0 });
+    let info = lcc_genfill::patch::PatchInfo { rect: [-0.25, 0.0, 0.125, 1.0], source_w: w as u32, source_h: h as u32, ..Default::default() };
+    let layer = Arc::new(lcc_genfill::PatchLayer::new(info, rgb, alpha).unwrap());
+    let id = "0123456789abcdef".to_string();
+    s.edge_fill = Some(lcc_develop::EdgeFill {
+        kind: lcc_develop::EdgeFillKind::ContentAware,
+        fill: lcc_develop::GenFill { id, variants: 1, ..Default::default() },
+        rect: [-0.25, 0.0, 0.125, 1.0],
+    });
+    let blank = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(250, 100));
+    let filled_info = SourceInfo { generated: Some(crate::genpatch::GenStore(Arc::new(One(layer)))), ..SourceInfo::default() };
+    let filled = render(&src, &filled_info, &s, &RenderRequest::fit(250, 100));
+    assert!(blank.coverage.is_some() && filled.coverage.is_none());
+    let (b, f) = (blank.image.data[50 * 250 + 10], filled.image.data[50 * 250 + 10]);
+    assert!(f[2] > f[0] + 60 && f != b, "the fill shows past the photo: {f:?} (blank {b:?})");
+    // on the photo the fill's weight is 0: the photo as it was
+    assert_eq!(blank.image.data[50 * 250 + 200], filled.image.data[50 * 250 + 200]);
+}

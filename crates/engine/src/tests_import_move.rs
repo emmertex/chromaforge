@@ -440,6 +440,47 @@ fn the_original_stays_when_the_copys_folder_cannot_be_synced() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// Import → Copy syncs the copy's folder entry to disk before it counts as imported, as a move does (#1501): a card
+/// may be wiped on the strength of the copy. When that sync fails the photo is reported failed and nothing is left at
+/// the destination; with the sync working, the same file is imported, into new nested folders too.
+#[test]
+fn a_copy_whose_folder_cannot_be_synced_is_not_imported() {
+    let base = temp_dir("copydirsync");
+    let (card, dest) = (base.join("card"), base.join("out"));
+    write_png(&card.join("a.png"), 1);
+    std::fs::create_dir_all(&dest).unwrap();
+    let mut s = session();
+    let copy = |s: &mut Session, dest: &Path, organize: &str| {
+        s.execute(
+            "library.import",
+            &json!({"paths": [card.to_string_lossy()], "mode": "copy", "destination": dest.to_string_lossy(), "organize": organize}),
+        )
+        .unwrap()
+    };
+    inject(Fault::FailDirSync);
+    let r = copy(&mut s, &dest, "flat");
+    inject(Fault::None);
+    assert_eq!(len(&r, "imported"), 0, "{r}");
+    assert_eq!(len(&r, "failed"), 1, "{r}");
+    assert!(r.to_string().contains("durable"), "{r}");
+    assert_eq!(files_under(&dest), Vec::<String>::new());
+    assert!(card.join("a.png").is_file());
+    // folders made for a copy whose folder can't be synced are taken away again
+    let fresh = base.join("out3");
+    inject(Fault::FailDirSync);
+    let r = copy(&mut s, &fresh, "day");
+    inject(Fault::None);
+    assert_eq!(len(&r, "imported"), 0, "{r}");
+    assert!(!fresh.exists(), "the folders made for the failed copy are gone");
+    // and with the sync working, the copy is imported, nested new folders and all
+    let deep = base.join("out2");
+    let r = copy(&mut s, &deep, "day");
+    assert_eq!(len(&r, "imported"), 1, "{r}");
+    assert_eq!(files_under(&deep).len(), 1, "{r}");
+    assert!(card.join("a.png").is_file(), "a copy leaves the original");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// On an SMB share mounted by macOS a folder's full flush fails with ENOTSUP, as a file's does (issue #1407), so a
 /// move into a folder on the share kept every original: the folder is synced with a plain `fsync` instead. (Windows
 /// journals folder entries itself and syncs nothing.)

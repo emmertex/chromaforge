@@ -16,6 +16,10 @@ import { Aside } from '@astrojs/starlight/components';
 - **Aspect**: menu in the panel. Original, Free, 1×1, 4×5, 5×7, 2×3, 4×3, 16×9, 16×10, 8.5×11. The lock keeps the shape.
 - **Your own ratios**: save, delete, reorder and hide aspect ratios in the menu. `X` swaps landscape and portrait.
 - **Constrain to Image** keeps the box inside the photo while you straighten.
+- **Extend Past the Edge** lets the box reach past the photo, up to half its size on each side. The area past the photo shows as plain grey canvas until you fill it. Turning it off fits the box to the photo again.
+- **Fill Edges** fills that canvas. **Content-Aware** builds it from the photo itself, on your computer; a large area is filled at a lower resolution, so it is softer than the photo. **Generative** sends the area, with the photo around it, to the generative fill service you set up in **Settings ▸ Generative Fill**, with your own key: accept its terms once by generating a fill with the Remove tool's Generative mode. **Clear Fill** takes the fill away. Each is one undo step; the fill stays with the photo when you change the crop or the develop settings, and a crop dragged further than the fill shows canvas again.
+
+<NeedsImage name="crop-extend" alt="A crop box reaching past the left edge of the photo, the area past the edge filled" />
 
 <Shot name="crop-angle" alt="The photo turned 5 degrees with the crop box fitted inside it" />
 

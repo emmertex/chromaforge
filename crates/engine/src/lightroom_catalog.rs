@@ -1919,14 +1919,49 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
         data.photos.iter().filter(|p| number(&p.image, "masterImage") == 0).filter(|p| !p.original_is_file()).map(|p| key(&p.path)).collect();
     let opts = crate::import::ImportOptions { mode: crate::import::ImportMode::Add, keep_sidecars: true, ..Default::default() };
     let files = crate::import::import_with(s, &paths, &opts)?;
-    let applied =
-        apply_prepared(s, data, ApplyPrepared { update_existing, files, index: &mut index, archive_path, missing_sources: &missing_sources, undo0 })?;
+    let applied = match apply_prepared(
+        s,
+        data,
+        ApplyPrepared { update_existing, files, index: &mut index, archive_path, missing_sources: &missing_sources, undo0 },
+    ) {
+        Ok(applied) => applied,
+        // what it committed (the files added, and the parts of a large import) goes back, as the job's import does
+        Err(e) => {
+            return Err(match crate::lightroom_job::undo_since(s, undo0) {
+                Ok(()) => e,
+                Err(back) => error(format!("{e}; the photos it added could not be taken back: {back}")),
+            });
+        }
+    };
     if let Some(path) = index_path {
         s.persist()?;
         let bytes = serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?;
         lcc_catalog::safe_file::write_atomic(&path, &bytes).map_err(|e| error(e.to_string()))?;
     }
     Ok(applied.report)
+}
+
+/// The ops a catalog import commits at a time (issue #1361). Each part is committed, folded into the import's one undo
+/// step, and saved before the next is built, so the session holds one part's ops and their log copy, not the whole
+/// catalog's: a commit keeps a copy of its op until it is saved, about 10 KB a photo.
+#[cfg(not(test))]
+const COMMIT_PART_OPS: usize = 20_000;
+/// Small in tests, so every import test commits in several parts.
+#[cfg(test)]
+const COMMIT_PART_OPS: usize = 3;
+
+/// Commit `ops` as one part of the import named `step`, fold it into the steps the import committed since the undo
+/// stack was `undo0` long, and save it when the library is on disk. A failed save leaves the part queued, to be saved
+/// with the rest (and reported then); a later failure of the import takes every part back.
+fn commit_part(s: &mut crate::Session, step: &str, ops: &mut Vec<Op>, undo0: usize) -> crate::Result<()> {
+    s.commit(step, Op::Batch { ops: std::mem::take(ops) })?;
+    s.merge_undo(s.undo.len().saturating_sub(undo0), step);
+    if s.library.as_ref().is_some_and(|l| l.on_disk)
+        && let Err(e) = s.persist()
+    {
+        log::warn!("Lightroom import: a part could not be saved yet ({e}); it stays queued");
+    }
+    Ok(())
 }
 
 /// Apply prepared normal-file results and Lightroom metadata in one owner-thread operation.
@@ -1977,6 +2012,12 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     // nothing but a file type the app reads becomes a record, whichever route got here (#2135)
     refuse_non_media(&mut data);
     validate(&data).map_err(error)?;
+    // the undo step names the program the catalog comes from
+    let step =
+        if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Import Capture One Catalog" } else { "Import Lightroom Catalog" };
+    // photos this import makes records for: once a part of the import is committed they are in the catalog, and a
+    // later image with the same original must still get its own record, as when the import was one commit
+    let mut created: HashSet<PhotoId> = HashSet::new();
     let mut warnings = data.warnings.clone();
     // Records this import has just added, or promoted from Local untouched since browsing, hold
     // no edits of the library's own, even when adding or browsing read develop settings from the
@@ -2032,8 +2073,10 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             .get(&identity(&data, src))
             .copied()
             .map(PhotoId)
-            .filter(|id| s.catalog.photo(*id).is_some_and(|p| source_path(p).is_some_and(|path| key(path) == key(&src.path))));
-        let existing_id = indexed.or_else(|| if master == 0 { by_path.get(&key(&src.path)).copied() } else { None });
+            .filter(|id| s.catalog.photo(*id).is_some_and(|p| source_path(p).is_some_and(|path| key(path) == key(&src.path))))
+            .filter(|id| !created.contains(id));
+        let existing_id =
+            indexed.or_else(|| if master == 0 { by_path.get(&key(&src.path)).copied() } else { None }).filter(|id| !created.contains(id));
         // a record made here from the catalog alone: an original that is missing, or not read yet (issue #1303)
         let mut catalog_only = false;
         let mut p = if let Some(id) = existing_id.and_then(|id| s.catalog.photo(id)) {
@@ -2296,9 +2339,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             }
         } else {
             imported += 1;
+            created.insert(p.id);
             ops.push(Op::AddPhoto { photo: Box::new(p) });
         }
         by_path.entry(key(&src.path)).or_insert(photo_id);
+        if ops.len() >= COMMIT_PART_OPS {
+            commit_part(s, step, &mut ops, undo0)?;
+        }
     }
     if capture_one_wb_approximate > 0 {
         warnings.push(format!(
@@ -2554,9 +2601,6 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
     }
     let stacks = stack_ops(s, &data, &ids, &mut ops, &mut warnings);
-    // the undo step names the program the catalog comes from
-    let step =
-        if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Import Capture One Catalog" } else { "Import Lightroom Catalog" };
     if !ops.is_empty() {
         s.commit(step, Op::Batch { ops })?;
     }
@@ -3263,6 +3307,53 @@ pub(crate) mod tests {
         let third = import(&mut s);
         assert_eq!(third["imported"], 2);
         assert!(s.catalog.photos().all(|photo| !photo.local));
+    }
+
+    #[test]
+    fn a_catalog_committed_in_many_parts_is_still_one_undo_step() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        let master = data.photos.iter().find(|p| number(&p.image, "masterImage") == 0).unwrap().clone();
+        data.photos.clear();
+        for n in 1..=40_i64 {
+            let mut p = master.clone();
+            p.source_id = n;
+            p.uuid = format!("test-{n}");
+            p.path = format!("/missing/test-{n}.ARW");
+            p.image.insert("id_local".into(), json!(n));
+            data.photos.push(p);
+        }
+        // two Lightroom images of one file stay two photos, even when they land in different parts
+        let mut twin = data.photos[0].clone();
+        twin.source_id = 41;
+        twin.uuid = "test-twin".into();
+        twin.image.insert("id_local".into(), json!(41));
+        data.photos.push(twin);
+        data.members.clear();
+        let r = apply(&mut s, data, false).unwrap();
+        const { assert!(COMMIT_PART_OPS < 41, "the test must span several parts") };
+        assert_eq!(r["imported"], 41);
+        assert_eq!(s.catalog.photos().count(), 41);
+        assert_eq!(s.undo.len(), 1, "every part folds into the import's one step");
+        s.undo_step().unwrap();
+        assert_eq!(s.catalog.photos().count(), 0, "one undo takes back every part");
+        s.redo_step().unwrap();
+        assert_eq!(s.catalog.photos().count(), 41);
+    }
+
+    /// Taking an import back after its parts were committed leaves the catalog as it was before it.
+    #[test]
+    fn a_failed_import_takes_back_the_parts_it_committed() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.members.clear();
+        let undo0 = s.undo.len();
+        apply(&mut s, data, false).unwrap();
+        assert!(s.catalog.photos().count() > 0);
+        crate::lightroom_job::undo_since(&mut s, undo0).unwrap();
+        assert_eq!(s.catalog.photos().count(), 0);
+        assert_eq!(s.catalog.albums().count(), 0);
+        assert!(s.undo.is_empty() && s.redo.is_empty(), "nothing is left to redo either");
     }
 
     #[test]

@@ -180,3 +180,86 @@ fn comparing_a_group_that_is_not_there_is_an_error_not_a_panic() {
         assert!(h.app.duplicates.as_ref().is_some_and(|f| f.open), "the window stays");
     }
 }
+
+/// Three pictures, each imported twice: three groups in the window, each copy marked.
+fn three_groups(name: &str) -> (Headless, Scratch) {
+    let src = scratch(name);
+    for (i, (w, h)) in [(512, 384), (480, 320), (400, 300)].into_iter().enumerate() {
+        gradient_jpeg(&src.0.join(format!("pic{i}.jpg")), w, h);
+        std::fs::copy(src.0.join(format!("pic{i}.jpg")), src.0.join(format!("pic{i}-copy.jpg"))).unwrap();
+    }
+    let services = Services { png: None, ..Default::default() };
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo().with_fs(), services), [1300.0, 900.0], 1.0);
+    h.request(
+        "engine.execute",
+        json!({"command": "library.import", "params": {"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true}}),
+        T,
+    );
+    h.request("engine.execute", json!({"command": "library.findDuplicates", "params": {}}), T);
+    h.settle(Duration::from_millis(300));
+    assert_eq!(h.app.duplicates.as_ref().map(|f| f.groups.len()), Some(3), "three groups");
+    (h, src)
+}
+
+fn deleted(h: &Headless) -> Vec<u64> {
+    h.app.session.catalog.photos().filter(|p| p.deleted).map(|p| p.id.0).collect()
+}
+
+/// Groups as (member ids, marked ids).
+fn groups(h: &Headless) -> Vec<(Vec<u64>, Vec<u64>)> {
+    let f = h.app.duplicates.as_ref().expect("the window is open");
+    f.groups.iter().map(|g| (g.members.iter().map(|m| m.id.0).collect(), g.members.iter().filter(|m| m.marked).map(|m| m.id.0).collect())).collect()
+}
+
+#[test]
+fn one_group_is_settled_at_once_and_the_others_wait() {
+    let (mut h, _src) = three_groups("settle-one");
+    let before = groups(&h);
+    // the middle group's button: its marked copy goes, the group leaves, the others keep their marks
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "button:duplicates.apply:0"), "the first group has its button");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:duplicates.apply:0"}), T)["ok"], true);
+    h.step();
+    assert_eq!(deleted(&h), before[0].1, "the first group's marked copy is in Recently Deleted");
+    assert_eq!(groups(&h), before[1..].to_vec(), "the other groups wait, marks kept");
+
+    // Keep All keeps every photo of a group whatever is marked
+    let r = h.request("engine.execute", json!({"command": "library.applyDuplicateGroup", "params": {"group": 0, "keepAll": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(deleted(&h), before[0].1, "nothing more removed");
+    assert_eq!(groups(&h), before[2..].to_vec());
+}
+
+#[test]
+fn apply_this_and_all_above_settles_the_top_of_the_list_in_one_undo_step() {
+    let (mut h, _src) = three_groups("settle-above");
+    let before = groups(&h);
+    assert!(!h.app.widgets.iter().any(|(w, _)| w == "button:duplicates.applyAbove:0"), "the first group has nothing above it");
+    // unmark the second group's copy: it is kept whole when the groups above are settled
+    let second_copy = before[1].1[0];
+    h.app.duplicates.as_mut().unwrap().groups[1].members.iter_mut().for_each(|m| m.marked = false);
+    h.step();
+    let r = h.request("engine.execute", json!({"command": "library.applyDuplicateGroup", "params": {"group": 1, "above": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(deleted(&h), before[0].1, "only what was marked in the first two groups went");
+    assert!(!deleted(&h).contains(&second_copy));
+    assert_eq!(groups(&h), before[2..].to_vec(), "the third group is still to review");
+    h.request("engine.execute", json!({"command": "edit.undo", "params": {}}), T);
+    assert!(deleted(&h).is_empty(), "one undo brings the removed photos back");
+}
+
+#[test]
+fn settling_a_group_that_is_not_there_is_an_error_not_a_panic() {
+    let (mut h, _src) = three_groups("settle-bad");
+    for params in [
+        json!({"group": 9}),
+        json!({"group": -1}),
+        json!({"group": "x"}),
+        json!({"group": 0, "above": "yes"}),
+        json!({"group": 1, "above": true, "keepAll": true}),
+    ] {
+        let r = h.request("engine.execute", json!({"command": "library.applyDuplicateGroup", "params": params}), T);
+        assert!(r["ok"] == false, "{params} is refused: {r}");
+        assert_eq!(h.app.duplicates.as_ref().map(|f| f.groups.len()), Some(3), "nothing settled");
+        assert!(deleted(&h).is_empty());
+    }
+}

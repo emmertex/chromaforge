@@ -33,7 +33,7 @@ cited here still exists. Formerly docs/parity.md.
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
 | F. Edit panel — global adjustments (EDIT) | 46 | 7 | 0 | 0 | 28/28 (100%) | 14/16 (88%) |
 | G. Profiles (PROF) | 8 | 7 | 1 | 0 | 3/4 (75%) | 3/4 (75%) |
-| H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
+| H. Crop & rotate (CROP) | 10 | 2 | 0 | 0 | 8/8 (100%) | 2/3 (67%) |
 | I. Remove / healing (REM) | 11 | 2 | 1 | 1 | 4/4 (100%) | 2/3 (67%) |
 | J. Red eye (EYE) | 2 | 0 | 0 | 0 | — | 1/1 (100%) |
 | K. Masking (MASK) | 21 | 9 | 0 | 0 | 7/8 (88%) | 9/9 (100%) |
@@ -55,9 +55,9 @@ cited here still exists. Formerly docs/parity.md.
 | Lightroom Classic extras | 107 | 21 | 0 | 0 | — | 37/40 (93%) |
 | BEYOND. Beyond the reference app | 10 | 0 | 0 | 0 | — | — |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 542 | 86 | 8 | 25 | 195/203 (96%) | 175/192 (91%) |
+| **Total** | 542 | 87 | 8 | 24 | 195/203 (96%) | 175/192 (91%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **92.0%** of 636 in-scope rows — P0 98.0% of 203 · P1 95.6% of 192 · P2 84.2% of 238.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **91.9%** of 637 in-scope rows — P0 98.0% of 203 · P1 95.6% of 192 · P2 84.1% of 239.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -349,7 +349,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-CROP-FLIP | Flip | P0 | ✅ | `cmd:photo.flipHorizontal`, `cmd:photo.flipVertical`, `crates/pipeline/src/geometry.rs` | the crop tool's uncropped view shows the flips too, with the crop box and its dimming mirrored to match |
 | LR-CROP-OVERLAY | Crop overlays | P1 | ✅ | `cmd:view.cropOverlay`, `cmd:view.cropOverlayOrientation`, `crates/ui-egui/src/panels/crop_overlay.rs` | thirds, grid, golden ratio, diagonal, triangle, golden spiral (mirrored with ⇧O while cropping); no aspect-ratio overlays; Crop Mask strength Off/20/50/60/80/100 % (`cmd:view.cropMaskOpacity`) |
 | LR-CROP-ZOOM | Zoom while cropping | P1 | ✅ | `cmd:view.zoom100`, `cmd:view.zoomIn`, `crates/ui-egui/src/panels/detail.rs` | zoom levels apply with the crop tool open (verified: 100% shows the photo at native size with the crop frame) |
-| LR-CROP-GENEXPAND | Generative expand | OOS | 🚫 | | |
+| LR-CROP-GENEXPAND | Generative expand | P2 | 🟡 | `cmd:crop.extend`, `cmd:crop.fillEdges`, `cmd:crop.clearFill`, `crates/engine/src/expand.rs`, `crates/pipeline/src/genpatch.rs` (`apply_edge_fill`) | issue #861: Crop ▸ Extend Past the Edge lets the crop reach up to half the photo past each side (blank canvas there, reported as not the photo); Fill Edges fills it Content-Aware (PatchMatch on this computer, at most 4 MP of work: a large area comes out softer; blended a few pixels into the photo so no seam shows) or Generative (one request to the user's own generative fill service, after its terms were accepted); the fill is a patch of the source past its edge, so later edits and crops carry it. Missing: Lightroom's on-device generative model, variations to choose from, a prompt box, its own consent dialog (terms are accepted through the Remove tool's Generative mode), the fill shown in the crop tool's own uncropped view |
 
 ## I. Remove / healing (REM)
 
