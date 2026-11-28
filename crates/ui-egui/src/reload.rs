@@ -55,21 +55,31 @@ pub fn command(app: &mut LccApp, p: &Value) -> Option<Result<Value, String>> {
             return;
         }
         // as the command: one undo step, the durable save and the automatic XMP sidecar write
-        if let Err(e) = app.session.execute_fn("photo.reload", |s| reload::apply(s, items, results).map(|ids| reload::to_json(&ids))) {
-            return app.toast_error(ctx, e.to_string());
-        }
+        let failed = match app.session.execute_fn("photo.reload", |s| reload::apply(s, items, results).map(|a| reload::to_json(&a))) {
+            Ok(r) => r.get("failed").and_then(Value::as_array).map_or(0, Vec::len),
+            Err(e) => return app.toast_error(ctx, e.to_string()),
+        };
         let cleared = preview_only.iter().filter(|id| app.session.catalog.photo(**id).is_some_and(|ph| ph.preview_only.is_none())).count();
         // stopped before the files were read: they weren't tried again, so say nothing about them
         // (a raw that did decode before the stop is still reported)
-        if stopped.load(std::sync::atomic::Ordering::Relaxed) && cleared == 0 {
+        let stopped = stopped.load(std::sync::atomic::Ordering::Relaxed);
+        if stopped && cleared == 0 {
             return;
         }
         let message = match (count, preview_only.len(), cleared) {
-            (1, 1, 1) => crate::i18n::tr("This raw is now developed from its raw data").to_string(),
-            (1, 1, _) => crate::i18n::tr("This raw variant still can't be decoded").to_string(),
-            (_, _, 0) => return,
-            (_, _, 1) => crate::i18n::tr("1 raw can now be developed from its raw data").to_string(),
-            (_, _, n) => crate::i18n::tr_format!("{n} raws can now be developed from their raw data", n = n),
+            (1, 1, 1) => Some(crate::i18n::tr("This raw is now developed from its raw data").to_string()),
+            (1, 1, _) if failed == 0 => Some(crate::i18n::tr("This raw variant still can't be decoded").to_string()),
+            (_, _, 0) => None,
+            (_, _, 1) => Some(crate::i18n::tr("1 raw can now be developed from its raw data").to_string()),
+            (_, _, n) => Some(crate::i18n::tr_format!("{n} raws can now be developed from their raw data", n = n)),
+        };
+        // files that couldn't be read (gone, unreadable, a drive not responding) are said, not
+        // dropped silently; after a stop they are the ones not reached, so not then
+        let message = match (message, failed > 0 && !stopped) {
+            (Some(m), true) => format!("{m}{}", crate::i18n::tr_format!(" ({n} could not be read)", n = failed)),
+            (None, true) => format!("{}{}", crate::i18n::tr(LABEL), crate::i18n::tr_format!(" ({n} could not be read)", n = failed)),
+            (Some(m), false) => m,
+            (None, false) => return,
         };
         app.toast(ctx, message);
     };

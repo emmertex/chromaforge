@@ -7,26 +7,9 @@
 # out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
-# Only when what it checks changes (dependencies, build scripts, the Windows packaging), plus weekly: a
-# full ARM64 package on every merge kept SNAPDRAGON, also the release's ARM64 builder, busy for ~17 min.
+# Weekly, plus manual dispatch: a full ARM64 package on every merge kept SNAPDRAGON, also the release's
+# ARM64 builder, busy for ~17 min; since the staging batch flow it no longer runs per merge (docs/ci.md).
 on:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
-      - .github/workflows/windows-arm64.yml
-      - packaging/windows/**
-  pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
-      - .github/workflows/windows-arm64.yml
-      - packaging/windows/**
   schedule:
     - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
   workflow_dispatch:

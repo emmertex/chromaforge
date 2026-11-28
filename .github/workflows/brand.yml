@@ -2,8 +2,9 @@
 # xtask/test-brand.toml ("Zzyzx Test") and checks its help, headless UI snapshot, MCP serverInfo and
 # config/log paths, so no product name is baked in outside brand.toml.
 # `cargo xtask brand check`, `cargo xtask docs --check` and `cargo deny` run in the required CI job
-# (`cargo xtask ci --fast`, ci.yml), so they are not repeated here. PRs only: the push to main would test the
-# same tree again (docs/ci.md).
+# (`cargo xtask ci --fast`, ci.yml), so they are not repeated here. Only on PRs that target `main` — the
+# batch PR (feature PRs to `staging` stay on the fast gate): the push to main would test the same tree
+# again (docs/ci.md).
 name: Brand
 
 on:
