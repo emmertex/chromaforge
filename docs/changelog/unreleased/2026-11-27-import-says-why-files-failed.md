@@ -1,3 +1,0 @@
-## Import
-
-- **An import says why files didn't come in:** files a drive that stopped responding kept out are counted as "not imported: a drive stopped responding", and copies left unfinished (the drive stopped, or Cancel, while they were under way) on their own with the folder where a file may still appear outside the library, instead of all being "not readable"; a batch the library couldn't add is reported as not added, with the reason. `library.import` reports these files in `interrupted` (`why`: `volumeNotResponding` or `outcomeUnknown`, with `volume` and `folder`) besides `failed`. With Copy as DNG on, a raw that wasn't converted is listed in Import Warnings by reason (codes `dngCancelled`, `dngMemoryHeld`, `dngFailed`); it was imported as its raw copy.
