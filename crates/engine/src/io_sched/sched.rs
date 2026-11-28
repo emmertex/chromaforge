@@ -10,11 +10,18 @@
 //! scheduler first ([`Msg::Ended`]) and delivered after the bookkeeping, so a caller that sees a
 //! result also sees what the job did to the volume's history.
 //!
-//! Limits: the pool's cap is the largest `workers` of the calls it holds (today's `workers()`),
-//! at least 2 while some volume is held to one fewer (R4a); a volume's limit is that cap, or one
-//! fewer while some job with no outcome doesn't need it; each call also keeps its own cap, as in
-//! PR 1. Within a volume, calls take turns (the call that started a job on it longest ago goes
-//! first); within a call, jobs start in input order.
+//! Limits (PR 5, §5.7): the pool runs at most the I/O cap ([`IoContext::io_cap`], 32) jobs at
+//! once; each volume's own limit is learned by the controller ([`super::limits`]), starting from
+//! its calls' `workers()` (today's limit); while some job with no outcome doesn't need a volume,
+//! that volume is held to one fewer than the cap (R4a). Calls have no cap of their own any more.
+//! Within a volume, calls take turns (the call that started a job on it longest ago goes first);
+//! within a call, jobs start in input order.
+//!
+//! What the controller measures ([`measured_bytes`]): a probe's bytes read, on its source volume;
+//! a copy's bytes written, on its destination only (§5.4: the rate a destination is judged on is
+//! what it wrote; a copy's source read mostly comes from the page cache, and its verify read-back
+//! would count the copy twice), counted as they move (at each tick) and when the job ends; a job's
+//! completion likewise.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -25,9 +32,10 @@ use std::time::Duration;
 use lcc_catalog::folders::VolumeKey;
 
 use super::IoContext;
-use super::job::{JobState, Side};
+use super::job::{JobState, Moved, Side};
+use super::limits::{self, AbortReason, Controller, Counters, Demand, Event, Phase};
 use super::run::JobMetrics;
-use super::shared::{AbandonKind, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Shared, WAKE_JUMP};
+use super::shared::{AbandonKind, CANCEL_SILENCE, COMPUTING_FACTOR, Ended, Learned, Shared, WAKE_JUMP};
 
 /// A call's id within its scheduler.
 pub(crate) type CallId = u64;
@@ -194,6 +202,8 @@ struct Slot {
     vol: usize,
     /// A copy's destination volume, when not the source's.
     dest: Option<usize>,
+    /// It is a copy (its destination may be on its source's volume): measured on what it wrote.
+    copy: bool,
     skippable: bool,
     id: u64,
     task: Option<Box<dyn PoolTask>>,
@@ -203,6 +213,8 @@ struct Slot {
     /// Bytes seen at the last tick: every byte of a job on one volume, else a copy's bytes on its
     /// source and on its destination.
     seen: [u64; 2],
+    /// Bytes metered for the limit controller so far ([`measured_bytes`], on its measured volume).
+    metered: u64,
     /// When it started (monotonic ns).
     started: u64,
 }
@@ -220,6 +232,34 @@ struct Vol {
     silent: u64,
     /// Its recovery job, running.
     recovery: Option<(CallId, usize)>,
+    /// Jobs with no outcome measured on it (a probe on its source, a copy on its destination).
+    measured: usize,
+    /// What its measured jobs did, for the controller.
+    meter: Meter,
+    /// It had jobs at the last tick (the profile output says when it starts and ends).
+    was_busy: bool,
+}
+
+/// A volume's measured traffic, cumulative.
+#[derive(Clone, Copy, Default)]
+struct Meter {
+    bytes: u64,
+    jobs: u64,
+    /// Nanoseconds its jobs ran, summed over jobs (sampled at each tick).
+    busy: u64,
+    /// Nanoseconds of that spent waiting at the work gate.
+    gate: u64,
+}
+
+impl Meter {
+    fn counters(self) -> Counters {
+        Counters { bytes: self.bytes as f64, jobs: self.jobs, busy: secs(self.busy), gate: secs(self.gate) }
+    }
+}
+
+/// Nanoseconds as seconds.
+fn secs(ns: u64) -> f64 {
+    ns as f64 / 1e9
 }
 
 /// A volume, as one call sees it.
@@ -248,6 +288,8 @@ struct CallState {
     next_pos: usize,
     /// By volume index.
     vols: Vec<CallVol>,
+    /// Today's thread count for it (`workers()`): where its volumes start before they are
+    /// measured.
     workers: usize,
     cancel: Arc<AtomicBool>,
     /// The caller's own cancel flag (see [`Msg::Open`]).
@@ -266,12 +308,6 @@ impl CallState {
     /// Whether the call was cancelled: by its stream, or by the caller's own flag.
     fn cancel_set(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || self.linked.as_ref().is_some_and(|l| l.load(Ordering::Relaxed))
-    }
-
-    /// Its own cap (PR 1): `workers`, at least 2 while one of its volumes is held to one fewer.
-    fn cap(&self) -> usize {
-        let cut = self.vols.iter().any(|cv| cv.active > 0 && self.remaining > cv.active);
-        if cut { self.workers.max(2) } else { self.workers }
     }
 }
 
@@ -347,6 +383,20 @@ pub(crate) struct Sched {
     /// ([`super::IoContext::late_tick_is_wake`]); off for a call that drives its own scheduler,
     /// whose steps wait on the caller.
     late_tick_is_wake: bool,
+    /// Running jobs at most (§5.7's I/O cap).
+    io_cap: usize,
+    /// Every volume's limit (§5.7).
+    ctl: Controller<VolumeKey>,
+    /// Bytes every volume's measured jobs moved, together.
+    measured_total: u64,
+    /// Print the controller's windows and decisions to stderr (`<PREFIX>_PROFILE`).
+    profile: bool,
+    /// Windows completed and discarded per volume (published with the limits).
+    windows: HashMap<VolumeKey, (u64, u64)>,
+    /// The controller's generation last published ([`Controller::generation`]).
+    published: Option<u64>,
+    /// A submit came in: the next step offers its volumes' start limits before admission.
+    starts_due: bool,
 }
 
 impl Sched {
@@ -375,6 +425,13 @@ impl Sched {
             last_tick: std::time::Instant::now(),
             tick_now: false,
             late_tick_is_wake: ctx.late_tick_is_wake,
+            io_cap: ctx.io_cap.max(1),
+            ctl: Controller::new(ctx.io_cap.max(1), crate::import::workers(usize::MAX)),
+            measured_total: 0,
+            profile: lcc_pipeline::profiling(),
+            windows: HashMap::new(),
+            published: None,
+            starts_due: false,
         }
     }
 
@@ -422,18 +479,35 @@ impl Sched {
         if dw > dm.saturating_add(WAKE_JUMP) || late {
             log::info!("io: the computer woke from sleep: every volume gets a grace period");
             self.shared.note_wake(now);
+            // (a window open across the sleep measured the sleep: §5.7's windows start again)
+            self.ctl.discard_windows();
+        }
+        // (a call with every outcome is forgotten below: the tick sees its volumes go idle first,
+        // so what the controller learned, and the probe it held, are settled and published)
+        let ending = self.calls.values().any(|c| c.closed && c.remaining == 0);
+        let ticking = !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || ending || self.last_tick.elapsed() >= self.tick);
+        // (before admission on a step that took a submit, and at every tick: newly submitted work
+        // starts at its volume's starting limit, not the controller's default; the floors and the
+        // 10-minute forget follow the volumes' work at the tick's pace)
+        if !self.calls.is_empty() && (std::mem::take(&mut self.starts_due) || ticking) {
+            self.offer_starts(now);
         }
         // (a late step's time was the sleep, not the volumes' silence)
         if late || self.calls.is_empty() {
             self.since = now;
         }
-        if !self.calls.is_empty() && (std::mem::take(&mut self.tick_now) || self.last_tick.elapsed() >= self.tick) {
+        if ticking {
             self.last_tick = std::time::Instant::now();
             self.tick(now, now.saturating_sub(self.since));
             self.since = now;
-            self.ticks.fetch_add(1, Ordering::Relaxed);
         }
         self.admit(clock.mono());
+        // (the controller's tick after admission: a volume below its limit with queued work is
+        // then held back by something else, not waiting for a free slot of its own)
+        if ticking {
+            self.adapt(now);
+            self.ticks.fetch_add(1, Ordering::Relaxed);
+        }
         self.reap();
     }
 
@@ -456,7 +530,10 @@ impl Sched {
                 };
                 self.calls.insert(call, state);
             }
-            Msg::Submit { call, jobs } => self.submit(call, jobs),
+            Msg::Submit { call, jobs } => {
+                self.submit(call, jobs);
+                self.starts_due = true;
+            }
             Msg::Close { call } => {
                 if let Some(c) = self.calls.get_mut(&call) {
                     c.closed = true;
@@ -473,7 +550,17 @@ impl Sched {
         match self.vols.iter().position(|v| v.key == key) {
             Some(v) => v,
             None => {
-                self.vols.push(Vol { key, running: Vec::new(), active: 0, last_start: 0, silent: 0, recovery: None });
+                self.vols.push(Vol {
+                    key,
+                    running: Vec::new(),
+                    active: 0,
+                    last_start: 0,
+                    silent: 0,
+                    recovery: None,
+                    measured: 0,
+                    meter: Meter::default(),
+                    was_busy: false,
+                });
                 self.vols.len() - 1
             }
         }
@@ -488,6 +575,7 @@ impl Sched {
         }
         for j in jobs {
             let vol = self.vol_index(j.source);
+            let copy = j.dest.is_some();
             let dest = j.dest.map(|d| self.vol_index(d)).filter(|&d| d != vol);
             let Some(c) = self.calls.get_mut(&call) else { return };
             let pos = c.next_pos;
@@ -498,18 +586,23 @@ impl Sched {
                     pv.active += 1;
                 }
             }
+            if let Some(pv) = self.vols.get_mut(dest.unwrap_or(vol)) {
+                pv.measured += 1;
+            }
             call_vol(&mut c.vols, vol).queue.push_back(pos);
             c.remaining += 1;
             let slot = Slot {
                 index: j.index,
                 vol,
                 dest,
+                copy,
                 skippable: j.skippable,
                 id: j.id,
                 task: Some(j.task),
                 state: None,
                 on_worker: false,
                 seen: [0; 2],
+                metered: 0,
                 started: 0,
             };
             c.slots.insert(pos, slot);
@@ -541,19 +634,16 @@ impl Sched {
         self.calls.values().map(|c| c.remaining).sum()
     }
 
-    /// The cap now (§5.3, process-wide from PR 3): the largest `workers` among calls with work,
-    /// at least 2 while some volume is held to one fewer (R4a).
+    /// The cap now (§5.7): the I/O cap, at least 2 while some volume is held to one fewer (R4a).
     fn cap(&self, total: usize) -> usize {
-        let workers = self.calls.values().filter(|c| c.remaining > 0).map(|c| c.workers).max().unwrap_or(1);
-        if self.vols.iter().any(|v| cut(v, total)) { workers.max(2) } else { workers }
+        if self.vols.iter().any(|v| limits::cut(v.active, total)) { self.io_cap.max(2) } else { self.io_cap }
     }
 
-    /// Volume `v`'s limit under `cap`.
+    /// Volume `v`'s limit under `cap`: the controller's, held to one fewer than the cap while
+    /// some job with no outcome doesn't need it (R4a; [`limits::under_cap`]).
     fn limit(&self, v: usize, cap: usize, total: usize) -> usize {
-        match self.vols.get(v) {
-            Some(pv) if cut(pv, total) => cap.saturating_sub(1).max(1),
-            _ => cap,
-        }
+        let Some(pv) = self.vols.get(v) else { return cap };
+        limits::under_cap(self.ctl.limit(&pv.key), cap, limits::cut(pv.active, total))
     }
 
     /// Whether volume `v` can take one more running job now (not waiting on its recovery job,
@@ -569,7 +659,7 @@ impl Sched {
     fn first_queued_needing(&self, v: usize) -> Option<(CallId, usize)> {
         let mut best: Option<((u64, CallId), usize)> = None;
         for (&c, call) in &self.calls {
-            if call.cancelling || call.busy >= call.cap() {
+            if call.cancelling {
                 continue;
             }
             let own = call.vols.get(v).and_then(|cv| cv.queue.front().copied());
@@ -593,6 +683,8 @@ impl Sched {
     }
 
     fn admit(&mut self, now: u64) {
+        // (the tick runs once per period, not every step: this is what stops a linked cancel's
+        // queued jobs on the steps between ticks)
         self.take_cancels();
         // blocked volumes: hold while their running jobs may show they work, else one recovery
         // job first (or fail their queued jobs at once when none may run)
@@ -647,7 +739,7 @@ impl Sched {
                     continue;
                 }
                 for (&c, call) in &self.calls {
-                    if call.cancelling || skip.contains(&c) || call.busy >= call.cap() {
+                    if call.cancelling || skip.contains(&c) {
                         continue;
                     }
                     let Some(cv) = call.vols.get(v) else { continue };
@@ -744,6 +836,7 @@ impl Sched {
         let state = Arc::new(JobState::new(slot.id, key, shared.clock.clone(), Arc::downgrade(&shared)));
         slot.state = Some(state.clone());
         slot.seen = [0; 2];
+        slot.metered = 0;
         slot.started = now;
         slot.on_worker = !inline;
         self.seq += 1;
@@ -851,6 +944,9 @@ impl Sched {
             let cv = call_vol(&mut call.vols, v);
             cv.active = cv.active.saturating_sub(1);
         }
+        if let Some(pv) = self.vols.get_mut(slot.dest.unwrap_or(slot.vol)) {
+            pv.measured = pv.measured.saturating_sub(1);
+        }
         call.remaining = call.remaining.saturating_sub(1);
     }
 
@@ -865,6 +961,16 @@ impl Sched {
             deliver.deliver();
             return;
         };
+        // (what it moved since the last tick, and its completion, count for its measured volume)
+        let (home, dest) = (slot.vol, slot.dest);
+        let measured = measured_bytes(slot.copy, ran.metrics.moved);
+        let unseen = measured.saturating_sub(slot.metered);
+        slot.metered = slot.metered.max(measured);
+        self.measured_total = self.measured_total.saturating_add(unseen);
+        if let Some(pv) = self.vols.get_mut(dest.unwrap_or(home)) {
+            pv.meter.bytes = pv.meter.bytes.saturating_add(unseen);
+            pv.meter.jobs = pv.meter.jobs.saturating_add(1);
+        }
         if std::mem::take(&mut slot.on_worker) {
             self.on_workers = self.on_workers.saturating_sub(1);
         }
@@ -985,6 +1091,33 @@ impl Sched {
         // reads on its source, its writes and read-back on its destination); a job that isn't
         // silent there without them ([`held`]) pauses the clocks: the stall clock (every call's
         // jobs on the volume) and cancel's (each call's own)
+        // what the controller measures, from the running jobs only (a queued job has moved
+        // nothing): each on its measured volume, the bytes it moved since the last tick
+        // ([`measured_bytes`]), its time, and its time at the work gate
+        for v in 0..self.vols.len() {
+            let Some(pv) = self.vols.get(v) else { continue };
+            let mut m = pv.meter;
+            for &(c, i) in &pv.running {
+                let Some(slot) = self.calls.get_mut(&c).and_then(|call| call.slots.get_mut(&i)) else { continue };
+                // (a copy is listed on both of its volumes: measured on its destination)
+                if slot.dest.unwrap_or(slot.vol) != v {
+                    continue;
+                }
+                let Some(st) = &slot.state else { continue };
+                let measured = measured_bytes(slot.copy, st.moved());
+                let new = measured.saturating_sub(slot.metered);
+                slot.metered = slot.metered.max(measured);
+                self.measured_total = self.measured_total.saturating_add(new);
+                m.bytes = m.bytes.saturating_add(new);
+                m.busy = m.busy.saturating_add(dt);
+                if st.at_gate() {
+                    m.gate = m.gate.saturating_add(dt);
+                }
+            }
+            if let Some(pv) = self.vols.get_mut(v) {
+                pv.meter = m;
+            }
+        }
         let mut silent: Vec<(u64, usize)> = Vec::new();
         for v in 0..self.vols.len() {
             let Some(pv) = self.vols.get(v) else { continue };
@@ -1087,6 +1220,203 @@ impl Sched {
             }
         }
     }
+
+    /// Each volume's starting limit and floor, before admission on a step that took a submit and
+    /// at every tick: a volume with jobs that isn't measured yet takes its calls' `workers()`, so
+    /// newly submitted work never starts under the controller's default; one idle for
+    /// [`super::limits::FORGET`] is forgotten first.
+    fn offer_starts(&mut self, now: u64) {
+        let t = secs(now);
+        let total = self.total();
+        // (PR 1's cap is at least 2 while some volume is held to one fewer, R4a)
+        let some_cut = self.vols.iter().any(|pv| limits::cut(pv.active, total));
+        for v in 0..self.vols.len() {
+            let Some(pv) = self.vols.get(v) else { continue };
+            let key = pv.key.clone();
+            let busy = pv.active > 0;
+            self.ctl.note_busy(t, &key, busy);
+            if busy {
+                // (at least 2 for a volume not held to one fewer while another is, as PR 1's cap,
+                // so a hung card's copy never holds the only slot of the SSD the other card copies
+                // into: a floor for what it learns too; a volume not measured yet runs at today's
+                // limit, its calls' `workers()`)
+                let floor = if some_cut && !limits::cut(pv.active, total) { 2 } else { 1 };
+                self.ctl.set_floor(&key, floor);
+                let workers = self.calls.values().filter(|c| c.vols.get(v).is_some_and(|cv| cv.active > 0)).map(|c| c.workers).max().unwrap_or(1);
+                self.ctl.offer_start(t, &key, workers);
+            }
+        }
+    }
+
+    /// The controller's tick (§5.7), after admission: every volume's demand and counters; what it
+    /// learned is published for the import's read-ahead and printed under `<PREFIX>_PROFILE`.
+    fn adapt(&mut self, now: u64) {
+        let t = secs(now);
+        let total = self.total();
+        let cap = self.cap(total);
+        let measured_total = self.measured_total as f64;
+        let demands = self.demands(cap, total, now);
+        for v in 0..self.vols.len() {
+            let Some(pv) = self.vols.get(v) else { continue };
+            let key = pv.key.clone();
+            let busy = pv.active > 0;
+            if self.ctl.phase(&key).is_none() {
+                continue;
+            }
+            let demand = demands.get(v).copied().unwrap_or(Demand::Limited);
+            let counters = pv.meter.counters();
+            let was_busy = pv.was_busy;
+            self.ctl.tick(t, &key, demand, counters, measured_total);
+            if busy != was_busy {
+                let what = if busy { "starts" } else { "idle" };
+                self.report(&format!("io-limit {key}: {what} at limit {}", self.ctl.limit(&key)));
+            }
+            if let Some(pv) = self.vols.get_mut(v) {
+                pv.was_busy = busy;
+            }
+        }
+        for e in self.ctl.take_events() {
+            match &e {
+                Event::Window { vol, .. } => self.windows.entry(vol.clone()).or_default().0 += 1,
+                Event::Discarded { vol, .. } | Event::NoBytes { vol, .. } => self.windows.entry(vol.clone()).or_default().1 += 1,
+                _ => {}
+            }
+            let line = describe(&e);
+            self.report(&line);
+        }
+        // (published only when something it shows changed: limits change at window boundaries,
+        // seconds apart, and the planning thread takes the same lock)
+        let generation = self.ctl.generation();
+        if self.published == Some(generation) {
+            return;
+        }
+        self.published = Some(generation);
+        let learned = self
+            .ctl
+            .limits()
+            .map(|(k, limit)| {
+                let (windows, discarded) = self.windows.get(k).copied().unwrap_or_default();
+                let probing = self.ctl.token() == Some(k);
+                (k.clone(), Learned { limit, raised: self.ctl.raised(k), probing, windows, discarded })
+            })
+            .collect();
+        self.shared.set_learned(learned);
+    }
+
+    /// Where every volume stands against its limit, after admission (§5.7 "Window";
+    /// [`limits::demand`]): demand-limited while blocked or recovering, or with nothing it is
+    /// measured on. Below its limit a volume is at it only while a queued job that needs it waits
+    /// for the I/O cap alone: a queue's front (what admission starts next) that isn't a copy, or a
+    /// copy whose other volume has a free slot. A copy waiting for a slot on its other volume (a
+    /// destination fed by a card that is full) leaves this one demand-limited, not at its limit.
+    fn demands(&self, cap: usize, total: usize, now: u64) -> Vec<Demand> {
+        let limits: Vec<usize> = (0..self.vols.len()).map(|v| self.limit(v, cap, total)).collect();
+        let stopped: Vec<bool> = self.vols.iter().map(|pv| pv.recovery.is_some() || self.shared.blocked(&pv.key, now)).collect();
+        let room = |v: usize| {
+            !stopped.get(v).copied().unwrap_or(true) && self.vols.get(v).zip(limits.get(v)).is_some_and(|(pv, &limit)| pv.running.len() < limit)
+        };
+        let mut waiting = vec![false; self.vols.len()];
+        let mut set = |v: usize| {
+            if let Some(w) = waiting.get_mut(v) {
+                *w = true;
+            }
+        };
+        for call in self.calls.values().filter(|c| !c.cancelling) {
+            for (u, cv) in call.vols.iter().enumerate() {
+                let Some(i) = cv.queue.front() else { continue };
+                match call.slots.get(i).and_then(|s| s.dest) {
+                    None => set(u),
+                    Some(d) => {
+                        if room(d) {
+                            set(u);
+                        }
+                        if room(u) {
+                            set(d);
+                        }
+                    }
+                }
+            }
+        }
+        self.vols
+            .iter()
+            .enumerate()
+            .map(|(v, pv)| {
+                let (Some(&limit), Some(&waits), Some(&stop)) = (limits.get(v), waiting.get(v), stopped.get(v)) else {
+                    return Demand::Limited;
+                };
+                if pv.measured == 0 || stop { Demand::Limited } else { limits::demand(pv.running.len(), limit, waits) }
+            })
+            .collect()
+    }
+
+    /// A controller line: to stderr under `<PREFIX>_PROFILE`, else the debug log.
+    fn report(&self, line: &str) {
+        if self.profile {
+            eprintln!("{line}");
+        } else {
+            log::debug!("{line}");
+        }
+    }
+}
+
+/// The bytes of a job the controller measures (§5.4, §5.7), decided here only: a copy's bytes
+/// written (its source read and its verify read-back don't count: the destination is judged on
+/// what it wrote), any other job's every byte (a probe reads).
+fn measured_bytes(copy: bool, moved: Moved) -> u64 {
+    if copy { moved.written } else { moved.total() }
+}
+
+/// MB/s from bytes/s.
+fn mbs(rate: f64) -> f64 {
+    rate / 1e6
+}
+
+/// One controller event as a line of the profile output (`io-limit <volume>: …`).
+pub(crate) fn describe(e: &Event<VolumeKey>) -> String {
+    let phase = |p: Phase| match p {
+        Phase::Base1 => "baseline",
+        Phase::Probe => "probe",
+        Phase::Base2 => "second baseline",
+        Phase::Hold => "hold",
+    };
+    match e {
+        Event::Window { vol, phase: p, limit, rate, total, span, jobs } => format!(
+            "io-limit {vol}: window ({}) at limit {limit}: {:.1} MB/s, process {:.1} MB/s, {span:.1} s, {jobs} jobs",
+            phase(*p),
+            mbs(*rate),
+            mbs(*total)
+        ),
+        Event::Discarded { vol, limit, gate } => {
+            format!("io-limit {vol}: window at limit {limit} discarded: {:.0} % of its jobs' time at the work gate", gate * 100.0)
+        }
+        Event::NoBytes { vol, limit, jobs } => format!("io-limit {vol}: window at limit {limit} discarded: {jobs} jobs moved no bytes"),
+        Event::Probe { vol, from, to } => format!("io-limit {vol}: probe {from} -> {to}"),
+        Event::Decided { vol, up, from, to, kept, base, probe, base_total, probe_total } => format!(
+            "io-limit {vol}: {} {from} -> {to} {}: {:.1} MB/s against baselines {:.1} MB/s; process {:.1} against {:.1} MB/s; limit now {}",
+            if *up { "up" } else { "down" },
+            if *kept { "kept" } else { "not kept" },
+            mbs(*probe),
+            mbs(*base),
+            mbs(*probe_total),
+            mbs(*base_total),
+            if *kept { to } else { from }
+        ),
+        Event::Aborted { vol, reason, limit } => {
+            let why = match reason {
+                AbortReason::Demand => "ran out of work",
+                AbortReason::Deadline => "window could not complete",
+                AbortReason::Discarded => "window discarded",
+                AbortReason::NoBytes => "window moved no bytes",
+                AbortReason::Floor => "its floor rose",
+            };
+            format!("io-limit {vol}: probe ended ({why}): limit {limit}")
+        }
+        Event::Hold { vol, limit, windows } => format!("io-limit {vol}: holds at limit {limit} for {windows} windows"),
+        Event::Floor { vol, limit } => {
+            format!("io-limit {vol}: raised to {limit}: a destination of copies from several volumes keeps at least {limit}")
+        }
+        Event::Forgotten { vol, limit } => format!("io-limit {vol}: forgotten after 10 minutes with no jobs (was {limit})"),
+    }
 }
 
 /// Whether a running job (state `st`; a copy's `side` of the volume judged) that moved no byte on
@@ -1136,10 +1466,4 @@ impl Seen {
             silent.saturating_add(dt)
         }
     }
-}
-
-/// Whether volume `v` is held to one fewer than the cap (R4a): it has work and some job with no
-/// outcome yet doesn't need it (a job on another volume, or a copy between two others).
-fn cut(v: &Vol, total: usize) -> bool {
-    v.active > 0 && total > v.active
 }

@@ -37,6 +37,16 @@ impl H {
         H::with_reader(list(&["/", "/a", "/b", "/c", "/srv/nas"]))
     }
 
+    /// A context whose I/O cap is `cap` (PR 1–3's call cap: the R4a tests pin its cut with it).
+    pub(super) fn capped(cap: usize) -> H {
+        let mut h = H::new();
+        if let Some(ctx) = Arc::get_mut(&mut h.ctx) {
+            ctx.io_cap = cap;
+        }
+        assert_eq!(h.ctx.io_cap, cap, "the context is not shared yet");
+        h
+    }
+
     pub(super) fn with_reader(reader: MountReader) -> H {
         let clock = Arc::new(FakeClock::default());
         clock.advance(1000 * SEC);
@@ -243,12 +253,12 @@ fn counted(vol: &str, n: usize, conc: &Arc<Conc>) -> Vec<IoJob<R>> {
 
 // ---------------------------------------------------------------- limits and admission
 
-/// R2 and R4a: neither the call's cap nor a volume's limit is ever exceeded, and with two busy
-/// volumes neither runs more than `cap − 1`.
+/// R2 and R4a: neither the I/O cap nor a volume's limit is ever exceeded, and with two busy
+/// volumes neither runs more than `cap − 1` (the I/O cap set to PR 1's cap, `max(2, workers)`).
 #[test]
 fn limits_are_never_exceeded() {
     for workers in [1usize, 2, 4, 8] {
-        let h = H::new();
+        let h = H::capped(workers.max(2));
         let conc = Arc::new(Conc::default());
         let mut jobs = counted("/a", 24, &conc);
         jobs.extend(counted("/b", 24, &conc));
@@ -796,8 +806,8 @@ fn cancel_returns_with_a_hung_volume() {
         }));
     }
     jobs.extend(quick("/b", 3));
-    // (cap 4: /a and /b hold every slot, so /b's quick jobs wait in the queue)
-    let call = h.start(jobs, 4);
+    // (each volume's limit 2: /a and /b hold every slot, so /b's quick jobs wait in the queue)
+    let call = h.start(jobs, 2);
     wait_until(|| started.load(Ordering::SeqCst) == 4, "start");
     call.cancel.store(true, Ordering::SeqCst);
     call.settle(&h, 3);
@@ -854,11 +864,12 @@ fn cancel_waits_for_a_computing_span_up_to_ten_stall_times() {
     }
 }
 
-/// A worker whose abandoned job returns exits: it never takes another job, and the call never
-/// exceeds its cap.
+/// A worker whose abandoned job returns exits: it never takes another job, and the pool never
+/// exceeds its cap (an I/O cap of 3: the fake clock's 30 s jump lets /b's controller probe up once
+/// its jobs finish, which the cap still bounds).
 #[test]
 fn an_abandoned_worker_exits_when_its_job_returns() {
-    let h = H::new();
+    let h = H::capped(3);
     let (latch, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
     let hung_threads = Arc::new(Mutex::new(Vec::new()));
     let mut jobs: Vec<IoJob<R>> = (0..2)

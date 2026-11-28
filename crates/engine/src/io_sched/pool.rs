@@ -276,8 +276,9 @@ pub(crate) struct Stream<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> Stream<T> {
-    /// A stream whose jobs run at most `workers` at once (today's `workers()`; the pool's limits
-    /// hold too). Reads the mount list (waiting up to about a second; §5.1), used for every job.
+    /// A stream whose jobs run under the pool's limits. `workers` (today's `workers()`) is no
+    /// cap: it is where the volumes of its jobs start while they aren't measured yet; each
+    /// volume's limit is then learned (up to the I/O cap of 32, §5.7). Reads the mount list (waiting up to about a second; §5.1), used for every job.
     pub(crate) fn open(ctx: &Arc<IoContext>, workers: usize, succeeded: fn(&T) -> bool) -> Stream<T> {
         let mounts = ctx.mounts.fresh(ctx.shared.clock.as_ref(), ctx.mount_wait);
         Stream::with_mounts(ctx, workers, succeeded, mounts)
@@ -451,9 +452,10 @@ impl<T: Send + 'static> Drop for Stream<T> {
     }
 }
 
-/// Run `jobs` per volume through the pool, at most `workers` at once for this call (today's
-/// `workers()`) and the pool's limits besides: two calls on one volume share its limit (R2), and
-/// while some job doesn't need a volume that has work, that volume is held to one fewer (R4a).
+/// Run `jobs` per volume through the pool, under its limits: each volume's own (learned, §5.7;
+/// `workers`, today's `workers()`, is only where a volume not yet measured starts, not a cap for
+/// this call), two calls on one volume sharing it (R2), a volume held to one fewer while some job
+/// doesn't need it (R4a), and at most the I/O cap (32) running in the process.
 /// Results in input order; `done` counts every outcome but [`JobOutcome::NotStarted`] and
 /// [`JobOutcome::Cancelled`]; `succeeded` says whether a job's result shows its volume works (a
 /// probe that returned Ok), for the recovery rules. A single job runs on the calling thread
