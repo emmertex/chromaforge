@@ -332,16 +332,110 @@ impl Journal {
     }
 }
 
-/// The newest backup of the library in `dir` (a folder in its backup root holding a store or a
-/// v3 snapshot), by name: backup folders are named by their sortable UTC time.
+/// The newest backup of the library in `dir`, by name (backup folders are named by their sortable
+/// UTC time): one of its scheduled backups ([`BackupFolder::Scheduled`], the test pruning uses), or
+/// a copy kept before an upgrade when the backup root is the library's own `backups` folder (where
+/// those copies are made).
 pub fn latest_backup(dir: &Path) -> Option<PathBuf> {
-    let root = CatalogSettings::load(dir).backup_root(dir);
+    let settings = CatalogSettings::load(dir);
+    let root = settings.backup_root(dir);
+    let id = settings.library_id.as_deref().filter(|id| !id.is_empty());
+    let own_root = root == dir.join(BACKUPS_DIR);
     std::fs::read_dir(&root)
         .ok()?
-        .take(100_000)
+        .take(MAX_BACKUP_SCAN)
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.join(DB_FILE).is_file() || p.join(SNAPSHOT).is_file())
+        .filter(|p| match backup_folder(p, id, own_root) {
+            Some(BackupFolder::Scheduled) => true,
+            Some(BackupFolder::BeforeUpgrade) => own_root,
+            None => false,
+        })
         .max_by(|a, b| a.file_name().cmp(&b.file_name()))
+}
+
+/// Folders looked at in a backup root, at most.
+const MAX_BACKUP_SCAN: usize = 100_000;
+
+/// What a folder in a backup root is to one library ([`backup_folder`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackupFolder {
+    /// One of its scheduled backups ([`Journal::backup`]): pruned to the newest `keep`.
+    Scheduled,
+    /// A copy kept before an upgrade (`before-v<N> <time>`, `crate::upgrade_backup`): never pruned.
+    BeforeUpgrade,
+}
+
+/// Whether `folder` is a backup of the library whose id is `id`, and which kind. A scheduled backup
+/// is a real folder (not a link) named by [`stamp`] (with a `-<n>` suffix when two were made in one
+/// second), holding a store or a v3 snapshot, whose copy of the catalog settings names the library
+/// `id`. One that names no library at all (made before backups recorded it) counts only in the
+/// library's own `backups` folder (`own_root`), where no other library writes. A copy kept before an
+/// upgrade has no settings of its own: it is recognised by its name and contents only, and callers
+/// decide whether its folder makes it this library's. Anything else (another library kept in the
+/// folder, another library's backups in a shared folder, any other folder) is `None`: never pruned,
+/// never offered to restore.
+pub(crate) fn backup_folder(folder: &Path, id: Option<&str>, own_root: bool) -> Option<BackupFolder> {
+    let meta = std::fs::symlink_metadata(folder).ok()?;
+    if !meta.is_dir() || !(folder.join(DB_FILE).is_file() || folder.join(SNAPSHOT).is_file()) {
+        return None;
+    }
+    let name = folder.file_name()?.to_str()?;
+    if let Some(rest) = name.strip_prefix("before-v") {
+        let (version, time) = rest.split_once(' ')?;
+        let numbered = !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit());
+        return (numbered && is_stamp(time)).then_some(BackupFolder::BeforeUpgrade);
+    }
+    if !is_stamp(name) {
+        return None;
+    }
+    match (backup_library_id(folder), id) {
+        (Some(theirs), Some(ours)) if theirs == ours => Some(BackupFolder::Scheduled),
+        (None, _) if own_root => Some(BackupFolder::Scheduled),
+        _ => None,
+    }
+}
+
+/// `name` is a time as [`stamp`] writes it (`2026-10-10 153005`), optionally followed by `-<n>`.
+pub(crate) fn is_stamp(name: &str) -> bool {
+    const LEN: usize = "2026-10-10 153005".len();
+    let (Some(time), Some(rest)) = (name.get(..LEN), name.get(LEN..)) else { return false };
+    let suffix_ok = rest.is_empty() || rest.strip_prefix('-').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    suffix_ok && chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H%M%S").is_ok()
+}
+
+/// The library id a backup folder's copy of the catalog settings names (`None`: none, or the file is
+/// missing, too large to be ours, or unreadable).
+fn backup_library_id(folder: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Named {
+        #[serde(rename = "libraryId")]
+        library_id: Option<String>,
+    }
+    const MAX_SETTINGS: u64 = 16 << 20;
+    let file = folder.join(SETTINGS_FILE);
+    if std::fs::metadata(&file).ok()?.len() > MAX_SETTINGS {
+        return None;
+    }
+    let named: Named = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+    named.library_id.filter(|id| !id.is_empty())
+}
+
+/// The library in `dir`'s stable id (its catalog settings' `libraryId`), made and saved the first
+/// time; an error when it has none and it can't be saved.
+pub fn ensure_library_id(dir: &Path) -> Result<String> {
+    use std::hash::{Hash, Hasher};
+    let mut settings = CatalogSettings::load(dir);
+    if let Some(id) = settings.library_id.as_ref().filter(|s| !s.is_empty()) {
+        return Ok(id.clone());
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dir.hash(&mut h);
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default().hash(&mut h);
+    std::process::id().hash(&mut h);
+    let id = format!("{:016x}", h.finish());
+    settings.library_id = Some(id.clone());
+    settings.save(dir)?;
+    Ok(id)
 }
 
 /// Where to restore the library in `dir` from, for an error message.
@@ -756,14 +850,17 @@ impl Journal {
     }
 
     /// Back up the catalog into `root/<time>/` (a checkpoint first, so the copy holds every op;
-    /// the copy is then opened and integrity-tested). Keeps the newest `keep` backups (0 = all).
-    /// Returns the backup folder.
+    /// the copy is then opened and integrity-tested). The copy of the catalog settings names the
+    /// library (its id is made first if it has none), which is what tells this library's backups
+    /// from anything else in `root`. Keeps the newest `keep` of this library's backups (0 = all).
+    /// Returns the backup folder (a new one: `<time>-2`, … when `<time>` is taken).
     pub fn backup(&mut self, catalog: &Catalog, root: &Path, keep: usize) -> Result<PathBuf> {
         self.snapshot(catalog)?;
         let dir = self.db_dir()?;
         let mark = self.backup_mark().ok();
-        let dest = root.join(stamp(now_secs()));
-        std::fs::create_dir_all(&dest).map_err(ioe)?;
+        let id = ensure_library_id(&dir)?;
+        std::fs::create_dir_all(root).map_err(ioe)?;
+        let dest = new_backup_folder(root, &stamp(now_secs()))?;
         // (the library's prefs.json too, where the app keeps its presets: gathered back from a backup)
         let mut files = vec![DB_FILE.to_string(), LOG.to_string(), SNAPSHOT.to_string(), SETTINGS_FILE.to_string(), "prefs.json".to_string()];
         if let Some(e) = find_entry(&dir).and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())) {
@@ -785,7 +882,7 @@ impl Journal {
         settings.backup_mark = mark;
         settings.save(&dir)?;
         if keep > 0 {
-            prune_backups(root, keep);
+            prune_backups(root, keep, &id, root == dir.join(BACKUPS_DIR));
         }
         Ok(dest)
     }
@@ -818,13 +915,30 @@ impl Journal {
     }
 }
 
-/// Delete all but the newest `keep` timestamped backups in `root` (never a copy kept before an
-/// upgrade, `before-v<N> …`: it is what an older version opens).
-fn prune_backups(root: &Path, keep: usize) {
+/// A new folder `root/<time>` (or `<time>-2`, … when taken: two libraries can share a backup
+/// folder, and one library can be backed up twice in a second). Never an existing folder.
+fn new_backup_folder(root: &Path, time: &str) -> Result<PathBuf> {
+    for n in 1..1000u32 {
+        let dest = root.join(if n == 1 { time.to_string() } else { format!("{time}-{n}") });
+        match std::fs::create_dir(&dest) {
+            Ok(()) => return Ok(dest),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(CatalogError::Io(format!("backup folder {}: {e}", dest.display()))),
+        }
+    }
+    Err(CatalogError::Io(format!("no free backup folder name for {time} in {}", root.display())))
+}
+
+/// Delete all but the newest `keep` of the scheduled backups in `root` of the library whose id is
+/// `id` ([`backup_folder`]; `own_root`: `root` is the library's own `backups` folder). Nothing else
+/// in `root` is touched: a copy kept before an upgrade (what an older version opens), another
+/// library's backups, a library or any other folder kept there.
+fn prune_backups(root: &Path, keep: usize, id: &str, own_root: bool) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let mut dirs: Vec<PathBuf> = rd
+        .take(MAX_BACKUP_SCAN)
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_dir() && p.join(DB_FILE).exists() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("before-v")))
+        .filter(|p| backup_folder(p, Some(id), own_root) == Some(BackupFolder::Scheduled))
         .collect();
     dirs.sort();
     let excess = dirs.len().saturating_sub(keep);

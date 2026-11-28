@@ -1917,6 +1917,8 @@ mod tests_album_order;
 #[cfg(test)]
 mod tests_background;
 #[cfg(test)]
+mod tests_backup_prune;
+#[cfg(test)]
 mod tests_custom_order;
 #[cfg(test)]
 mod tests_folder_index;
