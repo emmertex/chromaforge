@@ -14,11 +14,13 @@ use std::sync::{Arc, Mutex};
 
 const MAX_PAGE_ID: u32 = 16_777_216;
 const MAX_COLUMNS: usize = 16_384;
+/// The rows a whole-table read (the schema, a test's) collects.
 const MAX_ROWS: usize = 1_000_000;
 const MAX_CELLS: usize = 4_000_000;
 pub(crate) const MAX_WAL_BYTES: u64 = 1 << 30;
 const MAX_VISITED_BTREE_PAGES: usize = MAX_CELLS;
 const MAX_PAYLOAD: usize = 64 * 1024 * 1024;
+/// The payload a whole-table read (the schema, a test's) collects.
 const MAX_TABLE_PAYLOAD: usize = 256 * 1024 * 1024;
 const MAX_OVERFLOW_PAGES: usize = 1_048_576;
 const MAX_BTREE_DEPTH: usize = 64;
@@ -342,8 +344,8 @@ enum TextEncoding {
 
 /// Walk state: pages visited (cycle guard and visited-page budget), the payload decoded so far, and the consumer
 /// each row is handed to as it is decoded, so a table's memory is what the consumer keeps, not the table's size.
-/// `payload_budget` caps the total payload: `MAX_TABLE_PAYLOAD` for walks whose consumer keeps every row, and for
-/// every walk the database's own size. An honest table's payloads never add up to more than the database; a hostile
+/// `payload_budget` caps the total payload: `MAX_TABLE_PAYLOAD` for the schema walk, and for every walk the
+/// database's own size. An honest table's payloads never add up to more than the database; a hostile
 /// one can point many cells at the same record or overflow chain, and a streaming walk must not decode that forever.
 /// `strict` walks (the schema) fail on the first bad record; the others skip it and count it in `stats`, so one
 /// oversized or malformed record costs that record, never the whole table (issue #1311).
@@ -612,7 +614,9 @@ impl Database {
 
     /// Stream a table B-tree's rows to `sink` in rowid order, decoding up to `ncols` values per record. Only one
     /// record (bounded by `MAX_PAYLOAD`) is held at a time, so a table of any size costs what `sink` keeps; pages are
-    /// read from the file one at a time. An error from `sink` (or cancellation) stops the walk and is returned.
+    /// read from the file one at a time. An error from `sink` (or cancellation) stops the walk and is returned. What
+    /// the caller keeps of the rows is its to bound (the catalog reader charges a memory budget, issue #1361); the
+    /// walk itself may visit as many pages as the file has, each once.
     pub(crate) fn for_each_row_with_cancel(
         &self,
         rootpage: u32,
@@ -620,7 +624,13 @@ impl Database {
         cancel: &std::sync::atomic::AtomicBool,
         sink: &mut dyn FnMut(Record) -> Result<(), String>,
     ) -> Result<WalkStats, String> {
-        self.walk_rows(rootpage, ncols, cancel, MAX_VISITED_BTREE_PAGES, None, None, sink)
+        self.walk_rows(rootpage, ncols, cancel, self.visited_page_budget(), None, None, sink)
+    }
+
+    /// The pages one table walk may visit: every page of the file, and never fewer than `MAX_VISITED_BTREE_PAGES`
+    /// (issue #1361: a catalog's large tables have no row cap).
+    fn visited_page_budget(&self) -> usize {
+        usize::try_from(self.page_count).unwrap_or(usize::MAX).max(MAX_VISITED_BTREE_PAGES)
     }
 
     /// [`Database::for_each_row_with_cancel`] that also reads records past `MAX_PAYLOAD`, handing each of their large
@@ -633,26 +643,7 @@ impl Database {
         large: LargeValues<'_>,
         sink: &mut dyn FnMut(Record) -> Result<(), String>,
     ) -> Result<WalkStats, String> {
-        self.walk_rows(rootpage, ncols, cancel, MAX_VISITED_BTREE_PAGES, None, Some(large), sink)
-    }
-
-    /// [`Database::for_each_row_with_cancel`] for consumers that keep every row: the walk stops past a million rows
-    /// or `MAX_TABLE_PAYLOAD` bytes of payload.
-    pub(crate) fn for_each_kept_row_with_cancel(
-        &self,
-        rootpage: u32,
-        ncols: usize,
-        cancel: &std::sync::atomic::AtomicBool,
-        sink: &mut dyn FnMut(Record) -> Result<(), String>,
-    ) -> Result<WalkStats, String> {
-        let mut rows = 0usize;
-        self.walk_rows(rootpage, ncols, cancel, MAX_VISITED_BTREE_PAGES, Some(MAX_TABLE_PAYLOAD), None, &mut |record| {
-            if rows >= MAX_ROWS {
-                return Err("SQLite table contains more than one million records".into());
-            }
-            rows += 1;
-            sink(record)
-        })
+        self.walk_rows(rootpage, ncols, cancel, self.visited_page_budget(), None, Some(large), sink)
     }
 
     fn walk_rows(
@@ -2663,7 +2654,6 @@ mod tests {
         .unwrap();
         assert_eq!((count, sum), (ROWS, 7 * ROWS as i64));
         assert!(db.read_table(2, 1).is_err(), "collecting a whole table stays capped");
-        assert!(db.for_each_kept_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).is_err(), "a kept walk stays capped");
         // A sink error stops the walk and is returned.
         let mut seen = 0;
         let stopped = db.for_each_row_with_cancel(2, 1, &never_cancel, &mut |_| {
@@ -2768,7 +2758,7 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("3 records") && n.contains("left out")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("replacement characters")), "{notes:?}");
         // a kept walk skips the same way; a cancelled one still stops
-        assert_eq!(db.for_each_kept_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).map(|s| s.skipped), Ok(3));
+        assert_eq!(db.for_each_row_with_cancel(2, 1, &never_cancel, &mut |_| Ok(())).map(|s| s.skipped), Ok(3));
         assert!(db.for_each_row_with_cancel(2, 1, &AtomicBool::new(true), &mut |_| Ok(())).is_err());
         assert!(WalkStats::default().notes("T").is_empty(), "a clean walk adds no warning");
     }
