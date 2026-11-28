@@ -108,10 +108,11 @@ trash = { workspace = true }
 rustix = { workspace = true }
 
 [features]
-# SFTP upload in Web Gallery publishing (russh, whose ring backend compiles C). On for the apps;
-# a library user that only develops photos turns default features off.
-default = ["sftp"]
+# SFTP upload in Web Gallery publishing (russh, whose ring backend compiles C) and lossy WebP export (libwebp, C).
+# On for the apps; a library user that only develops photos turns default features off.
+default = ["sftp", "webp-lossy"]
 sftp = ["lcc-webgallery/sftp"]
+webp-lossy = ["lcc-codecs/webp-lossy"]
 # Opt-in cpal sound for targets without a default path (macOS / Windows always use cpal, Linux and
 # the BSDs PulseAudio; on Linux this adds cpal's libasound fallback, see docs/video.md).
 audio-out = ["lcc-audio-out/audio-out"]
