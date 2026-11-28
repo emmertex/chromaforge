@@ -134,7 +134,10 @@ impl Frame {
         let orientation = header.as_ref().map(|h| h.orientation).or(metadata.orientation).unwrap_or(lcc_raw::Orientation::Normal);
         let format = header.as_ref().map(|h| h.format).or_else(|| lcc_raw::probe(bytes)).unwrap_or(lcc_raw::RawFormat::OtherTiff);
         let mut color = header.as_ref().map(|h| h.color.clone()).unwrap_or_default();
-        if color.color_matrix[0].is_none()
+        // LibRaw's matrix is the last resort: the file's own comes first, then the app's camera table (applied later, and
+        // only when the file has none), so a body the app knows keeps its measured matrices on this path as on lcc-raw's
+        if !lcc_raw::color::has_matrix(&color)
+            && !app_table_has_matrix(metadata.make.as_deref(), metadata.model.as_deref())
             && let Some(m) = xyz_to_camera
         {
             color.color_matrix = [Some(m), None];
@@ -170,6 +173,13 @@ impl Frame {
             lens_metadata,
         })
     }
+}
+
+/// Whether the app's own camera table has colour matrices for this body (`lcc-camdb`'s database and the measured spectral
+/// table, as the colour model reads them): then a raw without matrices of its own takes those, not LibRaw's.
+fn app_table_has_matrix(make: Option<&str>, model: Option<&str>) -> bool {
+    let Some(model) = model else { return false };
+    lcc_raw::spectral::find(make, model).is_some() || lcc_camdb::find(make, model).is_some_and(|e| lcc_raw::color::has_matrix(&e.color_data()))
 }
 
 /// Something that runs LibRaw on a file's bytes (installed by the host that can, see [`install_libraw`]).
