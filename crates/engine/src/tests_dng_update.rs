@@ -102,3 +102,23 @@ fn files_it_must_not_touch_are_left_byte_for_byte() {
     assert_eq!(std::fs::read(&file).unwrap(), cut);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A new file that doesn't read back as written (a failing drive, a flaky network volume) never replaces the
+/// original: the photo is reported failed and the DNG is left byte for byte as it was.
+#[test]
+fn a_dng_whose_new_file_reads_back_different_is_left_as_it_was() {
+    let original = synthetic_dng_with(None, lcc_meta::Metadata::default());
+    let (mut s, dir, file) = with_dng("dng-update-read-back", &original);
+    s.execute("photo.rate", &json!({"rating": 3})).unwrap();
+    let r = {
+        let _spoil = lcc_catalog::safe_file::spoil_written_files();
+        s.execute("photo.updateDngPreview", &json!({}))
+    };
+    let e = r.expect_err("a single photo that failed is an error");
+    assert!(e.to_string().contains("read back different"), "{e}");
+    assert_eq!(std::fs::read(&file).unwrap(), original, "the original is left byte for byte");
+    // with the volume working again, the same update goes through
+    let ok = s.execute("photo.updateDngPreview", &json!({})).unwrap();
+    assert_eq!(ok["updated"].as_array().map(Vec::len), Some(1), "{ok}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
