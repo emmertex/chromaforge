@@ -800,3 +800,85 @@ fn far_future_fields_are_held_back_and_the_user_told_once() {
     assert!(b.take_notices().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Read Originals and Reload record the SHA-1 their probe computes (adaptive-I/O spec, PR 0): a
+/// never-read photo, which had no key, appears under its `sha1:` key; a Reloaded photo moves from its
+/// content-hash key to it (not as an undo step, so no undo moves it back). When a SHA-1 is cleared
+/// again (an undone Relink or Vignetting Calibration), the photo is known by its content hash again
+/// and what the replica holds for it moves back with it, not left under a key no photo here has.
+#[test]
+fn read_originals_and_reload_key_photos_by_the_sha1_they_compute() {
+    use lcc_catalog::{Op, PhotoId};
+    let dir = lcc_testkit::TempDir::new("lcc-engine-sync-reload-sha1");
+    let (unread, changed) = (dir.join("unread.png"), dir.join("changed.png"));
+    write_png(&unread, 1);
+    write_png(&changed, 2);
+    let (mut a, ap) = offline(&dir, "a");
+    let r = a.execute("library.import", &json!({"paths": [unread.to_string_lossy(), changed.to_string_lossy()]})).unwrap();
+    let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let [iu, ic] = ids[..] else { panic!("{r}") };
+    let sha1_of = |s: &Session, id: u64| s.catalog.photo(PhotoId(id)).unwrap().sha1.clone();
+    let (want_u, want_c) = (sha1_of(&a, iu).unwrap(), sha1_of(&a, ic).unwrap());
+    // one never read (a Lightroom catalog import's record), one not yet hashed
+    let p = a.catalog.photo(PhotoId(iu)).unwrap().clone();
+    let cleared = Op::SetContent {
+        id: p.id,
+        width: p.width,
+        height: p.height,
+        file_size: p.file_size,
+        content_hash: None,
+        preview_only: None,
+        preview_checked: String::new(),
+    };
+    for op in [cleared, Op::SetSha1 { id: PhotoId(iu), sha1: None }, Op::SetSha1 { id: PhotoId(ic), sha1: None }] {
+        a.apply_system(op).unwrap();
+    }
+    let la = a.device_sync.lib.as_mut().unwrap();
+    la.replica.start_group("g", lcc_sync::Mode::Catalogue, Some(ap.device_id.clone()), &ap.name, super::now_ms()).unwrap();
+    let scan = |s: &mut Session| {
+        let mut l = s.device_sync.lib.take().unwrap();
+        super::catalog::index(s, &mut l);
+        super::catalog::register_all(s, &mut l);
+        s.device_sync.lib = Some(l);
+    };
+    let rescan = |s: &mut Session| {
+        let mut l = s.device_sync.lib.take().unwrap();
+        super::catalog::scan(s, &mut l);
+        s.device_sync.lib = Some(l);
+    };
+    let indexed = |s: &Session, id: u64| s.device_sync.lib.as_ref().unwrap().ids.get(&PhotoId(id)).cloned();
+    scan(&mut a);
+    rescan(&mut a);
+    assert_eq!(indexed(&a, iu), None, "a never-read photo has no key");
+    let content_key = indexed(&a, ic).expect("an unhashed photo is known by its content hash");
+    assert!(!content_key.starts_with("sha1:"), "{content_key}");
+    // what the replica holds for it (its record, as a shared collection's photo has one)
+    let replica = &mut a.device_sync.lib.as_mut().unwrap().replica;
+    replica.local_photo(&content_key, &[("rating", 2, false)], lcc_sync::Depth::Full, super::now_ms());
+
+    a.execute("library.readOriginals", &json!({})).unwrap();
+    assert_eq!(sha1_of(&a, iu).as_deref(), Some(want_u.as_str()), "read-originals keeps the probe's SHA-1");
+    rescan(&mut a);
+    assert_eq!(indexed(&a, iu), Some(format!("sha1:{want_u}")));
+
+    let undo = a.undo.len();
+    let r = a.execute("photo.reload", &json!({"ids": [ic]})).unwrap();
+    assert_eq!(r["reloaded"], json!([]), "only the SHA-1 is new: the photo is not reported reloaded: {r}");
+    assert_eq!(a.undo.len(), undo, "a SHA-1 alone is no undo step");
+    assert_eq!(sha1_of(&a, ic).as_deref(), Some(want_c.as_str()));
+    rescan(&mut a);
+    assert_eq!(indexed(&a, ic), Some(format!("sha1:{want_c}")), "moved from its content key");
+    let lib = a.device_sync.lib.as_ref().unwrap();
+    assert!(!lib.replica.photos.contains_key(&content_key), "nothing is left under the old key");
+    assert!(lib.replica.photos.contains_key(&format!("sha1:{want_c}")), "its record moved to the new key");
+    assert_eq!(lib.alias.get(&content_key), Some(&format!("sha1:{want_c}")), "other devices' content key still finds it");
+
+    // the SHA-1 cleared, as undoing a Relink or a Vignetting Calibration that recorded it does
+    a.apply_system(Op::SetSha1 { id: PhotoId(ic), sha1: None }).unwrap();
+    rescan(&mut a);
+    assert_eq!(indexed(&a, ic), Some(content_key.clone()), "the photo is known by its content hash again");
+    let lib = a.device_sync.lib.as_ref().unwrap();
+    assert!(lib.replica.photos.contains_key(&content_key), "what the replica holds for it moved back");
+    assert!(!lib.replica.photos.contains_key(&format!("sha1:{want_c}")), "nothing is left under the SHA-1 key");
+    assert_eq!(super::catalog::local_key(lib, &format!("sha1:{want_c}")), content_key, "another device's SHA-1 key still finds it");
+}

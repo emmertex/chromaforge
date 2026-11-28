@@ -81,6 +81,27 @@ pub fn install(prefix: &'static str) {
     }
 }
 
+/// Start the diagnostics recorder (issue #1363, `docs/diagnostics.md`) when `<PREFIX>_DIAG` asks for it, in
+/// `<PREFIX>_DIAG_DIR` or else `diag/` in the settings folder ([`crate::config::config_dir`], so portable mode and
+/// `<PREFIX>_CONFIG_DIR` apply). A run that keeps no settings (`keeps_settings` false: `--memory`,
+/// `<PREFIX>_NO_PREFS`) records only into `<PREFIX>_DIAG_DIR`. Call it once the settings folder has been migrated and
+/// the arguments read; what happened is logged.
+pub fn start_diagnostics(keeps_settings: bool) {
+    let dir = if keeps_settings { crate::config::config_dir().map(|d| d.join("diag")) } else { None };
+    match lcc_diag::start_from_env(dir) {
+        lcc_diag::StartStatus::Off | lcc_diag::StartStatus::AlreadyRunning | lcc_diag::StartStatus::Unsupported => {}
+        lcc_diag::StartStatus::Started(dir) => log::info!("diagnostics: recording into {}", dir.display()),
+        lcc_diag::StartStatus::NoFolder => log::warn!(
+            "diagnostics: {} is set, but this run keeps no settings folder and {} names none: nothing is recorded",
+            lcc_brand::env_var("DIAG"),
+            lcc_brand::env_var("DIAG_DIR")
+        ),
+        lcc_diag::StartStatus::FolderUnavailable(dir, kind) => {
+            log::warn!("diagnostics: can't create {} ({kind}): nothing is recorded", dir.display())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

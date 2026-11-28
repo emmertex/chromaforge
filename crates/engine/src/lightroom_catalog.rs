@@ -1228,11 +1228,18 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     warnings.extend(metadata_warnings);
     done.fetch_add(1, Ordering::Relaxed);
     // the caption each image has in Lightroom's own IPTC table (the cached XMP may not restate it)
+    // (a row whose image is not a photo id goes to no photo, as in the other side tables: issue #4090)
+    let mut unkeyed_captions = 0usize;
     let mut captions: HashMap<i64, String> = optional_table("AgLibraryIPTC", &mut warnings)?
         .into_iter()
         .filter(|r| !text(r, "caption").trim().is_empty())
-        .map(|r| (number(&r, "image"), text(&r, "caption").to_string()))
+        .filter_map(|r| {
+            let image = image_of(&r);
+            unkeyed_captions += usize::from(image.is_none());
+            Some((image?, text(&r, "caption").to_string()))
+        })
         .collect();
+    warn_unkeyed("AgLibraryIPTC", unkeyed_captions, "skipped", &mut warnings);
     let keyword_rows: HashMap<_, _> = optional_table("AgLibraryKeyword", &mut warnings)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     let mut keywords: HashMap<i64, Vec<String>> = HashMap::new();
     // each keyword's path is resolved once, however many photos carry it
@@ -1715,6 +1722,14 @@ fn strip_lua_sentinels(value: &mut crate::preset_import::Lua) -> usize {
     }
 }
 
+/// Remove the `crs:` fields of a parsed packet whose value is Lightroom's "not set" (-999999), from both the flat and
+/// the structured properties, so they read as absent.
+fn strip_unset_crs_fields(d: &mut lcc_meta::XmpData) {
+    let unset = |s: &str| s.trim().parse::<f64>().is_ok_and(|v| v == -999999.0);
+    d.properties.retain(|k, v| !(k.starts_with("crs:") && v.len() == 1 && v.iter().all(|s| unset(s))));
+    d.values.retain(|k, v| !(k.starts_with("crs:") && matches!(v, lcc_meta::XmpValue::Text(s) if unset(s))));
+}
+
 fn strip_xmp_sentinels(value: &mut Value) {
     match value {
         Value::Object(fields) => fields.retain(|_, value| {
@@ -1868,7 +1883,15 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     let copy_masters: HashSet<_> = data.photos.iter().map(|p| number(&p.image, "masterImage")).filter(|id| *id != 0).collect();
     let refused: HashSet<_> = data.photos.iter().filter(|p| matches!(p.original, Original::Refused(_))).map(|p| p.source_id).collect();
     let mut planned: HashMap<PhotoId, Photo> = HashMap::new();
-    for src in photos {
+    // diagnostics (issue #1363): the per-photo loop as one step, how far it has got, and each photo's time in aggregate
+    // `done` counts the photos finished before the current one (a hang in photo k shows done=k-1); an error passed up
+    // with `?` ends the stage `abandoned`, and the enclosing `lightroom_commit` records the error
+    let photos_total = photos.len() as u64;
+    let mut photos_span =
+        lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_photos", lcc_diag::Class::Top, &[("photos", lcc_diag::Val::U64(photos_total))]);
+    for (finished, src) in photos.into_iter().enumerate() {
+        let _photo_timer = lcc_diag::item_timer(lcc_diag::Subsystem::Commit, "apply_photo");
+        photos_span.note("done", lcc_diag::Val::U64(finished as u64));
         let master = number(&src.image, "masterImage");
         if master == 0 && missing_sources.contains(&key(&src.path)) {
             missing.push(src.path.clone());
@@ -1976,7 +1999,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             p.develop = Arc::new(p.camera_defaults());
         }
         if !src.xmp.is_empty() {
-            match crate::sidecar::parse_sidecar(&src.xmp, crate::crs::Target::for_photo(&p)) {
+            match lcc_meta::parse_xmp(&src.xmp).map(|mut d| {
+                // Lightroom's "not set" value (-999999) in the cached packet means no value, as in the develop text:
+                // removed before the settings are read, because an old process version's field (Shadows) is
+                // converted on reading and would no longer be recognisable afterwards (Blacks +100)
+                strip_unset_crs_fields(&mut d);
+                crate::sidecar::sidecar_from_xmp(&d, crate::crs::Target::for_photo(&p))
+            }) {
                 Ok(mut sc) => {
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
@@ -2161,6 +2190,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             "{which}: Lightroom's last edit time is missing or not a date; photos with develop settings are dated at the import, the others keep any edit date they already had"
         ));
     }
+    photos_span.set("done", lcc_diag::Val::U64(photos_total));
+    photos_span.finish(lcc_diag::Outcome::Ok);
+    let collections_span = lcc_diag::span(lcc_diag::Subsystem::Commit, "apply_collections", lcc_diag::Class::Top, &[]);
     let rows = first_of_each_collection(&data, &mut warnings);
     let mut albums = HashMap::new();
     // Two collections never share an album. An index that names one album for two gives the second a new one; the
@@ -2404,6 +2436,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         s.commit(step, Op::Batch { ops })?;
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
+    collections_span.finish(lcc_diag::Outcome::Ok);
     // The file step stamped each photo as its file and sidecar gave it; the catalog's values are over that now.
     // Compare them: in step where they agree, a conflict where the sidecar says something else (Lightroom's "metadata
     // was changed externally"), never "changed in the catalog" for every photo (issue #1312).
@@ -2465,13 +2498,25 @@ fn leads_to(
 }
 
 /// Lightroom folder stacks → stacks, top (position 1) first. Photos already stacked in the library
-/// keep their stack; a stack that would have fewer than two photos is skipped.
+/// keep their stack; a stack that would have fewer than two photos is skipped. A row whose stack is
+/// not a whole number names no stack: read as 0, rows with a missing or NULL stack would all join
+/// one stack of unrelated photos.
 fn stack_ops(s: &mut crate::Session, data: &CatalogImport, ids: &HashMap<i64, PhotoId>, ops: &mut Vec<Op>, warnings: &mut Vec<String>) -> usize {
     let mut groups: BTreeMap<i64, Vec<(f64, PhotoId, bool)>> = BTreeMap::new();
+    let mut unstacked = 0usize;
     for r in &data.stacks {
         let Some(photo) = image_of(r).and_then(|image| ids.get(&image).copied()) else { continue };
+        let Some(stack) = id_of(r, "stack") else {
+            unstacked += 1;
+            continue;
+        };
         let position = r.get("position").and_then(Value::as_f64).filter(|p| p.is_finite()).unwrap_or(f64::MAX);
-        groups.entry(number(r, "stack")).or_default().push((position, photo, number(r, "collapsed") != 0));
+        groups.entry(stack).or_default().push((position, photo, number(r, "collapsed") != 0));
+    }
+    match unstacked {
+        0 => {}
+        1 => warnings.push("AgLibraryFolderStackImage: 1 record skipped; its stack is not a stack id".into()),
+        n => warnings.push(format!("AgLibraryFolderStackImage: {n} records skipped; their stack is not a stack id")),
     }
     let mut taken: HashSet<PhotoId> = HashSet::new();
     let mut made = 0;
@@ -3884,6 +3929,36 @@ pub(crate) mod tests {
         assert_eq!(partial["light"]["contrast"], -100.0);
     }
 
+    /// The "not set" value in the cached packet on an older process version's field is no value either: Shadows
+    /// (process 2010) is converted to Blacks on reading, so -999999 there came in as Blacks +100 when it was only
+    /// stripped after mapping. The develop text still applies.
+    #[test]
+    fn a_not_set_value_on_an_old_process_field_in_the_cached_packet_is_no_value() {
+        let mut data = sample();
+        data.photos.truncate(1);
+        data.photos[0].image.remove("masterImage");
+        data.photos[0].settings = "s = { Exposure2012 = 0.5 }".into();
+        // only old-process fields in the packet: a process 2012 field there would make the old ones be ignored anyway
+        data.photos[0].xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Shadows="-999999" crs:Brightness=" -999999 "/></rdf:RDF></x:xmpmeta>"#.into();
+        let mut s = crate::Session::new();
+        apply(&mut s, data, false).unwrap();
+        let p = s.catalog.photos().next().unwrap();
+        let defaults = p.camera_defaults();
+        assert_eq!(p.develop.light.blacks, defaults.light.blacks, "Shadows -999999 is no Blacks value");
+        assert_eq!(p.develop.light.shadows, defaults.light.shadows);
+        assert_eq!(p.develop.light.exposure, 0.5, "the develop text still applies");
+        // and the stripping touches only crs: fields that say "not set"
+        let mut d = lcc_meta::parse_xmp(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" crs:Shadows="-999999" crs:Blacks2012="-999998" crs:Exposure2012="-999999.5" xmp:Rating="-999999"/></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        strip_unset_crs_fields(&mut d);
+        assert!(!d.properties.contains_key("crs:Shadows"));
+        for kept in ["crs:Blacks2012", "crs:Exposure2012", "xmp:Rating"] {
+            assert!(d.properties.contains_key(kept), "{kept} was removed: {:?}", d.properties);
+        }
+    }
+
     #[test]
     fn wal_checksums_cover_commits_without_materializing_historical_databases() {
         let mut main = vec![0; 512];
@@ -4733,6 +4808,56 @@ pub(crate) mod tests {
         assert_eq!(cached(Some(vec![N, T("  ".into()), N, I(1)])), "From the packet", "a blank caption keeps the packet's");
         assert_eq!(cached(Some(vec![N, T("Another image's".into()), N, I(2)])), "From the packet", "another image's row keeps it");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A caption row in Lightroom's IPTC table whose image is not a whole photo id goes to no photo, as in the other
+    /// side tables (#4090): image 1.5 is not image 1, and a missing one is not photo 0. Each such row is counted in one
+    /// warning; a row naming photo 1 still gives it its caption.
+    #[test]
+    fn a_caption_row_whose_image_is_not_a_photo_id_goes_to_no_photo() {
+        use SqlValue::{Null as N, Real as R, Text as T};
+        for (image, caption) in [(R(1.5), ""), (N, ""), (SqlValue::Integer(1), "Harbour at dawn")] {
+            let dir = std::env::temp_dir().join(format!("app-lrcat-caption-key-{}-{}", std::process::id(), caption.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("captions.lrcat");
+            let mut tables = photo_tables((dir.to_str().unwrap(), ""));
+            let text = if caption.is_empty() { "Stray" } else { caption };
+            tables.push(("AgLibraryIPTC", "id_local INTEGER PRIMARY KEY, caption, copyright, image", vec![N, T(text.into()), N, image.clone()]));
+            std::fs::write(&path, native_catalog(&tables)).unwrap();
+            let mut s = crate::Session::new();
+            let imported = s.execute("library.importLightroom", &json!({"path": path})).unwrap();
+            let id = PhotoId(imported["mapping"]["1"].as_u64().unwrap());
+            assert_eq!(s.catalog.photo(id).unwrap().meta.caption, caption, "image {image:?}: {imported}");
+            let warned = imported["warnings"].to_string().contains("AgLibraryIPTC: 1 record skipped");
+            assert_eq!(warned, caption.is_empty(), "image {image:?}: {imported}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// Stack rows whose stack is not a whole number (missing, NULL, a fraction) name no stack: read as 0 they joined
+    /// one stack of unrelated photos. They are skipped with one warning; whole stack ids still stack.
+    #[test]
+    fn stack_rows_whose_stack_is_not_a_stack_id_stack_nothing() {
+        for stack in [json!(null), json!(2.5)] {
+            let mut s = crate::Session::new();
+            let mut data = sample();
+            data.stacks = vec![
+                row(json!({"stack": stack, "image": 1, "position": 1, "collapsed": 0})),
+                row(json!({"stack": stack, "image": 2, "position": 2, "collapsed": 0})),
+            ];
+            let r = apply(&mut s, data, false).unwrap();
+            assert_eq!(r["stacks"], 0, "stack {stack}: {r}");
+            assert!(s.catalog.stacks().next().is_none(), "stack {stack}: {r}");
+            assert!(r["warnings"].to_string().contains("AgLibraryFolderStackImage: 2 records skipped"), "stack {stack}: {r}");
+        }
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.stacks = vec![
+            row(json!({"stack": 7, "image": 1, "position": 1, "collapsed": 0})),
+            row(json!({"stack": 7.0, "image": 2, "position": 2, "collapsed": 0})),
+        ];
+        let r = apply(&mut s, data, false).unwrap();
+        assert_eq!(r["stacks"], 1, "{r}");
     }
 
     #[test]

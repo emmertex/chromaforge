@@ -14,6 +14,15 @@
 Attach the log to a bug report. Set `<PREFIX>_LOG=debug` for more detail, or `RUST_LOG` for per-module levels
 (`warn,lcc_pipeline=trace`).
 
+## The app hangs or quits during a long job
+
+Start it with `<PREFIX>_DIAG=normal` (or `critical,commit=trace` for more on one part) and repeat what went wrong.
+The app then keeps a record of its steps in `diag/` in the settings folder (or in `<PREFIX>_DIAG_DIR`); the log
+says where. After a hang or a kill, the `inflight-…` file says which step was running and how far it had got, and
+that the app did not end cleanly. The files hold step names, counts and timings, never file names or paths; nothing
+is sent anywhere. Attach the folder to a bug report. `<PREFIX>_DIAG=0` (or `off`, `false`, `no`) turns it off.
+Details: [diagnostics](../diagnostics.md).
+
 ## The app shows an error instead of doing something
 
 That's by design: a damaged file, a bad argument or a full disk produces an error you can act on, never a crash,
@@ -48,6 +57,10 @@ most. `<cli> calibrate` can fit a profile for your camera from your own raws and
 Library → Find Missing Photos… lists photos whose originals can't be found (a disconnected drive, a renamed folder)
 and relinks them. Their edits and metadata are safe in the catalog meanwhile. A folder that can't be read (permissions, a
 disconnected share) shows the reason in the grid instead of an empty "No photos in this folder".
+
+Photo → File → Reload from Disk re-reads files changed outside the app; a file it can't read (gone, unreadable, on a
+drive that isn't responding) is left as it was and counted in its message ("2 could not be read"), and the
+`photo.reload` command lists each one under `failed` with the reason.
 
 Library → Validate DNG Files checks the selected DNGs' raw data against their checksum and lists damaged files.
 

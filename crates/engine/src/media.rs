@@ -188,6 +188,12 @@ fn source_edge_needed(p: &Photo, settings: &DevelopSettings, apply_crop: bool, o
     if needed.is_finite() { needed.min(usize::MAX as f64 / 2.0) as usize } else { out_long }
 }
 
+/// How many source pixels an export's binned raw keeps per output pixel at least (the session's `bin_for_export`): a
+/// block of 2 serves an output up to 1 / (2 × 1.15) of the sensor's long edge (3,589 px from a 45 MP sensor, 2,608
+/// from 24 MP). At 1.15 the `bin_sharpness` example's worst case, a zone plate, keeps SSIM ≈ 0.96 against a full
+/// demosaic, and the demo scenes ≥ 0.998.
+pub const EXPORT_BIN_MARGIN: f64 = 1.15;
+
 /// Decodes a file into a linear Rec.2020 image no larger than `max_edge` (set by the app).
 pub type FileLoader = Arc<dyn Fn(&str, usize, LoadOptions) -> Result<(Rgb32f, SourceInfo), String> + Send + Sync>;
 
@@ -219,6 +225,11 @@ pub struct LoadOptions {
     /// no serial number (`crate::sensor_maps::body_key`). Not a setting: [`DecodedSource::serves`]
     /// ignores it.
     pub path: Option<String>,
+    /// An export's decode (#1377): a raw is binned by the smallest block that leaves at least `max_edge` pixels on
+    /// its long side and kept at that size, so the pipeline takes it to the output in one Lanczos step
+    /// ([`crate::files::export_bin_factor`]); without a block that leaves enough, the whole sensor is demosaiced and
+    /// kept whole. Off: the preview levels' binning (a block that leaves 90 % of `max_edge`) and a box fit to it.
+    pub keep_binned: bool,
 }
 
 impl Default for LoadOptions {
@@ -232,6 +243,7 @@ impl Default for LoadOptions {
             highlight: Default::default(),
             decoders: crate::raw_decoder::key(),
             path: None,
+            keep_binned: false,
         }
     }
 }
@@ -247,6 +259,7 @@ impl LoadOptions {
             highlight: lcc_raw::highlight::Mode::from_control(s.sensor.highlight_mode),
             decoders: crate::raw_decoder::key(),
             path: None,
+            keep_binned: false,
         }
     }
 
@@ -368,7 +381,9 @@ impl DecodedSource {
                 && ((self.options.camera == options.camera && self.options.camera_look == options.camera_look) || !info.is_some_and(|i| i.raw))
                 && (self.options.pixel_fix == options.pixel_fix || !info.is_some_and(|i| i.raw))
                 && (self.options.highlight == options.highlight || !info.is_some_and(|i| i.raw))
-                && (self.options.decoders == options.decoders || !info.is_some_and(|i| i.raw)))
+                && (self.options.decoders == options.decoders || !info.is_some_and(|i| i.raw))
+                // (an export's binned source is not the size a view's level is)
+                && (self.options.keep_binned == options.keep_binned || !info.is_some_and(|i| i.raw)))
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -3230,6 +3245,7 @@ impl crate::Session {
         lcc_pipeline::check_output_size(max_w, max_h)?;
         let mut job = self.render_job(id, max_w, max_h, false, true).ok_or("no such photo")?;
         self.full_resolution_source(id, &mut job)?;
+        self.bin_for_export(id, &mut job);
         // An export is made from the denoised picture its Denoise amount asks for, made when the job runs if the
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
         if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {
@@ -3269,6 +3285,35 @@ impl crate::Session {
             job.source = self.media.source_ref_uncached(&p, job.level);
         }
         Ok(())
+    }
+
+    /// An export of a raw that isn't decoded yet decodes it at the size the output needs (#1377): binned by the smallest
+    /// block that leaves [`EXPORT_BIN_MARGIN`] times the source pixels the output needs, kept at that size for one
+    /// Lanczos step to the output ([`LoadOptions::keep_binned`]). Instead of the preview level's block and box fit for
+    /// an output up to 2560 px (sharper: on a zone plate SSIM against a full demosaic goes from 0.64–0.80 to 0.99, at
+    /// the same export time), and of a demosaic of the whole sensor above (a 3000 px export from 45 MP takes about
+    /// half the time and memory): measured with the `bin_sharpness` example (SSIM ≥ 0.998 against a full demosaic on
+    /// the demo scenes up to 3840 px from 45 MP) and `export45_bench`. Fitting the binned picture to the margin in the
+    /// loader instead (one more Lanczos step) measured no faster. A source already decoded (the
+    /// loupe's) is used as it is; a raw with no such block (too small, or a layout that can't be binned) is
+    /// demosaiced as before.
+    fn bin_for_export(&mut self, id: PhotoId, job: &mut RenderJob) {
+        let Some(p) = self.rendered_photo_of(id) else { return };
+        if !p.develops_raw() {
+            return;
+        }
+        let out = job.request.max_w.max(job.request.max_h);
+        let needed = source_edge_needed(&p, &job.settings, true, out).max(1);
+        let edge = (needed as f64 * EXPORT_BIN_MARGIN).ceil().min(usize::MAX as f64 / 2.0) as usize;
+        // (only when half the sensor is enough: a block of 2 is the smallest; else nothing changes)
+        let long = p.width.max(p.height) as usize;
+        if long / 2 < edge {
+            return;
+        }
+        if let SourceRef::File { max_edge, options, reduced: None, .. } = &mut job.source {
+            *max_edge = edge;
+            options.keep_binned = true;
+        }
     }
 
     /// Pixels along `id`'s original long edge that a render `out_long` pixels long of the photo as edited (its crop

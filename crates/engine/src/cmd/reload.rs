@@ -4,6 +4,10 @@
 //! their files without the session (cancellable, with progress), and [`apply`] commits what came
 //! of it as one undo step. The command itself (agents, CLI, MCP) does all three at once.
 //!
+//! The SHA-1 the same read computes is recorded beside that step, not in it (as the background
+//! back-fill records it): it describes the bytes on disk, which an undo doesn't change, and a Reload
+//! that found nothing else new adds no undo step and keeps the redo history.
+//!
 //! Reloads can overlap (the user picks Reload from Disk again while a first one still reads), so
 //! each [`plan`] takes a ticket and [`apply`] drops a photo's result when a reload planned later
 //! has already been applied to it: an older read never replaces a newer one.
@@ -36,7 +40,9 @@ pub struct Tickets {
     applied: std::collections::BTreeMap<PhotoId, u64>,
 }
 
-/// The photos `p` targets (`ids`, else the selection) that have a file, under a new ticket. No
+/// The photos `p` targets (`ids`, else the selection) that have a file, under a new ticket. An Immich
+/// link-only photo is left out: its file is the server's preview, not its original, so re-reading it
+/// would take the preview for the original (as the preview-only recheck leaves it out). No
 /// file-system calls.
 pub fn plan(s: &mut Session, p: &Value) -> Result<Vec<Item>> {
     let ids = s.targets(p)?;
@@ -47,6 +53,9 @@ pub fn plan(s: &mut Session, p: &Value) -> Result<Vec<Item>> {
     for id in ids {
         let Some(ph) = s.catalog.photo(id) else { continue };
         let Source::File { path } = &ph.source else { continue };
+        if super::recheck::link_only(ph) {
+            continue;
+        }
         let key = (ph.copy_of.unwrap_or(ph.id), path.clone());
         // Sharing a probe must not drop any explicitly selected metadata target.
         if let Some(item) = groups.get(&key).and_then(|index| items.get_mut(*index)) {
@@ -92,15 +101,34 @@ pub fn probe(
     r
 }
 
+/// What [`apply`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The photos that changed.
+    pub reloaded: Vec<PhotoId>,
+    /// The photos whose file couldn't be read (left unchanged), each with why: a file gone or
+    /// unreadable, a volume not responding, or (after a cancel) a file not reached.
+    pub failed: Vec<(PhotoId, String)>,
+}
+
 /// Commit [`probe`]'s results as one undo step ("Reload Changed Files"): each photo and its virtual
-/// copies get what their file is now. A file that couldn't be read changes nothing; a photo removed
-/// or relinked since it was listed, or already given a newer reload's result, is skipped. Returns
-/// the photos that changed.
-pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result<ProbeInfo, String>>) -> Result<Vec<PhotoId>> {
-    let mut ops = Vec::new();
+/// copies get what their file is now. A file that couldn't be read changes nothing and is listed
+/// with its reason; a photo removed or relinked since it was listed, or already given a newer
+/// reload's result, is skipped. The SHA-1s the reads computed are applied beside the step, not as
+/// part of it (module docs), and only by the newest reload started: an older read of a file that
+/// changed meanwhile would otherwise fix the old bytes' SHA-1, which a later read can't replace.
+pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result<ProbeInfo, String>>) -> Result<Applied> {
+    let (mut ops, mut sha1_ops, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
     let mut reloaded = Vec::new();
+    let mut failed = Vec::new();
     for (item, info) in items.into_iter().zip(results) {
-        let Ok(info) = info else { continue };
+        let info = match info {
+            Ok(info) => info,
+            Err(e) => {
+                failed.push((item.id, e));
+                continue;
+            }
+        };
         let current = s.catalog.photo(item.id).is_some_and(|ph| matches!(&ph.source, Source::File { path } if *path == item.path));
         let family: Vec<PhotoId> = s
             .catalog
@@ -114,7 +142,21 @@ pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result
         for id in &family {
             s.reload_tickets.applied.insert(*id, item.ticket);
         }
-        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, &mut ops, &mut reloaded);
+        let (first_hashed, mut item_ops) = (hashed.len(), Vec::new());
+        let reach = crate::cmd::convert::Reach::Family;
+        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, reach, &mut item_ops, &mut reloaded, &mut hashed);
+        // a reload started after this one reads the file later: the SHA-1 is left to it (or to the back-fill)
+        let newer = s.reload_tickets.last > item.ticket;
+        if newer {
+            hashed.truncate(first_hashed);
+        }
+        for op in item_ops {
+            match op {
+                Op::SetSha1 { .. } if newer => {}
+                Op::SetSha1 { .. } => sha1_ops.push(op),
+                op => ops.push(op),
+            }
+        }
         for id in item.metadata_targets.into_iter().filter(|id| *id != item.id && family.contains(id)) {
             let Some(ph) = s.catalog.photo(id) else { continue };
             let meta = super::convert::fill_missing_meta(id, ph, &info);
@@ -132,10 +174,17 @@ pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result
     if !ops.is_empty() {
         s.commit("Reload Changed Files", Op::Batch { ops })?;
     }
-    Ok(reloaded)
+    if !sha1_ops.is_empty() {
+        s.apply_system(Op::Batch { ops: sha1_ops })?;
+    }
+    crate::cmd::convert::queue_link_check(s, &hashed);
+    Ok(Applied { reloaded, failed })
 }
 
-/// `{reloaded: [ids]}`.
-pub fn to_json(reloaded: &[PhotoId]) -> Value {
-    json!({"reloaded": reloaded.iter().map(|i| i.0).collect::<Vec<_>>()})
+/// `{reloaded: [ids], failed: [{id, error}]}`.
+pub fn to_json(applied: &Applied) -> Value {
+    json!({
+        "reloaded": applied.reloaded.iter().map(|i| i.0).collect::<Vec<_>>(),
+        "failed": applied.failed.iter().map(|(id, e)| json!({"id": id.0, "error": e})).collect::<Vec<_>>(),
+    })
 }

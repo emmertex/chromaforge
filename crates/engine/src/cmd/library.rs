@@ -234,8 +234,7 @@ pub fn import_batch_done(s: &mut Session, report: crate::import::ImportReport, m
     // the previews the library builds at import (library.previewSettings atImport)
     let ids: Vec<PhotoId> = imported.iter().map(|i| PhotoId(*i)).collect();
     // connected Immich servers are asked whether they have these photos already (`remote.pump`)
-    #[cfg(not(target_arch = "wasm32"))]
-    s.remote.link_queue.extend(ids.iter().copied());
+    crate::cmd::convert::queue_link_check(s, &ids);
     crate::cmd::previews::build_after_import(s, &ids);
     // the plug-ins' afterImport hooks: a failing plug-in never fails the import (its line is in
     // the result as `pluginResults`)
@@ -2918,10 +2917,9 @@ fn merge_rules(
 /// disk) that the folder does not lie in. Such a folder (`/Volumes`, `/mnt`…) is not a folder of
 /// one disk but a way to reach several.
 pub(crate) fn covers_other_disks(s: &Session, path: &str, ids: &[PhotoId]) -> bool {
-    ids.iter()
-        .filter_map(|id| s.catalog.photo(*id))
-        .filter_map(|p| lcc_catalog::folders::volume_of(p))
-        .any(|v| v != "/" && !lcc_catalog::query::folder_within(path, &v))
+    // (one rule of volume identity, the I/O scheduler's: `volume_of` is `volume_key` without a list)
+    let here = lcc_catalog::folders::volume_key(path, &lcc_catalog::folders::Mounts::none());
+    ids.iter().filter_map(|id| s.catalog.photo(*id)).filter_map(|p| lcc_catalog::folders::volume_of(p)).any(|v| v.id() != "/" && v != here)
 }
 
 /// The current view (source + filter) as smart-album rules. Viewing a smart album starts from

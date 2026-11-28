@@ -1419,7 +1419,7 @@ impl Catalog {
             }
             Op::SetSha1 { id, sha1 } => {
                 if let Some(s) = &sha1
-                    && (s.len() != 40 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+                    && !model::is_sha1_hex(s)
                 {
                     return Err(CatalogError::Invalid(format!("not a SHA-1: {s}")));
                 }
@@ -1959,3 +1959,5 @@ mod tests_upgrade_backup;
 mod tests_v4;
 #[cfg(test)]
 mod tests_video;
+#[cfg(test)]
+mod tests_volume_key;

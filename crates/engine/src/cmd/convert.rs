@@ -285,7 +285,7 @@ pub(crate) fn content_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info
     })
 }
 
-/// Ops that fill a photo's empty camera fields (camera, lens, exposure, GPS, capture time) from a fresh probe.
+/// Ops that fill a photo's empty camera fields (camera, serial, lens, exposure, GPS, capture time) from a fresh probe.
 pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     let (mut m, src) = (ph.meta.clone(), &info.meta);
     let before = m.clone();
@@ -309,6 +309,12 @@ pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Phot
     if m.lens_make.is_empty() {
         m.lens_make = src.lens_make.clone();
     }
+    // the body's serial keys its sensor maps and the camera body; a Lightroom catalog import has
+    // none of these (its catalog gives make, model and lens only)
+    if m.camera_serial.is_empty() {
+        m.camera_serial = src.camera_serial.clone();
+    }
+    m.lens_range = m.lens_range.or(src.lens_range);
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
         m.exposure_time = src.exposure_time;
@@ -405,17 +411,63 @@ pub(crate) fn as_shot_wb_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, i
     (ph.develops_raw() && !ph.relative_wb() && ph.as_shot_wb != Some(read)).then_some(Op::SetAsShotWb { id, wb: Some(read) })
 }
 
+/// Which photos a probe's results reach ([`reload_ops`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// The photo and the rest of its same-file family: a reload of a virtual copy refreshes its
+    /// master and the other copies on that file too, and gives the master the SHA-1 (copies
+    /// themselves never take one, [`takes_sha1`]).
+    Family,
+    /// Only the photo itself: a relink, probed before its [`Op::Relink`] applies. Its family still
+    /// names the old file, so none of the new file's facts (content hash, size, dimensions, lens,
+    /// white balance, SHA-1) are theirs.
+    Target,
+}
+
+/// Whether `p` takes a SHA-1 computed from its file: it has none yet, is no virtual copy, is in the
+/// library (not in Recently Deleted, not only browsed in a folder: [`lcc_catalog::Photo::in_library`]),
+/// and its file is its original (not an Immich link-only photo's preview). The SHA-1 back-fill
+/// ([`crate::remote::sha1_pending`]), the Immich back-fill's result and a vignetting calibration's
+/// reference ask this too.
+pub(crate) fn takes_sha1(p: &lcc_catalog::Photo) -> bool {
+    p.sha1.is_none() && p.copy_of.is_none() && p.in_library() && !super::recheck::link_only(p) && matches!(p.source, Source::File { .. })
+}
+
+/// The op that records a probe's SHA-1 for `ph`, when it [`takes_sha1`] and the probe's value is one
+/// ([`lcc_catalog::is_sha1_hex`]; [`Op::SetSha1`] refuses anything else, and one refused op fails its
+/// whole batch).
+fn sha1_op(ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Option<Op> {
+    let h = info.sha1.as_deref().filter(|h| lcc_catalog::is_sha1_hex(h))?;
+    takes_sha1(ph).then(|| Op::SetSha1 { id: ph.id, sha1: Some(h.to_string()) })
+}
+
 /// The ops that bring photo `id` and its virtual copies up to date with what their file is now
-/// (`info`, a fresh probe), appended to `ops`; the photos they change are appended to `changed`.
-/// Reload and the preview-only recheck (`library.recheckPreviewOnly`) share it.
+/// (`info`, a fresh probe), appended to `ops`; the photos whose file facts change are appended to
+/// `changed`. `reach` says whether the photo's same-file family takes them too ([`Reach`]). Photos
+/// given the probe's SHA-1 are appended to `hashed` instead (the caller queues them for the Immich
+/// checksum lookup, [`queue_link_check`], once the ops are committed); one given only a SHA-1 is not
+/// in `changed`. Read Originals, Reload, the preview-only recheck (`library.recheckPreviewOnly`) and
+/// relinking share it.
 pub(crate) fn reload_ops(
     cat: &lcc_catalog::Catalog,
     id: lcc_catalog::PhotoId,
     info: &crate::media::ProbeInfo,
+    reach: Reach,
     ops: &mut Vec<Op>,
     changed: &mut Vec<lcc_catalog::PhotoId>,
+    hashed: &mut Vec<lcc_catalog::PhotoId>,
 ) {
     let Some(ph) = cat.photo(id) else { return };
+    let mut give_sha1 = |p: &lcc_catalog::Photo, ops: &mut Vec<Op>| {
+        // (two photos of one family in the same run would otherwise give it twice)
+        if !hashed.contains(&p.id)
+            && let Some(op) = sha1_op(p, info)
+        {
+            ops.push(op);
+            hashed.push(p.id);
+        }
+    };
+    give_sha1(ph, ops);
     // camera fields the catalog lacks (e.g. a raw imported before its format was read) are filled in;
     // nothing already set is overwritten
     let meta_ops = fill_missing_meta(id, ph, info);
@@ -425,9 +477,13 @@ pub(crate) fn reload_ops(
         ops.append(&mut mine);
         changed.push(id);
     }
-    // A selected copy refreshes its same-file family too, but only the explicit target gets missing descriptive
-    // metadata above. Relinked copies keep their own file facts.
+    // A selected copy refreshes its same-file family too, but only the explicit target gets missing camera fields
+    // above. Relinked copies keep their own file facts, and a relink reaches no one but its target.
+    if reach == Reach::Target {
+        return;
+    }
     for c in cat.photos().filter(|c| c.id != id && shares_reload_source(c, ph)) {
+        give_sha1(c, ops);
         // Copies may have independently edited metadata: repair only a recognisable legacy shutter value, not every
         // missing field on the copy (upstream #1692).
         let mut meta = c.meta.clone();
@@ -445,6 +501,16 @@ pub(crate) fn reload_ops(
     }
 }
 
+/// Queue photos that just got their SHA-1 ([`reload_ops`]' `hashed`) for the Immich checksum lookup,
+/// as the SHA-1 back-fill and import do: `remote.pump` asks each connected server whether it has them.
+/// Call it once their ops are committed.
+pub(crate) fn queue_link_check(s: &mut Session, hashed: &[lcc_catalog::PhotoId]) {
+    #[cfg(not(target_arch = "wasm32"))]
+    s.remote.link_queue.extend_from_slice(hashed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = (s, hashed);
+}
+
 /// Copies share probe results only while both the family and the actual file agree.
 pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Photo) -> bool {
     a.copy_of.unwrap_or(a.id) == b.copy_of.unwrap_or(b.id)
@@ -452,15 +518,15 @@ pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Phot
 }
 
 /// Re-read photos whose files changed on disk (an external editor saved them): new size,
-/// dimensions and content hash, cached sources dropped. The app runs the same steps
+/// dimensions and content hash (and the SHA-1 when none is known yet), cached sources dropped. The app runs the same steps
 /// ([`crate::cmd::reload`]) with the files read on a worker thread. → {reloaded: [ids]}
 fn reload(s: &mut Session, p: &Value) -> Result<Value> {
     use crate::cmd::reload as r;
     let items = r::plan(s, p)?;
     let probe = r::file_probe(s);
     let results = r::probe(probe.as_ref(), &items, &std::sync::atomic::AtomicBool::new(false), &|_| {});
-    let reloaded = r::apply(s, items, results)?;
-    Ok(r::to_json(&reloaded))
+    let applied = r::apply(s, items, results)?;
+    Ok(r::to_json(&applied))
 }
 
 /// Duplicate: copy the file next to itself (`<name>-copy`, never overwriting) and add it with the
@@ -640,7 +706,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Reload from Disk",
             ["Photo", "File"],
             None,
-            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
+            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded, failed: [{id, error}] (files that couldn't be read, left unchanged)}",
             has_selection,
             reload
         ),
@@ -1025,8 +1091,8 @@ mod tests {
         info.meta.shutter = "0.4".into();
         info.meta.exposure_time = Some(0.4);
         info.meta.title = "File title".into();
-        let (mut ops, mut changed) = (Vec::new(), Vec::new());
-        reload_ops(&cat, source.id, &info, &mut ops, &mut changed);
+        let (mut ops, mut changed, mut hashed) = (Vec::new(), Vec::new(), Vec::new());
+        reload_ops(&cat, source.id, &info, Reach::Family, &mut ops, &mut changed, &mut hashed);
         for op in ops {
             cat.apply(op).unwrap();
         }

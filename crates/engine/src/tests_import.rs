@@ -4506,7 +4506,7 @@ fn reload_copy_family_metadata(select_sibling: bool) {
     assert_eq!(items[0].id, copy, "keep the explicit metadata target");
     let mut info = reload::file_probe(&s).unwrap()(&path.to_string_lossy()).unwrap();
     info.meta.camera = "new camera metadata".into();
-    let changed = reload::apply(&mut s, items, vec![Ok(info)]).unwrap();
+    let changed = reload::apply(&mut s, items, vec![Ok(info)]).unwrap().reloaded;
     assert_eq!(changed.len(), 3);
     for old in &before {
         let new = s.catalog.photo(old.id).unwrap();
@@ -4514,7 +4514,10 @@ fn reload_copy_family_metadata(select_sibling: bool) {
         assert_eq!(new.develop, old.develop);
         assert_eq!(new.meta.camera, if old.id == copy || (select_sibling && old.id == sibling) { "new camera metadata" } else { "" });
     }
-    assert!(reload::apply(&mut s, old_items, vec![Ok(old_info)]).unwrap().is_empty(), "the newer copy reload supersedes its original's old result");
+    assert!(
+        reload::apply(&mut s, old_items, vec![Ok(old_info)]).unwrap().reloaded.is_empty(),
+        "the newer copy reload supersedes its original's old result"
+    );
     s.execute("edit.undo", &json!({})).unwrap();
     for old in &before {
         assert_eq!(s.catalog.photo(old.id).unwrap(), old);

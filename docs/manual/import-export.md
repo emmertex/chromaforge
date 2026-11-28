@@ -13,6 +13,10 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
 - **Rename** with tokens (`{name}`, `{seq:4}`, `{date:%Y%m%d}`, `{camera}`, `{lens}` …; `photo.renameTokens` explains
   each), optionally convert raws to DNG while copying.
 - Apply a develop preset, a metadata preset, keywords, and add the photos to a collection.
+- Files on several drives, cards or shares are read side by side (per drive, never more readers than before on any one
+  drive). A drive that stops answering for about 30 s (longer after it was idle or the computer woke) has its files
+  reported as "volume not responding" while the others are read; Cancel returns even while a drive hangs; a file that
+  crashes the reader fails alone.
 - Duplicates are detected and reported; a file in Recently Deleted can be skipped, restored with its edits, or
   imported fresh. Library → Find Duplicates… later finds copies already in the library ([duplicates.md](../duplicates.md)).
 - Plug-ins can join the import ([plugins.md](../plugins.md)): a before-import hook can replace a file as it is
