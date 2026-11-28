@@ -188,6 +188,58 @@ struct Run<'a> {
     stop: Option<Stop>,
     /// Copy as DNG's reader of the copied file (the session's).
     file_bytes: Option<crate::merge::ByteReader>,
+    /// The run's reads as one diagnostics step, opened at the first read ([`Reads`]).
+    reads: Option<Reads>,
+}
+
+/// Diagnostics (issue #1363): a run's file reads recorded as [`super::probe_all`] records a call's,
+/// one `probe_all` step (in the in-flight file while it runs) with `files`, the reads submitted,
+/// and `done`, the reads that returned, and a `probe_file` leaf per read. A probe a preceding scan
+/// left that still holds is no read and is counted in neither. The step ends `failed` when a read
+/// was refused, panicked or met a volume that stopped responding, `cancelled` when a cancel left
+/// reads unreturned, else `ok` (reads ahead that planning no longer needed may still be under way:
+/// they are not waited for, as the run doesn't wait for them).
+struct Reads {
+    span: lcc_diag::Span<'static>,
+    /// The import's probe with each read timed as a `probe_file` leaf and counted in `done`.
+    probe: crate::media::FileProbe,
+    files: u64,
+    done: Arc<std::sync::atomic::AtomicUsize>,
+    failed: bool,
+}
+
+impl Reads {
+    fn open(probe: crate::media::FileProbe) -> Reads {
+        let span = lcc_diag::span_at(lcc_diag::Level::Normal, lcc_diag::Subsystem::Probe, "probe_all", lcc_diag::Class::Top, &[]);
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = done.clone();
+        let probe: crate::media::FileProbe = Arc::new(move |p: &str| {
+            let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
+            let r = probe(p);
+            leaf.done(&r);
+            counted.fetch_add(1, Relaxed);
+            r
+        });
+        Reads { span, probe, files: 0, done, failed: false }
+    }
+
+    fn done(&self) -> u64 {
+        self.done.load(Relaxed) as u64
+    }
+
+    fn end(self, cancelled: bool) {
+        let done = self.done();
+        let mut span = self.span;
+        span.set("files", lcc_diag::Val::U64(self.files));
+        span.set("done", lcc_diag::Val::U64(done));
+        span.finish(if self.failed {
+            lcc_diag::Outcome::Failed
+        } else if cancelled && done < self.files {
+            lcc_diag::Outcome::Cancelled
+        } else {
+            lcc_diag::Outcome::Ok
+        });
+    }
 }
 
 impl ImportJob {
@@ -374,6 +426,7 @@ impl<'a> Run<'a> {
             hashes: HashMap::new(),
             stop: None,
             file_bytes,
+            reads: None,
         }
     }
 
@@ -474,16 +527,24 @@ impl<'a> Run<'a> {
     /// Read positions `ps` (their places already held).
     fn submit_probes(&mut self, job: &ImportJob, ps: Vec<usize>) {
         let Some(probe) = job.probe.clone() else { return };
+        let probe = self.reads.get_or_insert_with(|| Reads::open(probe)).probe.clone();
         let mut jobs = Vec::with_capacity(ps.len());
+        let mut reads = 0u64;
         for p in &ps {
             let Some(path) = self.pos.get(p).map(|e| e.path.clone()) else { continue };
-            jobs.push(super::probe_job(&probe, &path, self.cached.remove(p)));
+            let cached = self.cached.remove(p);
+            reads += u64::from(cached.is_none());
+            jobs.push(super::probe_job(&probe, &path, cached));
         }
         if jobs.is_empty() {
             return;
         }
         job.read_total.fetch_add(jobs.len(), Relaxed);
         let submitted = self.probe_stream().submit(jobs);
+        if let Some(r) = self.reads.as_mut() {
+            r.files = r.files.saturating_add(reads);
+            r.failed |= submitted.is_err();
+        }
         for (k, p) in ps.into_iter().enumerate() {
             let Some(e) = self.pos.get_mut(&p) else { continue };
             match &submitted {
@@ -639,6 +700,10 @@ impl<'a> Run<'a> {
     fn on_probe(&mut self, job: &ImportJob, index: usize, outcome: JobOutcome<ProbeResult>) {
         if outcome.counts_as_done() {
             job.read_done.fetch_add(1, Relaxed);
+        }
+        if let Some(r) = self.reads.as_mut() {
+            r.failed |= matches!(outcome, JobOutcome::VolumeNotResponding { .. } | JobOutcome::Panicked(_));
+            r.span.note("done", lcc_diag::Val::U64(r.done()));
         }
         let Some(p) = self.probe_index.remove(&index) else { return };
         let Some(e) = self.pos.get_mut(&p) else { return };
@@ -851,6 +916,9 @@ impl<'a> Run<'a> {
         self.probes = None;
         if let Some(s) = self.transfers.as_mut() {
             s.close();
+        }
+        if let Some(r) = self.reads.take() {
+            r.end(self.stop == Some(Stop::Cancel) || self.cancel.load(Relaxed));
         }
     }
 }
