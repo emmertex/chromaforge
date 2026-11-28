@@ -1046,7 +1046,8 @@ pub(crate) fn cached_probe(probe: crate::media::FileProbe, cached: HashMap<Strin
     })
 }
 
-/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count: each outcome as
+/// [`probe_all`] through the I/O scheduler, with `workers` today's thread count (where its volumes
+/// start before they are measured, not a cap): each outcome as
 /// the string today's loops gave (files cancel left unreached: `"not probed"` where today's loop
 /// ran threads, `"cancelled"` where it ran serially on one CPU), a drive that stopped responding
 /// also typed.
@@ -1088,7 +1089,8 @@ pub(crate) fn refused_probe(path: &str, e: crate::io_sched::pool::SubmitError) -
     ProbeError::from(format!("{path}: {e}"))
 }
 
-/// A stream of file reads (probes) linked to the caller's `cancel`, at today's thread count,
+/// A stream of file reads (probes) linked to the caller's `cancel`, its volumes starting at today's
+/// thread count,
 /// keying paths with `mounts` (one list for all of a caller's streams) or a fresh list.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn probe_stream(
@@ -2317,7 +2319,8 @@ fn run_transfers(
     }
 }
 
-/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count: each outcome
+/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count (where its
+/// volumes start before they are measured, not a cap): each outcome
 /// as an item (`None`: not started).
 #[cfg(not(target_arch = "wasm32"))]
 fn transfers_scheduled(
@@ -3186,6 +3189,7 @@ mod prepared_tests {
     }
 
     /// Cancel had no effect until every file had been read.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cancel_stops_reading_files() {
         use std::sync::atomic::Ordering::Relaxed;
@@ -3199,9 +3203,20 @@ mod prepared_tests {
             cancel_in_probe.store(true, Relaxed);
             Ok(ProbeInfo { format: "JPEG".into(), ..ProbeInfo::default() })
         }));
-        let prepared = job.prepare(&unread_paths(400), &cancel);
-        // at most the files the (up to 8) readers had already started
-        assert!(seen.load(Relaxed) <= 8, "read {} files after cancel", seen.load(Relaxed));
+        let paths = unread_paths(400);
+        // the files' volume in the process's pool, and its limit: its calls' `workers()` until
+        // measured, then what it learned (other tests in this process can raise it, up to the
+        // I/O cap); read before and after
+        let ctx = crate::io_sched::IoContext::global();
+        let mounts = ctx.mounts.fresh(ctx.shared.clock.as_ref(), ctx.mount_wait);
+        let key = paths.first().map(|p| lcc_catalog::folders::volume_key(p, &mounts));
+        let limit = || key.as_ref().and_then(|k| ctx.shared.learned(k)).map_or(0, |l| l.limit);
+        let before = limit();
+        let prepared = job.prepare(&paths, &cancel);
+        // at most the files one admission round had started before the pool saw the cancel the
+        // first read set: the volume's limit
+        let bound = workers(usize::MAX).max(before).max(limit());
+        assert!(seen.load(Relaxed) <= bound, "read {} files after cancel (limit {bound})", seen.load(Relaxed));
         assert!(prepared.items.is_empty());
     }
 

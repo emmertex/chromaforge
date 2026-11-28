@@ -14,7 +14,9 @@
 //! - a batch's items keep their places, whatever order its copies end in.
 //!
 //! Bounds: a volume has at most [`Lookahead::per_volume`] files read ahead and not yet done with
-//! (planned without a copy, or copied), so a copy's read of its source still finds it in memory;
+//! (planned without a copy, or copied), so a copy's read of its source still finds it in memory,
+//! plus two for every reader the pool's controller has added to the volume above its start
+//! (§5.7: so a volume whose limit climbs isn't taken as out of work);
 //! planning stays within [`Lookahead::batches`] batches of the oldest batch not handed over.
 
 use std::collections::{HashMap, VecDeque};
@@ -510,8 +512,11 @@ impl<'a> Run<'a> {
         }
         let mut picks = Vec::new();
         for v in 0..self.vols.len() {
+            // (two more places for every reader the pool's controller added to the volume, so
+            // a volume whose limit climbs keeps work queued and isn't taken as out of work)
+            let room = self.vols.get(v).map_or(0, |vf| self.ctx.shared.raised(&vf.key)).saturating_mul(2).saturating_add(self.look.per_volume);
             while let Some(vf) = self.vols.get_mut(v)
-                && vf.held < self.look.per_volume
+                && vf.held < room
                 && let Some(p) = vf.queue.pop_front()
             {
                 if let Some(e) = self.pos.get_mut(&p).filter(|e| matches!(e.read, Read::Queued)) {

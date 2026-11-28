@@ -428,9 +428,9 @@ fn reads_ahead_at_most_per_volume_files_on_each_volume() {
         let ctx = context(&root);
         let h = start_in(&ctx, files.clone(), options(&root, ImportMode::Add), look, Some(gated_probe(&gate, real)));
         wait_until(|| ctx.pending.load(Ordering::SeqCst) >= 2 * want, "the read-ahead to fill");
-        // (both cards' reads are queued; that both also *run* while every read is held isn't
-        // promised here: the pool's cap is `workers()` for the whole process, and the first card's
-        // reads, listed first, can take every slot until one ends. Per-volume limits remove that.)
+        // (each volume has its own limit, so the first card's reads can't take the second's slots:
+        // both run at once. A busy machine may take a while to start them: wait, don't sample.)
+        wait_until(|| gate.calls_on("a") > 0 && gate.calls_on("b") > 0, "both cards read at once");
         // (time for any read ahead beyond the bound to show up)
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(ctx.pending.load(Ordering::SeqCst), 2 * want, "{n} files a card: no more than {w} read ahead on each");
@@ -439,6 +439,34 @@ fn reads_ahead_at_most_per_volume_files_on_each_volume() {
         let ready = batches.iter().flat_map(|b| &b.items).filter(|it| matches!(it, PreparedItem::Ready(_))).count();
         assert_eq!(ready, 2 * n, "every file, once");
         assert_eq!((gate.calls_on("a"), gate.calls_on("b")), (n, n), "each file read once");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// The read-ahead grows by two places for every reader the pool's controller added to a volume
+/// (§5.7: a volume whose limit climbs isn't taken as out of work): card `a` raised by 2 reads 12
+/// ahead (at, just below, just above), card `b`, not raised, still 8.
+#[test]
+fn the_read_ahead_grows_with_a_raised_limit() {
+    let w = 8;
+    for (n, want_a) in [(11, 11), (12, 12), (13, 12)] {
+        let root = temp_root(&format!("raised-{n}"));
+        let files = cards_of(&root, n);
+        let gate = Arc::new(Gate::default());
+        let real = Session::new().with_fs().media.file_probe.unwrap();
+        let look = Lookahead { batch: 4, per_volume: w, batches: 64 };
+        let ctx = context(&root);
+        let mounts = Mounts::from_points(vec!["/".into(), root.join("a").to_string_lossy().into_owned()], false);
+        ctx.shared.pin_raised(lcc_catalog::folders::volume_key(&root.join("a").join("x").to_string_lossy(), &mounts), 2);
+        let h = start_in(&ctx, files.clone(), options(&root, ImportMode::Add), look, Some(gated_probe(&gate, real)));
+        let want = want_a + w;
+        wait_until(|| ctx.pending.load(Ordering::SeqCst) >= want, "the read-ahead to fill");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(ctx.pending.load(Ordering::SeqCst), want, "{n} files a card: {want_a} read ahead on a, {w} on b");
+        gate.release();
+        let batches = h.join().unwrap();
+        let ready = batches.iter().flat_map(|b| &b.items).filter(|it| matches!(it, PreparedItem::Ready(_))).count();
+        assert_eq!(ready, 2 * n, "every file, once");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
