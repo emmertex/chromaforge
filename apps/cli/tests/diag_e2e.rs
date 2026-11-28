@@ -114,7 +114,9 @@ fn a_folder_import_records_the_probe_with_this_batchs_count() {
         let jpg = lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 80, Default::default(), &Default::default()).unwrap();
         std::fs::write(shoot.join(format!("IMG_{i}.jpg")), jpg).unwrap();
     }
-    let diag_dir = cli(&s.0, Some("normal,probe=trace"), &["library.import".into(), format!(r#"paths=["{}"]"#, shoot.display())]);
+    // (the path goes through serde_json: a Windows path's backslashes are not valid JSON as written)
+    let diag_dir =
+        cli(&s.0, Some("normal,probe=trace"), &["library.import".into(), format!("paths={}", serde_json::json!([shoot.display().to_string()]))]);
     let entries = entries(&diag_dir);
     let probes: Vec<&Value> = entries.iter().filter(|e| e["op"] == "probe_all").collect();
     assert!(!probes.is_empty(), "{entries:?}");

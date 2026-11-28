@@ -2,8 +2,13 @@
 //! files in temp folders that an injected mount list makes separate volumes and a clock the test
 //! steps: today's results, order and names; an abandoned copy's "outcome unknown"; a panicking
 //! copy; cancel and a stall at the Copy as DNG step.
+//!
+//! Unix only (Linux, macOS): Windows reads no mount list and keys a volume by its drive
+//! (`key_in`'s drive prefix shortcut), so injected mount points under one drive cannot make two
+//! volumes there and these scenarios have no Windows form yet (issue tracking Windows-native
+//! I/O coverage).
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
