@@ -370,6 +370,9 @@ fn print_contents(c: &Calibration) {
         c.camera.illuminants,
         if c.camera.hue_sat_map.is_some() { ", two hue/saturation maps" } else { "" }
     );
+    if let Some(b) = c.camera.raw_baseline_exposure {
+        println!("  raw baseline exposure {b:+.2} EV (raws without colour tags of their own, as their converted DNGs carry)");
+    }
     for l in &c.looks {
         println!(
             "  look \"{}\": exposure offset {:+.2} EV, {}-point tone curve{}",
@@ -590,7 +593,13 @@ mod tests {
             tool_version: "0".into(),
             contributor: Some("A Contributor".into()),
             licence: calibration::LICENCE.into(),
-            camera: calibration::CameraModel { illuminants: [17, 21], color_matrix: [cm, cm], forward_matrix: [fm, fm], hue_sat_map: None },
+            camera: calibration::CameraModel {
+                illuminants: [17, 21],
+                color_matrix: [cm, cm],
+                forward_matrix: [fm, fm],
+                hue_sat_map: None,
+                raw_baseline_exposure: None,
+            },
             looks: vec![],
             evidence: calibration::Evidence { photos: 24, ..Default::default() },
         }

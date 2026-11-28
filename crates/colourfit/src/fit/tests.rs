@@ -31,7 +31,7 @@ fn truth() -> (Model, Vec<[f32; 2]>) {
             [x, y]
         }))
         .collect();
-    (Model { cm: [cm1, cm2], fm: Some(fm), hsm: Some([t.clone(), t]) }, tone)
+    (Model { cm: [cm1, cm2], fm: Some(fm), hsm: Some([t.clone(), t]), raw_baseline: 0.0 }, tone)
 }
 
 fn synthetic(model: &Model, lut: &pipe::Lut) -> Vec<PhotoSamples> {
@@ -46,7 +46,8 @@ fn synthetic(model: &Model, lut: &pipe::Lut) -> Vec<PhotoSamples> {
             let cm = Mat3(std::array::from_fn(|r| std::array::from_fn(|c| g * model.cm[0].0[r][c] + (1.0 - g) * model.cm[1].0[r][c])));
             let n = cm.apply(xy.to_xyz());
             let n = n.map(|v| v / n[1]);
-            let dec = model.photo(&LookModel::default(), 0.0, n);
+            // Lightroom renders every photo with the camera's baseline (a raw's own, a DNG's from its file)
+            let dec = model.photo(&LookModel::default(), model.raw_baseline, n);
             let samples = (0..300)
                 .map(|_| {
                     let k = 0.02 + 0.6 * rng.next().powi(2);
@@ -86,6 +87,39 @@ fn fit_recovers_a_known_profile() {
     assert!(e.after.median < e.before.median);
     let json = cal.to_json().unwrap();
     assert!(!json.contains("TESTCAM/") && !json.contains("raw_path"));
+}
+
+/// Issue #1485: Lightroom renders a raw without colour tags (a CR2) as bright as the converted DNG of the same camera,
+/// whose `BaselineExposure` carries the converter's per-model baseline. Fitted on both kinds, the calibration carries
+/// that baseline for the raws; fitted on raws alone it can't tell it from the tone curve and carries none.
+#[test]
+fn fit_finds_the_raw_baseline_from_dngs_and_raws() {
+    let (model, tone) = truth();
+    let lut = lut_for(&tone).unwrap();
+    const BASELINE: f64 = 0.35;
+    let lr = Model { raw_baseline: BASELINE, ..model.clone() };
+    let mut photos = synthetic(&lr, &lut);
+    for (i, p) in photos.iter_mut().enumerate() {
+        if i % 2 == 0 {
+            // a converted DNG: its own matrices and the baseline in the file
+            p.white.baseline_exposure = BASELINE;
+            p.dng = Some(DngMatrices {
+                illuminant: [17, 21],
+                color_matrix: model.cm.map(Some),
+                forward_matrix: model.fm.map_or([None, None], |f| f.map(Some)),
+            });
+        }
+    }
+    let cal = fit(&photos, &FitOptions { contributor: Some("Test".into()), rounds: 2, ..Default::default() }).unwrap();
+    cal.validate().unwrap();
+    let b = cal.camera.raw_baseline_exposure.expect("a raw baseline from a mixed set");
+    assert!((b - BASELINE).abs() <= 0.05, "fitted {b}, want {BASELINE}");
+    let e = &cal.evidence.looks[0];
+    assert!(e.after.median < 1.5, "{e:?}");
+    // raws only: no baseline
+    let raws: Vec<PhotoSamples> = synthetic(&lr, &lut);
+    let cal = fit(&raws, &FitOptions { contributor: Some("Test".into()), rounds: 1, ..Default::default() }).unwrap();
+    assert_eq!(cal.camera.raw_baseline_exposure, None);
 }
 
 #[test]
