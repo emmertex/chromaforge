@@ -1,27 +1,47 @@
 # CI and landing changes
 
-> **Last updated:** 2026-11-27 · **Change:** patch (the nightly Report job also runs on dispatches on `main`, so a green dispatch closes the failure issue); minor (`cargo xtask bench` runs the probes and gates on budgets); patch (dependency updates: the hand-held `windows` 0.62.2 lockfile pin); minor (PRs run the tests of the changed crates and their dependents; the nightly full run covers macOS and Windows, files an issue when red, and a red nightly blocks `release.yml`); minor (nightly `Fuzz` runs all targets in parallel in one job); minor (nightly `Fuzz` workflow: every pure-Rust fuzz target for 30 minutes, crash inputs as artifacts); minor (nightly workflow: corpus + fonts full run with a skip gate, GPU equivalence on lavapipe and WARP); minor (timing probes and benchmarks run with `<PREFIX>_PROBES=1` and otherwise record a `probe` skip); minor (generated demo photos are kept on disk across test processes); minor (the fast gate checks that the fork catalogs are sorted); minor (the full run also checks the x86_64 Android target); major (no repeated runs: a push to main skips a tree its PR run tested, no CI on pushes to `release`, Brand only on PRs and built in the runner cache, Windows ARM64 only when packaging inputs change, sccache, one cargo run per target for the fast gate's wasm/Android checks); minor (release jobs upload straight to the draft release, not via Actions artifacts); major (every workflow on self-hosted runners, containers on gpu0, fork PRs approved after review); minor (test retries, flaky reports and the test quarantine for the full run); major (fast PR gate; full test runs only before a release); major (created: PR-only main, self-hosted runner, local status)
+> **Last updated:** 2026-11-28 · **Change:** major (PRs to `staging` run the fast gate only, no tests; the full suite gates the batch PR `staging` → `main`; Brand on batch PRs only; Windows ARM64 weekly + dispatch; Immich and Print nightly only); patch (the nightly Report job also runs on dispatches on `main`, so a green dispatch closes the failure issue); minor (2026-11-24: `cargo xtask bench` runs the probes and gates on budgets); patch (dependency updates: the hand-held `windows` 0.62.2 lockfile pin); minor (PRs run the tests of the changed crates and their dependents; the nightly full run covers macOS and Windows, files an issue when red, and a red nightly blocks `release.yml`); minor (nightly `Fuzz` runs all targets in parallel in one job); minor (nightly `Fuzz` workflow: every pure-Rust fuzz target for 30 minutes, crash inputs as artifacts); minor (nightly workflow: corpus + fonts full run with a skip gate, GPU equivalence on lavapipe and WARP); minor (timing probes and benchmarks run with `<PREFIX>_PROBES=1` and otherwise record a `probe` skip); minor (generated demo photos are kept on disk across test processes); minor (the fast gate checks that the fork catalogs are sorted); minor (the full run also checks the x86_64 Android target); major (no repeated runs: a push to main skips a tree its PR run tested, no CI on pushes to `release`, Brand only on PRs and built in the runner cache, Windows ARM64 only when packaging inputs change, sccache, one cargo run per target for the fast gate's wasm/Android checks); minor (release jobs upload straight to the draft release, not via Actions artifacts); major (every workflow on self-hosted runners, containers on gpu0, fork PRs approved after review); minor (test retries, flaky reports and the test quarantine for the full run); major (fast PR gate; full test runs only before a release); major (created: PR-only main, self-hosted runner, local status)
 
-## How changes reach `main`
+## How changes land: `staging`, then batched into `main`
 
-`main` on Chromaforge is protected by two rulesets:
+PRs target **`staging`** (the default branch). Every change goes on a branch, opens a PR against `staging`
+and is set to auto-merge (`gh pr merge <n> --repo <owner>/<repo> --auto --merge`); it lands when the fast
+check passes. `staging` carries no protection and runs no tests — it is the integration branch that absorbs
+the backlog, so unreviewed churn never occupies the machines and never reaches `main` untested.
+
+`main` receives work only through the periodic batch PR and stays protected by two rulesets:
 
 - **No force-push, no deletion** — nobody bypasses this.
 - **Pull request required** (0 approvals, merge commits only) and the **"Linux (cargo xtask ci)"** check must be
-  green. The branch need not be up to date with `main`: the run on the push to `main` tests any merge whose tree
-  the PR run didn't (below). Repository admins can bypass it for emergencies only.
+  green. The batch PR itself provides that check: its run is the full gate (below). Repository admins can
+  bypass it for emergencies only.
 
-Every change goes on a branch, opens a PR and is set to auto-merge
-(`gh pr merge <n> --repo <owner>/<repo> --auto --merge`); it lands when the check passes.
+When it is time to batch (roughly a day's worth, or before a release), collect `staging` into `main`:
 
-## Fast gate on PRs, full CI before a release
+```
+gh pr create --repo <owner>/<repo> --base main --head staging --fill   # describe what the batch contains
+gh pr merge <n> --repo <owner>/<repo> --auto --merge
+```
+
+The batch PR runs the full gate, so a red batch blocks only that batch and `main` receives only fully tested
+trees; the push to `main` afterwards is skipped, because its tree was just tested (*No run twice for the same
+tree* below). Work already on `main` is guarded daily by Nightly (full tests on all three desktop OSes) and
+nightly fuzzing, and `release.yml` refuses to cut a release the nightly has not passed.
+
+## Fast gate on PRs, full gate on the batch PR
 
 | Trigger | Linux ("Linux (cargo xtask ci)") | macOS / Windows |
 |---|---|---|
-| Pull request to `main` | `cargo xtask ci --fast` + changed-crate tests + SIL suite | clippy of the changed crates and their dependents (`cargo xtask affected-clippy`; none for a docs-only PR) |
-| Push to `main` (newest only: a newer push cancels the run) | `cargo xtask ci --fast` + SIL suite | clippy |
+| Pull request to `staging` | `cargo xtask ci --fast` | — |
+| Batch pull request `staging` → `main` | full `cargo xtask ci` + SIL suite | build + clippy + `cargo test --workspace` |
+| Push to `main` (newest only: a newer push cancels the run) | skipped when the batch PR tested the tree; otherwise full `cargo xtask ci` + SIL suite | same; otherwise build + clippy + `cargo test --workspace` |
 | Manual dispatch (Actions → CI → Run workflow) | full `cargo xtask ci` + SIL suite | build + clippy + `cargo test --workspace` |
 | Push to `release` | none: the dispatched run tested that commit | none |
+
+The fast gate runs no tests: a PR to `staging` proves the tree compiles (clippy `--all-targets`), formats and
+passes the static gates, and nothing more — a slow test surface costs one batch PR instead of every PR at
+once. Locally the standard stays higher: run `cargo xtask ci --quick` and the targeted tests of what you
+touched before pushing (below; AGENTS.md, *Quality gates*).
 
 `cargo xtask ci --fast` runs fmt, brand, docs, notes (release-note entries, `docs/whats-new/README.md`), i18n (the fork
 catalogs sorted, [`localization.md`](localization.md)), windows (every `egui::Window` in `crates/ui-egui/src` is listed in
@@ -50,36 +70,38 @@ both ABIs a release ships, arm64 and x86_64, in the full run. `cargo xtask parit
 and control registries from the CLI as `cargo test -p lcc-cli --test sil` builds it, so the SIL step that follows
 compiles nothing new.
 
-**Changed-crate tests (PRs).** After the fast gate, PR runs call `cargo xtask affected-tests --base HEAD^1`
-(the checkout fetches two commits: GitHub's merge of the PR and its first parent, the base). It takes the packages
-`ci --quick` would (files inside a package, files a crate compiles in, `ci_quick.rs`'s `EMBEDDED`), adds every
-workspace package that depends on one of them, directly or not and of any dependency kind, and runs those packages'
-unit and integration test binaries (one workspace `--no-run` build, as `ci --quick`; no doctests). A workspace-wide
-change (root `Cargo.toml`, `Cargo.lock`, lint or toolchain config) tests every package. Locally:
-`cargo xtask affected-tests` compares with `origin/main`.
+**No tests on PRs.** Since the staging batch flow, PR runs stop after the fast gate; the changed-crate test
+step is gone. `cargo xtask affected-tests` (the packages `ci --quick` would, plus every workspace package
+that depends on one of them) remains a local tool: `cargo xtask affected-tests [--base <ref>]` compares with
+`origin/main` by default, so against the batch flow pass `--base origin/staging` (or the batch base).
 
 Before cutting a release, dispatch CI on the commit and make sure all three OSes are green, then push that commit
 to `release` (`release.yml` builds it; CI does not run again there).
 
 ### No run twice for the same tree
 
-GitHub's PR run checks out the merge of the PR into `main`. When the PR then merges and `main` hasn't moved, the
-merge commit has exactly that tree, so testing it again finds nothing new. Each green PR run of the Linux job
-uploads a marker artifact `ci-tree-<tree hash>` (kept 14 days); the `tested` job of a push to `main` looks for the
-pushed commit's tree and, when a marker exists, skips the Linux, macOS and Windows jobs. If `main` moved in between,
-the tree is new and everything runs. Runs on `main` cancel each other (`cancel-in-progress`), so a burst of merges
-tests only the newest commit, which contains the earlier ones; a failure then points at the merges since the last
-green run. (GitHub's merge queue, which would test each merge exactly once, is only
-offered to repositories owned by an organization.)
+GitHub's PR run checks out the merge of the PR into its base. The batch PR `staging` → `main` runs the full
+gate, so its checkout tests exactly the merge commit the batch will produce; when it then merges and `main`
+hasn't moved, the push run would find nothing new. Each green full-gate PR run of the Linux job uploads a
+marker artifact `ci-tree-<tree hash>` (kept 14 days); the `tested` job of a push to `main` looks for the
+pushed commit's tree and, when a marker exists, skips the Linux, macOS and Windows jobs. A fast PR run to
+`staging` never leaves a marker: a tree counts as tested only once its tests have run. If `main` moved in
+between, the tree is new and everything runs. (GitHub's merge queue, which would test each merge exactly
+once, is only offered to repositories owned by an organization.) Runs on `main` cancel each other
+(`cancel-in-progress`), so a burst of batches tests only the newest commit, which contains the earlier ones; a
+failure then points at the batches since the last green run.
 
-The other workflows avoid repeats the same way: Brand (the throw-away brand build, `cargo xtask brand test`) runs
-on PRs only, and Windows ARM64 (a full ARM64 package, install and run on SNAPDRAGON) runs on pushes to `main`
-only when dependencies, build scripts or the Windows packaging change, plus weekly.
+Brand (the throw-away brand build, `cargo xtask brand test`) runs on PRs that target `main` — the batch —
+only. Windows ARM64 (a full ARM64 package, install and run on SNAPDRAGON) runs weekly and on dispatch.
+Manual, Nix and Packaging lint keep their path triggers on pushes to `main`, which since the batch flow
+means once per batch; Immich, Print, FreeBSD, Nightly, Fuzz and Models run on their schedules and on
+dispatch.
 
 ## Where the jobs run
 
-GitHub-hosted minutes are used up, so **every job of every workflow runs on the maintainer's self-hosted
-runners** (all carry the label `lcc`):
+GitHub-hosted minutes are used up, so **nearly every job of every workflow runs on the maintainer's
+self-hosted runners** (all carry the label `lcc`); the Manual shots job is the exception — it only builds the
+CLI headless, so it runs on a hosted `ubuntu-latest` runner:
 
 | Runner | Labels | Machine | Runs |
 |---|---|---|---|
@@ -227,7 +249,7 @@ Every such case must end in an error that names what happened, never a panic, a 
 ## Nightly
 
 `.github/workflows/nightly.yml` runs every day at 03:17 UTC and on manual dispatch (Actions → Nightly → Run workflow).
-It covers what the PR gate and the release dispatch cannot: test data, software GPU adapters and the full test suite
+It covers what the fast PR gate and the release dispatch cannot: test data, software GPU adapters and the full test suite
 on all three desktop OSes every day.
 
 | Job | Runner | What it runs |
@@ -296,7 +318,8 @@ after a deliberate change to a model's outputs, regenerate with `<PREFIX>_MODEL_
 
 ## Retries, flaky tests and the quarantine
 
-The full pre-release run (`cargo xtask ci` without `--fast`, on a manual dispatch) runs the tests with [cargo-nextest](https://nexte.st) (installed by `taiki-e/install-action`, into the
+The full run (`cargo xtask ci` without `--fast`: the batch PR `staging` → `main`, a manual dispatch, or a
+push to `main` with an untested tree) runs the tests with [cargo-nextest](https://nexte.st) (installed by `taiki-e/install-action`, into the
 runner's cargo home), profile `ci` in `.config/nextest.toml`:
 
 - **Retries:** a failing test is retried up to 2 times. One that then passes is reported as **FLAKY** in the

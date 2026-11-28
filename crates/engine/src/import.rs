@@ -934,14 +934,40 @@ pub(crate) fn probe_all_typed(
             })
             .collect();
     };
+    use std::sync::atomic::Ordering::Relaxed;
+    // diagnostics (issue #1363): one step per call (a batch, usually), listed in the in-flight file while it runs with
+    // how many of *this call's* files are probed (`done` is the caller's counter and may count other batches too);
+    // `cancelled` when cancel left files unprobed, `failed` when a volume that stopped responding or a probe that
+    // panicked did. The jobs hold the span weakly: a job a hung volume left behind can outlive this call, which finishes
+    // the span itself.
+    let span = std::sync::Arc::new(lcc_diag::span_at(
+        lcc_diag::Level::Normal,
+        lcc_diag::Subsystem::Probe,
+        "probe_all",
+        lcc_diag::Class::Top,
+        &[("files", lcc_diag::Val::U64(paths.len() as u64))],
+    ));
+    let probed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe: crate::media::FileProbe = {
+        let (top, probed) = (std::sync::Arc::downgrade(&span), probed.clone());
+        std::sync::Arc::new(move |p: &str| {
+            let leaf = lcc_diag::span(lcc_diag::Subsystem::Probe, "probe_file", lcc_diag::Class::Leaf, &[]);
+            let r = probe(p);
+            leaf.done(&r);
+            let mine = probed.fetch_add(1, Relaxed) + 1;
+            if let Some(top) = top.upgrade() {
+                top.note("done", lcc_diag::Val::U64(mine as u64));
+            }
+            r
+        })
+    };
     #[cfg(not(target_arch = "wasm32"))]
-    let probed = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
+    let out = probe_scheduled(crate::io_sched::IoContext::global(), &probe, paths, workers(paths.len()), done, cancel);
     // (no threads: one file after another, R10)
     #[cfg(target_arch = "wasm32")]
-    let probed = paths
+    let out = paths
         .iter()
         .map(|p| {
-            use std::sync::atomic::Ordering::Relaxed;
             if cancel.load(Relaxed) {
                 return Err(ProbeError::from(String::from("cancelled")));
             }
@@ -950,7 +976,20 @@ pub(crate) fn probe_all_typed(
             r
         })
         .collect();
-    probed
+    drop(probe);
+    let probed = probed.load(Relaxed);
+    // (a job ending just now may hold the span for a moment; it then ends when that job lets go, `abandoned`)
+    if let Ok(mut span) = std::sync::Arc::try_unwrap(span) {
+        span.set("done", lcc_diag::Val::U64(probed as u64));
+        span.finish(if probed >= paths.len() {
+            lcc_diag::Outcome::Ok
+        } else if cancel.load(Relaxed) {
+            lcc_diag::Outcome::Cancelled
+        } else {
+            lcc_diag::Outcome::Failed
+        });
+    }
+    out
 }
 
 /// Whether a probe cached from an earlier scan still holds for the file at a path (a file-system
@@ -2216,6 +2255,13 @@ fn trashed_file_is_gone(cat: &lcc_catalog::Catalog, id: PhotoId) -> bool {
 /// a Move's sources are removed once it is saved). On a failed commit a Move's placed files are
 /// taken back.
 pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
+    // diagnostics (issue #1363): once per batch, so `normal`; ends with its real outcome on every path
+    lcc_diag::traced(lcc_diag::Level::Normal, lcc_diag::Subsystem::Import, "import_commit", &[], crate::diag_outcome, |_| {
+        commit_prepared_inner(s, opts, now, prepared)
+    })
+}
+
+fn commit_prepared_inner(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
     let now = now.to_string();
     let mut report =
         ImportReport { scanned: prepared.scanned, skipped: prepared.skipped, skipped_by_plugin: prepared.plugin_skipped, ..Default::default() };

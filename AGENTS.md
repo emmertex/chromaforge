@@ -39,10 +39,13 @@ This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Cla
    `--write` refreshes the summary.
 4. `plan/observations/` (Adobe notes) is gitignored, local-only.
 
-**Branches:** PRs start from latest `main`; re-merge `origin/main` before pushing and whenever `main` moves
-(auto-merge doesn't update the branch; `gh pr update-branch N` does). Merge agent branches one at a time with
+**Branches:** PRs target `staging` (the default branch), not `main`; start from latest `staging`, re-merge
+`origin/staging` before pushing and whenever `staging` moves (auto-merge doesn't update the branch;
+`gh pr update-branch N` does). PRs to `staging` run the fast gate only — no tests; the full suite gates the
+periodic batch PR `staging` → `main`, which lands once green and is what keeps `main` tested (nightly and
+fuzzing guard it afterwards; [docs/ci.md](docs/ci.md)). Merge agent branches one at a time with
 `cargo xtask ci --fast` + targeted tests between (two green branches can still conflict). Resuming after a crash:
-check `git status` on main, `git worktree list`, `main..HEAD` per worktree; commit small and often.
+check `git status` on staging, `git worktree list`, `staging..HEAD` per worktree; commit small and often.
 
 ## Never crash (outranks features)
 Malformed raw/JPEG/XMP, bad command/control/MCP argument, corrupt catalog/settings, full disk → actionable error,
@@ -115,9 +118,10 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
 - **Quality gates (2026-11-24):** *before pushing*, run `cargo xtask ci --quick` (fmt, brand, docs, layers, assets;
   clippy -D warnings on the changed crates and their dependents; the changed crates' tests; parity / wasm / heif when
   the changes touch them) and `cargo xtask sil` when pipeline/develop changed. Don't also run `ci --fast` or the
-  full `ci` locally: the PR's CI runs the fast gate and the affected tests, and it is the merge gate. Open a PR once,
+  full `ci` locally: PRs to `staging` (the default branch) run the fast gate only, with no tests — the full suite
+  gates the periodic batch PR `staging` → `main`, runs nightly, and on a manual dispatch (releases). Open a PR once,
   when the work is ready (every push to an open PR starts a CI run on CPU-bound self-hosted runners; branch pushes
-  run nothing). Releases get a manual full-CI dispatch. [`docs/ci.md`](docs/ci.md).
+  and pushes to `staging` run nothing). [`docs/ci.md`](docs/ci.md).
 - **Commits:** one task id per commit (`M2.3: local Laplacian highlights/shadows`); green states only; end messages
   with the environment's attribution line.
 

@@ -43,6 +43,7 @@ lcc-surface = { workspace = true }
 lcc-brand = { workspace = true }
 lcc-engine = { workspace = true, features = ["sam"] }
 lcc-sysmem = { workspace = true }
+lcc-diag = { workspace = true }
 # the render workers' priority (`threads`)
 lcc-preview = { workspace = true }
 rayon = { workspace = true }

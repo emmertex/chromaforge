@@ -7,8 +7,6 @@ on:
   push:
     branches: [main]
     paths: ["docs/manual-site/**", ".github/workflows/manual.yml"]
-  pull_request:
-    paths: ["docs/manual-site/**", ".github/workflows/manual.yml", "crates/ui-egui/**", "crates/engine/**", "apps/cli/**"]
   workflow_dispatch:
 
 permissions:
@@ -16,8 +14,8 @@ permissions:
 
 concurrency:
   group: manual-${{ github.ref }}
-  # Never cancel a Pages deploy half way; superseded pull-request builds may be cancelled.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Never cancel a Pages deploy half way.
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -53,8 +51,9 @@ jobs:
   # Runs every shot script (docs/manual-site/scripts/shots.d) headless against the demo library and
   # fails when one breaks: a request answering "ok": false (a renamed widget id or command) or a
   # missing screenshot. The images it makes are thrown away; the committed ones are not checked.
+  # Per batch, not per PR: the run builds the whole CLI on a hosted runner (docs/ci.md).
   shots:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
