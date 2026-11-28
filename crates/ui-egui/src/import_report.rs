@@ -1,6 +1,6 @@
-//! What an import couldn't carry over from other editors' XMP sidecars, in a window instead of a
-//! toast: a large folder from Lightroom gave one toast line per photo, thousands of them, gone in
-//! eight seconds. The window groups the warnings by reason with counts, selects the photos of a
+//! What an import couldn't carry over from other editors' XMP sidecars, and the raws Copy as DNG
+//! didn't convert, in a window instead of a toast: a large folder from Lightroom gave one toast
+//! line per photo, thousands of them, gone in eight seconds. The window groups the warnings by reason with counts, selects the photos of a
 //! group, and copies or saves the full list; File ▸ More Imports ▸ Import Warnings… opens it again.
 //! Fork-owned.
 
@@ -37,6 +37,8 @@ pub struct Group {
     pub note: String,
     /// (path, photo), one per photo, in import order
     pub photos: Vec<(String, Option<u64>)>,
+    /// A Copy as DNG that wasn't made (else XMP settings that didn't carry over).
+    pub dng: bool,
 }
 
 impl Report {
@@ -48,6 +50,9 @@ impl Report {
                 ImportWarningCode::CameraProfile => (0, w.profile.clone().unwrap_or_default()),
                 ImportWarningCode::UprightGeometry => (1, format!("{:?}", w.mode.unwrap_or(ImportUprightMode::Unknown))),
                 ImportWarningCode::UnmappedXmp => (2, String::new()),
+                ImportWarningCode::DngCancelled => (3, "cancelled".into()),
+                ImportWarningCode::DngMemoryHeld => (3, "memory".into()),
+                ImportWarningCode::DngFailed => (3, "failed".into()),
             };
             let entry = by.entry(key).or_default();
             if !entry.0.iter().any(|(p, _)| *p == w.path) {
@@ -67,14 +72,15 @@ impl Report {
                         tr("These photos start from the camera's own look instead, so colours may differ from the other editor.").to_string(),
                     ),
                     1 => upright_text(mode.unwrap_or(ImportUprightMode::Unknown)),
-                    _ => {
+                    2 => {
                         let mut fields: Vec<(String, usize)> = fields.into_iter().collect();
                         fields.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                         let list = fields.iter().map(|(f, n)| format!("{f} ({n})")).collect::<Vec<_>>().join(", ");
                         (tr("Settings with no equivalent here").to_string(), format!("{}: {list}.", tr("Left out")))
                     }
+                    _ => (tr("Copy as DNG: not converted").to_string(), dng_note(&detail).to_string()),
                 };
-                Group { title, note, photos }
+                Group { title, note, photos, dng: kind == 3 }
             })
             .collect();
         groups.sort_by_key(|g| std::cmp::Reverse(g.photos.len()));
@@ -86,9 +92,22 @@ impl Report {
         self.groups.iter().flat_map(|g| g.photos.iter().map(|(p, _)| p.as_str())).collect::<BTreeSet<_>>().len()
     }
 
+    /// Photos with a warning of the XMP groups (`dng` false) or of Copy as DNG's (true).
+    fn photos_of(&self, dng: bool) -> usize {
+        self.groups.iter().filter(|g| g.dng == dng).flat_map(|g| g.photos.iter().map(|(p, _)| p.as_str())).collect::<BTreeSet<_>>().len()
+    }
+
     /// One line for a toast.
     pub fn summary(&self) -> String {
-        format!("{}: {}", tr("Photos with settings that didn't carry over"), self.photos())
+        let (xmp, dng) = (self.photos_of(false), self.photos_of(true));
+        let mut parts = Vec::new();
+        if xmp > 0 || dng == 0 {
+            parts.push(format!("{}: {xmp}", tr("Photos with settings that didn't carry over")));
+        }
+        if dng > 0 {
+            parts.push(format!("{}: {dng}", tr("Raws imported without their DNG")));
+        }
+        parts.join(" · ")
     }
 
     /// The whole report as plain text (Copy, Save, the log).
@@ -105,15 +124,36 @@ impl Report {
 
     fn intro(&self) -> String {
         let n = self.photos();
-        format!(
-            "{}: {}\n{}: {n}\n{}",
-            tr("Photos imported"),
-            self.imported.max(n),
-            tr("With settings that didn't carry over"),
-            tr(
-                "These photos have develop settings in an XMP sidecar from another editor that can't be applied here. The photos were imported and the sidecars are unchanged; only these settings were left out."
-            ),
-        )
+        let (xmp, dng) = (self.photos_of(false), self.photos_of(true));
+        let mut out = format!("{}: {}", tr("Photos imported"), self.imported.max(n));
+        if xmp > 0 || dng == 0 {
+            out.push_str(&format!(
+                "\n{}: {xmp}\n{}",
+                tr("With settings that didn't carry over"),
+                tr(
+                    "These photos have develop settings in an XMP sidecar from another editor that can't be applied here. The photos were imported and the sidecars are unchanged; only these settings were left out."
+                ),
+            ));
+        }
+        if dng > 0 {
+            out.push_str(&format!(
+                "\n{}: {dng}\n{}",
+                tr("Raws imported without their DNG"),
+                tr("Copy as DNG was on, but these raws were imported as raw files: Convert Photo to DNG… converts them later."),
+            ));
+        }
+        out
+    }
+}
+
+/// Why Copy as DNG didn't convert a group's raws (the group's detail).
+fn dng_note(detail: &str) -> &'static str {
+    match detail {
+        "cancelled" => tr("The import was cancelled before these raws were converted: each was imported as its raw copy."),
+        "memory" => tr(
+            "Memory is held by a read that is not returning (a drive that stopped responding), so these raws weren't converted: each was imported as its raw copy.",
+        ),
+        _ => tr("The conversion or the DNG's write failed (the log says why): each was imported as its raw copy."),
     }
 }
 
@@ -301,6 +341,39 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
+    use lcc_engine::import::{ImportWarning, ImportWarningCode};
+
+    fn warning(path: &str, code: ImportWarningCode) -> ImportWarning {
+        ImportWarning { path: path.into(), code, profile: None, mode: None, fields: Vec::new(), photo: Some(1) }
+    }
+
+    /// A raw Copy as DNG didn't convert gets its own group by reason, and the summary and intro say
+    /// so; an import with XMP warnings only reads as before.
+    #[test]
+    fn a_dng_not_made_is_its_own_group() {
+        let xmp = vec![warning("/a/1.nef", ImportWarningCode::UnmappedXmp)];
+        let r = super::Report::new(3, &xmp);
+        assert!(r.groups.iter().all(|g| !g.dng));
+        assert_eq!(r.summary(), format!("{}: 1", super::tr("Photos with settings that didn't carry over")));
+        assert!(!r.intro().contains(super::tr("Raws imported without their DNG")));
+
+        let mut both = xmp;
+        both.push(warning("/a/2.nef", ImportWarningCode::DngCancelled));
+        both.push(warning("/a/3.nef", ImportWarningCode::DngMemoryHeld));
+        both.push(warning("/a/4.nef", ImportWarningCode::DngMemoryHeld));
+        let r = super::Report::new(4, &both);
+        let dng: Vec<(usize, &str)> = r.groups.iter().filter(|g| g.dng).map(|g| (g.photos.len(), g.note.as_str())).collect();
+        assert_eq!(dng.len(), 2, "one group per reason");
+        assert!(dng.iter().any(|(n, note)| *n == 2 && note.contains("not returning")));
+        assert_eq!(r.photos(), 4);
+        assert!(r.summary().ends_with(&format!("{}: 3", super::tr("Raws imported without their DNG"))), "{}", r.summary());
+        assert!(r.intro().contains(super::tr("With settings that didn't carry over")) && r.intro().contains("Convert Photo to DNG"));
+
+        let only = super::Report::new(1, &[warning("/a/5.nef", ImportWarningCode::DngFailed)]);
+        assert_eq!(only.summary(), format!("{}: 1", super::tr("Raws imported without their DNG")));
+        assert!(!only.intro().contains(super::tr("With settings that didn't carry over")));
+    }
+
     #[test]
     fn short_paths_keep_the_file_and_its_folders() {
         assert_eq!(super::short_path("/Volumes/Photography/Photo Container/2026/10-09 - Duluth/DSC_0675.NEF"), "…/2026/10-09 - Duluth/DSC_0675.NEF");

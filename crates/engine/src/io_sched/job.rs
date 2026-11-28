@@ -1,6 +1,7 @@
-//! One running job's shared state (§5.2 of the I/O spec): what its reads moved, when it last made
-//! progress, whether it waits at the work gate or computes, the gate bytes it holds, and whether
-//! the scheduler abandoned it. Shared (`Arc`) between the job's thread, the call that runs it and,
+//! One running job's shared state (§5.2 of the I/O spec): what it moved, by kind and volume (a
+//! copy's source reads, destination writes and read-back), when it last made progress, which of a
+//! copy's volumes its current I/O call is on, whether it waits at the work gate or computes, the
+//! gate bytes it holds, and whether the scheduler abandoned it. Shared (`Arc`) between the job's thread, the call that runs it and,
 //! once abandoned, the registry, so a job's silence can be judged with no thread sampling it.
 // (on wasm32 no job runs: the gate only consults this when a job is installed)
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -17,6 +18,83 @@ const RUNNING: u8 = 0;
 const FINISHED: u8 = 1;
 const ABANDONED: u8 = 2;
 
+/// Which of a copy's two volumes an I/O call is on (a job that isn't a copy has only its source).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    Source,
+    Dest,
+}
+
+impl Side {
+    fn index(self) -> usize {
+        match self {
+            Side::Source => 0,
+            Side::Dest => 1,
+        }
+    }
+
+    /// The other volume of a copy.
+    pub(crate) fn other(self) -> Side {
+        match self {
+            Side::Source => Side::Dest,
+            Side::Dest => Side::Source,
+        }
+    }
+}
+
+/// What a counted byte was: read from the source, written to the destination, or read back from
+/// the destination (a copy's verify, Copy as DNG's read of the stored raw and of its DNG).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ByteKind {
+    Read,
+    Written,
+    ReadBack,
+}
+
+impl ByteKind {
+    fn index(self) -> usize {
+        match self {
+            ByteKind::Read => 0,
+            ByteKind::Written => 1,
+            ByteKind::ReadBack => 2,
+        }
+    }
+
+    /// The volume the byte moved on.
+    pub(crate) fn side(self) -> Side {
+        match self {
+            ByteKind::Read => Side::Source,
+            ByteKind::Written | ByteKind::ReadBack => Side::Dest,
+        }
+    }
+}
+
+/// A job's bytes by kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Moved {
+    pub(crate) read: u64,
+    pub(crate) written: u64,
+    pub(crate) read_back: u64,
+}
+
+impl Moved {
+    /// Every byte (a copy's read, its write and its read-back each count).
+    pub(crate) fn total(&self) -> u64 {
+        self.read.saturating_add(self.written).saturating_add(self.read_back)
+    }
+
+    /// The bytes that moved on `side`'s volume.
+    pub(crate) fn on(&self, side: Side) -> u64 {
+        match side {
+            Side::Source => self.read,
+            Side::Dest => self.written.saturating_add(self.read_back),
+        }
+    }
+}
+
+/// [`JobState::on`]'s value before any call is marked.
+const ON_UNKNOWN: u8 = 0;
+
 /// A job's state, installed in its thread ([`crate::memory::with_job`]) while it runs.
 pub(crate) struct JobState {
     pub(crate) id: u64,
@@ -24,9 +102,13 @@ pub(crate) struct JobState {
     clock: Arc<dyn Clock>,
     /// The registry the gate's "cannot fit" rule reads (weak: the registry holds abandoned jobs).
     shared: Weak<Shared>,
-    bytes: AtomicU64,
-    /// Monotonic time bytes last moved (0: never).
-    last_bytes: AtomicU64,
+    /// Bytes by [`ByteKind`].
+    bytes: [AtomicU64; 3],
+    /// Monotonic time bytes last moved, per [`Side`] (0: never).
+    last_bytes: [AtomicU64; 2],
+    /// The side the job's current (or last) I/O call is on: [`ON_UNKNOWN`], or a [`Side`]'s
+    /// index + 1. Set by the job's code before each call, so a call that hangs names its volume.
+    on: AtomicU8,
     /// Monotonic time of the last progress: the start, every byte read, the end of a computing span.
     last_progress: AtomicU64,
     /// When the current computing span began, plus one (0: not computing).
@@ -35,6 +117,9 @@ pub(crate) struct JobState {
     /// Work-gate bytes the job's permits hold now.
     permit_bytes: AtomicU64,
     status: AtomicU8,
+    /// Cancel asked the job to skip its optional last step (a copy's DNG conversion): the gate
+    /// refuses its next wait ([`crate::memory::GateError::Skipped`]).
+    skip: AtomicBool,
     /// Set when the gate refused the job because abandoned jobs hold memory (typed, for the
     /// metrics; nothing matches the error text).
     gate_failure: Mutex<Option<VolumeKey>>,
@@ -50,13 +135,15 @@ impl JobState {
             volume,
             clock,
             shared,
-            bytes: AtomicU64::new(0),
-            last_bytes: AtomicU64::new(0),
+            bytes: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+            last_bytes: [AtomicU64::new(0), AtomicU64::new(0)],
+            on: AtomicU8::new(ON_UNKNOWN),
             last_progress: AtomicU64::new(now),
             computing_since: AtomicU64::new(0),
             at_gate: AtomicBool::new(false),
             permit_bytes: AtomicU64::new(0),
             status: AtomicU8::new(RUNNING),
+            skip: AtomicBool::new(false),
             gate_failure: Mutex::new(None),
             gate: Mutex::new(None),
         }
@@ -70,21 +157,62 @@ impl JobState {
         self.shared.upgrade()
     }
 
-    /// `n` bytes moved: counted, and the job's clock restarts.
+    /// `n` bytes read from the source: [`JobState::add`] as [`ByteKind::Read`] (the tests' fake
+    /// jobs).
+    #[cfg(test)]
     pub(crate) fn add_bytes(&self, n: usize) {
+        self.add(ByteKind::Read, n);
+    }
+
+    /// `n` bytes of `kind` moved: counted on its side's volume, the call is on that side, and the
+    /// job's clock restarts.
+    pub(crate) fn add(&self, kind: ByteKind, n: usize) {
         let now = self.clock.mono();
-        self.bytes.fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
-        self.last_bytes.fetch_max(now, Ordering::Relaxed);
+        if let Some(b) = self.bytes.get(kind.index()) {
+            b.fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
+        if let Some(t) = self.last_bytes.get(kind.side().index()) {
+            t.fetch_max(now, Ordering::Relaxed);
+        }
+        self.set_on(kind.side());
         self.last_progress.fetch_max(now, Ordering::Relaxed);
     }
 
-    /// When bytes last moved (0: never).
-    pub(crate) fn last_bytes(&self) -> u64 {
-        self.last_bytes.load(Ordering::Relaxed)
+    /// The job's next I/O call is on `side` (a copy's metadata calls, opens and flushes, which
+    /// move no counted byte).
+    pub(crate) fn set_on(&self, side: Side) {
+        let v = u8::try_from(side.index() + 1).unwrap_or(ON_UNKNOWN);
+        self.on.store(v, Ordering::Relaxed);
     }
 
+    /// The side its current (or last) I/O call is on; `None` before any call was marked.
+    pub(crate) fn on(&self) -> Option<Side> {
+        match self.on.load(Ordering::Relaxed) {
+            1 => Some(Side::Source),
+            2 => Some(Side::Dest),
+            _ => None,
+        }
+    }
+
+    /// When bytes last moved, on either side (0: never).
+    pub(crate) fn last_bytes(&self) -> u64 {
+        self.last_bytes.iter().map(|t| t.load(Ordering::Relaxed)).max().unwrap_or(0)
+    }
+
+    /// When bytes last moved on `side` (0: never).
+    pub(crate) fn last_bytes_on(&self, side: Side) -> u64 {
+        self.last_bytes.get(side.index()).map_or(0, |t| t.load(Ordering::Relaxed))
+    }
+
+    /// Every byte the job moved ([`Moved::total`]).
     pub(crate) fn bytes(&self) -> u64 {
-        self.bytes.load(Ordering::Relaxed)
+        self.moved().total()
+    }
+
+    /// Its bytes by kind.
+    pub(crate) fn moved(&self) -> Moved {
+        let get = |k: ByteKind| self.bytes.get(k.index()).map_or(0, |b| b.load(Ordering::Relaxed));
+        Moved { read: get(ByteKind::Read), written: get(ByteKind::Written), read_back: get(ByteKind::ReadBack) }
     }
 
     pub(crate) fn last_progress(&self) -> u64 {
@@ -136,6 +264,26 @@ impl JobState {
         self.status.load(Ordering::Acquire) == ABANDONED
     }
 
+    /// Cancel's request to skip the job's optional last step (a copy's DNG step). Its gate is
+    /// woken, so a wait there for that step ends at once.
+    pub(crate) fn request_skip(&self) {
+        self.skip.store(true, Ordering::Release);
+        self.wake_gate();
+    }
+
+    /// Wake the gate the job holds or waits for permits of, if any (the lock on it is let go
+    /// first: the gate's waiters take the gate's lock, then this one).
+    fn wake_gate(&self) {
+        let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(g) = gate {
+            g.wake();
+        }
+    }
+
+    pub(crate) fn skip_requested(&self) -> bool {
+        self.skip.load(Ordering::Acquire)
+    }
+
     /// The job's thread claims its result; `false` if the scheduler abandoned it first.
     pub(crate) fn try_finish(&self) -> bool {
         self.status.compare_exchange(RUNNING, FINISHED, Ordering::AcqRel, Ordering::Acquire).is_ok()
@@ -151,11 +299,7 @@ impl JobState {
     pub(crate) fn try_abandon(&self) -> bool {
         let abandoned = self.status.compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire).is_ok();
         if abandoned {
-            // (the gate's lock is taken after this one is let go: the gate's waiters take them the other way round)
-            let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            if let Some(g) = gate {
-                g.wake();
-            }
+            self.wake_gate();
         }
         abandoned
     }

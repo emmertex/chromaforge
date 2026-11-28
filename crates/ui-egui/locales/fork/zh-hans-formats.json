@@ -1,5 +1,9 @@
 {
   " ({n} could not be read)": "（{n} 张无法读取）",
+  " · copies left unfinished: {n} (a file may still appear in {folder}, outside the library)": " · 未完成的拷贝：{n} 个（文件仍可能出现在图库之外的 {folder} 中）",
+  " · copies left unfinished: {n} (files may still appear in their destination folders, outside the library)": " · 未完成的拷贝：{n} 个（文件仍可能出现在图库之外的目标文件夹中）",
+  " · {n} not added to the library: {e}": " · {n} 个未添加到图库：{e}",
+  " · {n} not imported: a drive stopped responding": " · {n} 个未导入：某个驱动器已停止响应",
   " · {queued} waiting": " · {queued} 张等待中",
   "+ Create “{new}”": "+ 创建“{new}”",
   ", ": "、",

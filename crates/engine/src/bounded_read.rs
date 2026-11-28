@@ -7,8 +7,10 @@
 //!
 //! Adapted from upstream #3470 (`crates/engine/src/bounded_read.rs`).
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
+
+use crate::io_sched::job::{ByteKind, Side};
 
 /// Most bytes of a photo, video or other media file read into memory (upstream #3703).
 pub const MAX_MEDIA_BYTES: u64 = 8 << 30;
@@ -36,6 +38,13 @@ impl std::fmt::Display for ReadError {
 
 /// The bytes of the regular file at `path`, at most `max` of them.
 pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, ReadError> {
+    read_bounded_as(path, max, ByteKind::Read)
+}
+
+/// [`read_bounded`], its bytes counted for the thread's I/O job as `kind` (a file on a copy's
+/// destination is read back: [`ByteKind::ReadBack`]).
+pub(crate) fn read_bounded_as(path: &Path, max: u64, kind: ByteKind) -> Result<Vec<u8>, ReadError> {
+    on(kind.side());
     let meta = std::fs::metadata(path).map_err(ReadError::Io)?;
     if !meta.is_file() {
         return Err(ReadError::NotAFile);
@@ -43,7 +52,7 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, ReadError> {
     if meta.len() > max {
         return Err(ReadError::TooLarge(meta.len()));
     }
-    let mut file = counting(std::fs::File::open(path).map_err(ReadError::Io)?);
+    let mut file = counting_as(kind, std::fs::File::open(path).map_err(ReadError::Io)?);
     let mut out = Vec::new();
     // (the counting reader hides the file's own size hint from `read_to_end`: reserve it here, best effort)
     let hint = usize::try_from(meta.len().min(max.saturating_add(1))).unwrap_or(0);
@@ -60,15 +69,77 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, ReadError> {
 pub(crate) const MAX_READ_CHUNK: usize = 4 << 20;
 
 /// A reader that caps every `read` at [`MAX_READ_CHUNK`] and counts what it reads for the I/O
-/// job the thread runs (its bytes and last-progress time, which the scheduler's stall rule reads).
+/// job the thread runs (its bytes by kind and last-progress time, which the scheduler's stall rule
+/// reads); before each read it tells the job which of a copy's volumes the read is on.
 pub(crate) struct CountingReader<R> {
     inner: R,
+    kind: ByteKind,
     job: Option<std::sync::Arc<crate::io_sched::JobState>>,
 }
 
-/// `inner`, counted for the thread's current I/O job (none: just capped).
+/// `inner`, a file on the job's source, counted for the thread's current I/O job (none: just
+/// capped).
 pub(crate) fn counting<R>(inner: R) -> CountingReader<R> {
-    CountingReader { inner, job: crate::memory::current_job() }
+    counting_as(ByteKind::Read, inner)
+}
+
+/// [`counting`], its bytes counted as `kind` (a copy's destination read back:
+/// [`ByteKind::ReadBack`]).
+pub(crate) fn counting_as<R>(kind: ByteKind, inner: R) -> CountingReader<R> {
+    CountingReader { inner, kind, job: crate::memory::current_job() }
+}
+
+/// A writer that counts what it writes for the thread's I/O job as [`ByteKind::Written`] (on the
+/// destination), and tells the job before each write that it is on the destination.
+pub(crate) struct CountingWriter<W> {
+    inner: W,
+    job: Option<std::sync::Arc<crate::io_sched::JobState>>,
+}
+
+/// `inner`, a file on the job's destination, counted for the thread's current I/O job.
+pub(crate) fn counting_writer<W>(inner: W) -> CountingWriter<W> {
+    CountingWriter { inner, job: crate::memory::current_job() }
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(job) = &self.job {
+            job.set_on(Side::Dest);
+        }
+        let n = self.inner.write(buf)?;
+        if n > 0
+            && let Some(job) = &self.job
+        {
+            job.add(ByteKind::Written, n);
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(job) = &self.job {
+            job.set_on(Side::Dest);
+        }
+        self.inner.flush()
+    }
+}
+
+/// `n` bytes of `kind` moved by the thread's current I/O job where no counting reader or writer
+/// sees them: counted as progress on their side's volume.
+pub(crate) fn count_bytes(kind: ByteKind, n: u64) {
+    if n > 0
+        && let Some(job) = crate::memory::current_job()
+    {
+        job.add(kind, usize::try_from(n).unwrap_or(usize::MAX));
+    }
+}
+
+/// The thread's current I/O job's next call is on `side` (a copy's open, metadata call or flush:
+/// I/O that moves no counted byte, which can hang all the same). The scheduler then judges a
+/// copy that stops there on that volume only (§5.2).
+pub(crate) fn on(side: Side) {
+    if let Some(job) = crate::memory::current_job() {
+        job.set_on(side);
+    }
 }
 
 impl<R> CountingReader<R> {
@@ -76,7 +147,14 @@ impl<R> CountingReader<R> {
         if n > 0
             && let Some(job) = &self.job
         {
-            job.add_bytes(n);
+            job.add(self.kind, n);
+        }
+    }
+
+    /// Tell the job its next read is on this reader's side.
+    fn mark(&self) {
+        if let Some(job) = &self.job {
+            job.set_on(self.kind.side());
         }
     }
 }
@@ -90,6 +168,7 @@ impl<R: Read> CountingReader<R> {
         let mut total = 0u64;
         while total < limit {
             let want = (MAX_READ_CHUNK as u64).min(limit - total);
+            self.mark();
             let before = out.len();
             let step = (&mut self.inner).take(want).read_to_end(out);
             // (what a failing step appended was read too)
@@ -108,6 +187,7 @@ impl<R: Read> CountingReader<R> {
 impl<R: Read> Read for CountingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let cap = buf.len().min(MAX_READ_CHUNK);
+        self.mark();
         let n = self.inner.read(buf.get_mut(..cap).unwrap_or_default())?;
         self.count(n);
         Ok(n)
