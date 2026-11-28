@@ -22,7 +22,7 @@ import Shot from '../../../components/Shot.astro';
 - **Rename Photos…** (`F2`): template tags with live preview, one undo step.
 - **Fill Location from GPS** (reverse geocoding): offline GeoNames cities (download on request) or a Nominatim server (asks for consent). Opt-in.
 - **XMP sidecars**: **Save Metadata to File** (`Cmd/Ctrl+S`), **Read Metadata from File**, **Automatically Write Changes into XMP** (**Metadata** menu). Rating, label, flag, title, caption, copyright, keywords, the IPTC fields (headline, category, subject codes…), GPS, capture time and edits travel.
-- A grid badge marks metadata changed in the catalog, on disk, or both (conflict); reading and saving ask before overwriting the other side.
+- A grid badge marks metadata changed in the catalog, on disk, or both (conflict); reading and saving ask before overwriting the other side. After a Lightroom catalog import, a photo whose sidecar disagrees with the catalog starts as a conflict.
 - A sidecar the library has never been in step with (it appeared after import, or its keywords weren't imported) keeps its keywords when you save: they are added to the photo first, then written back with yours. Once a photo is in step, a keyword you remove is removed from the file too.
 - Sidecar naming: `name.xmp` or `name.ext.xmp` (**Library** preferences).
 - Face names from other apps (MWG regions) are read.
