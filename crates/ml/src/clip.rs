@@ -1192,4 +1192,85 @@ mod tests {
         assert_eq!(prompt_variants("people"), vec!["a photo of people", "a photo of a person"]);
         assert_eq!(prompt_variants("a photo of a cat"), vec!["a photo of a cat"]);
     }
+
+    /// `v` as a `.safetensors` checkpoint's vision half (HuggingFace names), loaded back as the CPU encoder's tower.
+    fn cpu_tower_of(v: &VisionTowerWeights) -> (VisionTower, ArchSpec) {
+        let d = v.hidden;
+        let mut named: Vec<(String, Vec<usize>, Vec<f32>)> = vec![
+            ("vision_model.embeddings.class_embedding".into(), vec![d], v.class_embedding.clone()),
+            ("vision_model.embeddings.patch_embedding.weight".into(), vec![d, 3, v.patch_size, v.patch_size], v.patch_weight.clone()),
+            ("vision_model.embeddings.position_embedding.weight".into(), vec![v.num_positions, d], v.position_embedding.clone()),
+            ("vision_model.pre_layrnorm.weight".into(), vec![d], v.pre_ln_w.clone()),
+            ("vision_model.pre_layrnorm.bias".into(), vec![d], v.pre_ln_b.clone()),
+            ("vision_model.post_layernorm.weight".into(), vec![d], v.post_ln_w.clone()),
+            ("vision_model.post_layernorm.bias".into(), vec![d], v.post_ln_b.clone()),
+            ("visual_projection.weight".into(), vec![v.embed_dim, d], v.projection.clone()),
+        ];
+        for (i, b) in v.blocks.iter().enumerate() {
+            let p = format!("vision_model.encoder.layers.{i}");
+            for (name, shape, data) in [
+                ("layer_norm1.weight", vec![d], &b.ln1_w),
+                ("layer_norm1.bias", vec![d], &b.ln1_b),
+                ("self_attn.q_proj.weight", vec![d, d], &b.q_w),
+                ("self_attn.q_proj.bias", vec![d], &b.q_b),
+                ("self_attn.k_proj.weight", vec![d, d], &b.k_w),
+                ("self_attn.k_proj.bias", vec![d], &b.k_b),
+                ("self_attn.v_proj.weight", vec![d, d], &b.v_w),
+                ("self_attn.v_proj.bias", vec![d], &b.v_b),
+                ("self_attn.out_proj.weight", vec![d, d], &b.o_w),
+                ("self_attn.out_proj.bias", vec![d], &b.o_b),
+                ("layer_norm2.weight", vec![d], &b.ln2_w),
+                ("layer_norm2.bias", vec![d], &b.ln2_b),
+                ("mlp.fc1.weight", vec![v.intermediate, d], &b.fc1_w),
+                ("mlp.fc1.bias", vec![v.intermediate], &b.fc1_b),
+                ("mlp.fc2.weight", vec![d, v.intermediate], &b.fc2_w),
+                ("mlp.fc2.bias", vec![d], &b.fc2_b),
+            ] {
+                named.push((format!("{p}.{name}"), shape, data.clone()));
+            }
+        }
+        let refs: Vec<(&str, &[usize], &[f32])> = named.iter().map(|(n, s, d)| (n.as_str(), s.as_slice(), d.as_slice())).collect();
+        let dir = std::env::temp_dir().join(format!("lcc-ml-onnx-tower-{}-{:?}", std::process::id(), std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.safetensors");
+        std::fs::write(&path, encode_f32_safetensors(&refs)).unwrap();
+        let arch = ArchSpec {
+            embed_dim: v.embed_dim,
+            vision_hidden: d,
+            vision_intermediate: v.intermediate,
+            vision_layers: v.blocks.len(),
+            vision_heads: v.heads,
+            patch_size: v.patch_size,
+            num_positions: v.num_positions,
+            vocab_size: 0,
+            context_len: 0,
+            text_hidden: 0,
+            text_intermediate: 0,
+            text_layers: 0,
+            text_heads: 0,
+        };
+        let mut st = SafetensorsFile::open(&path).unwrap();
+        let tower = load_vision_tower(&mut st, arch, CandleDevice::Cpu).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        (tower, arch)
+    }
+
+    #[test]
+    fn the_onnx_export_matches_the_cpu_encoder() {
+        let v = crate::onnx::tests::random_tower();
+        let (tower, _) = cpu_tower_of(&v);
+        let (b, h, w) = (3usize, v.img_h, v.img_w);
+        let img: Vec<f32> = (0..b * 3 * h * w).map(|i| ((i as f32) * 0.37).sin()).collect();
+        let want = run_cpu_vision(&tower, &img, b, h, w, None).unwrap();
+        assert_eq!(want.len(), b * v.embed_dim);
+        let bytes = crate::onnx::vision_tower_onnx(&v).unwrap();
+        if let Err(e) = lcc_onnxrt::runtime() {
+            lcc_testkit::skip!(Model, "no ONNX Runtime library to check the export with ({e}); set {} to one", lcc_brand::env_var("ONNXRUNTIME"));
+            return;
+        }
+        let session = lcc_onnxrt::Session::from_bytes(&bytes, lcc_onnxrt::Want::Cpu { threads: 1 }).unwrap();
+        let got = session.run_one(lcc_onnxrt::Tensor::new(vec![b, 3, h, w], img.clone()).unwrap()).unwrap();
+        assert_eq!(got.shape, vec![b, v.embed_dim]);
+        agree(&got.data, &want).unwrap();
+    }
 }

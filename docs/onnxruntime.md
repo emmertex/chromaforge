@@ -29,6 +29,14 @@ usually much faster than our own kernels (issue #491). This page describes how i
   (`card_is_faster`) and keeps getting tiles right; a wrong tile runs on the CPU. Settings ▸ AI Denoise shows the
   result as the adapter, e.g. "ONNX Runtime (WebGPU)" (with the version when the library's build info names it; Microsoft's PyPI builds don't).
 
+- **CLIP's vision tower** (semantic search, auto orient; `lcc_ml::onnx`): written as an ONNX graph in memory
+  (`lcc_onnxrt::graph`, a small protobuf writer, opset 17) from the weights the CPU encoder already loaded from
+  `model.safetensors`, so no `.onnx` file is downloaded and the one SHA-256 check covers it. It is the first GPU runner
+  the engine offers for the tower (`clip_accelerator_for`), before the wgpu kernels, and like them it is checked against
+  the CPU encoder on a two-image test input before use; any error sends the job back to the CPU. The graph is checked
+  against the CPU encoder on a random tower by `clip::tests::the_onnx_export_matches_the_cpu_encoder` (ONNX Runtime's
+  CPU provider; it skips without the library).
+
 ## Where the library comes from
 
 `cargo xtask onnxruntime fetch --dest DIR [--platform P]` takes Microsoft's own PyPI builds of `onnxruntime` 1.32.0
@@ -77,7 +85,8 @@ and our CPU runner agree on a synthetic U-Net.
 
 ## What's next
 
-- Face detection and recognition (`lcc-faces`), the CLIP search encoder (an ONNX export of the same checkpoint), SAM
-  and the MediaPipe models onto `lcc-onnxrt`, each checked against its pure-Rust runner.
+- Face detection and recognition (`lcc-faces`), CLIP's text tower, SAM and the MediaPipe models onto `lcc-onnxrt`,
+  each checked against its pure-Rust runner.
 - ONNX Runtime's CPU provider as the CPU runner where it is faster than ours.
-- Orientation (#490) and aesthetic scores (#488) on top, with commercially licensable models.
+- Aesthetic scores (#488) on top, with a commercially licensable model. Orientation (#490) runs on the CLIP vision
+  tower above.
