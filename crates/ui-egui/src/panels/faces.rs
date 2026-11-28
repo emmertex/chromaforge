@@ -185,7 +185,11 @@ fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value)
             Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
-    hint(ui, t, "Higher confidence finds fewer false faces, but may miss real faces. Applies to future detections; rescan to update existing detections.");
+    hint(
+        ui,
+        t,
+        "Higher confidence finds fewer false faces, but may miss real faces. Applies to future detections; rescan to update existing detections.",
+    );
     heading(ui, t, "Matching");
     let mut on = list["mirrorAverage"].as_bool().unwrap_or(true);
     let r = crate::dialog_frame::in_control_column(ui, |ui| ui.checkbox(&mut on, crate::i18n::tr("Average each face with its mirror image")));
